@@ -1,0 +1,21 @@
+[package]
+name = "molasses"
+version = "0.1.0"
+license = "Apache-2.0"
+authors = ["Michael Rosenberg <micro@fastmail.com>"]
+edition = "2018"
+description = "A Rust implementation of the Message Layer Security group messaging protocol"
+keywords = ["mls", "crypto", "protocol", "tls"]
+
+[dependencies]
+digest = "0.8"
+rand_core = "0.3"
+ring = "0.14"
+sha2 = "0.8"
+x25519-dalek = "0.4"
+
+[dev-dependencies]
+rand = "0.6"
+hex = "0.3"
+quickcheck = "0.8"
+quickcheck_macros = "0.8"
