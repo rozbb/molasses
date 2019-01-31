@@ -19,6 +19,7 @@ pub(crate) enum RatchetTreeNode<CS: CipherSuite> {
     },
 }
 
+/// A left-balanced binary tree of `RatchetTreeNode`s
 // Contains a vector of nodes that could optionally be blanks
 pub(crate) struct RatchetTree<CS: CipherSuite> {
     nodes: Vec<RatchetTreeNode<CS>>,

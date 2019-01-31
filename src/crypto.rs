@@ -7,13 +7,14 @@ use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 
 // TODO: Break this out into crypto/{ciphersuite.rs, sigscheme.rs} and maybe more
 
-const AES_GCM_128_KEY_LENGTH: usize = 128 / 8;
-const AES_GCM_128_TAG_LENGTH: usize = 128 / 8;
-const AES_GCM_128_NONCE_LENGTH: usize = 96 / 8;
+const AES_GCM_128_KEY_SIZE: usize = 128 / 8;
+const AES_GCM_128_TAG_SIZE: usize = 128 / 8;
+const AES_GCM_128_NONCE_SIZE: usize = 96 / 8;
 
-const X25519_POINT_LENGTH: usize = 32;
-const X25519_SCALAR_LENGTH: usize = 32;
+const X25519_POINT_SIZE: usize = 32;
+const X25519_SCALAR_SIZE: usize = 32;
 
+/// An opening / sealing key for use with the `Aes128Gcm` algorithm
 // These will just be two copies of the same thing. They're different types because ring requires
 // an OpeningKey for opening and a SealingKey for sealing. This incurs some 64 bytes of storage
 // overhead, but I frankly don't care.
@@ -22,6 +23,8 @@ pub(crate) struct Aes128GcmKey {
     sealing_key: ring::aead::SealingKey,
 }
 
+/// A trait representing an authenticated encryption algorithm. Note that this makes no mention of
+/// associated data, since it is not used anywhere in MLS.
 // ring does algorithm specification at runtime, but I'd rather encode these things in the type
 // system. So, similar to the Digest trait, we're making an AuthenticatedEncryption trait. I don't
 // think we'll need associated data in this crate, so we leave it out for simplicity
@@ -52,6 +55,8 @@ pub(crate) trait AuthenticatedEncryption {
         T: rand_core::RngCore + rand_core::CryptoRng;
 }
 
+/// This represents the AES-128-GCM authenticated encryption algorithm. Notably, it implements
+/// `AuthenticatedEncryption`.
 pub(crate) struct Aes128Gcm;
 
 impl AuthenticatedEncryption for Aes128Gcm {
@@ -65,8 +70,8 @@ impl AuthenticatedEncryption for Aes128Gcm {
     /// Returns: `Ok(key)` on success. On error (don't ask me why this could fail), returns an
     /// `Error`.
     fn key_from_bytes(key_bytes: &[u8]) -> Result<Aes128GcmKey, Error> {
-        // TODO: Once associated consts stabilizes, I want key_byte: [u8; Self::KEY_LENGTH]
-        if key_bytes.len() != AES_GCM_128_KEY_LENGTH {
+        // TODO: Once associated consts stabilizes, I want key_byte: [u8; Self::KEY_SIZE]
+        if key_bytes.len() != AES_GCM_128_KEY_SIZE {
             return Err(Error::EncryptionError("AES-GCM-128 requires 128-bit keys"));
         }
 
@@ -89,7 +94,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
     where
         T: rand_core::RngCore + rand_core::CryptoRng,
     {
-        let mut key = [0u8; AES_GCM_128_KEY_LENGTH];
+        let mut key = [0u8; AES_GCM_128_KEY_SIZE];
         csprng
             .try_fill_bytes(&mut key)
             .map_err(|_| Error::OutOfEntropy)?;
@@ -149,17 +154,17 @@ impl AuthenticatedEncryption for Aes128Gcm {
     where
         T: rand_core::RngCore + rand_core::CryptoRng,
     {
-        // Extend the plaintext to have space at the end of AES_GCM_TAG_LENGTH many bytes. This is
+        // Extend the plaintext to have space at the end of AES_GCM_TAG_SIZE many bytes. This is
         // where the tag goes for ring::aead::seal_in_place
         let mut extended_plaintext = {
-            let buf = [0u8; AES_GCM_128_TAG_LENGTH];
+            let buf = [0u8; AES_GCM_128_TAG_SIZE];
             plaintext.extend_from_slice(&buf);
             plaintext
         };
 
         // Make new nonce
         let nonce_bytes = {
-            let mut buf = [0u8; AES_GCM_128_NONCE_LENGTH];
+            let mut buf = [0u8; AES_GCM_128_NONCE_SIZE];
             csprng.try_fill(&mut buf).map_err(|_| Error::OutOfEntropy)?;
             buf
         };
@@ -179,7 +184,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
             nonce1,
             ring::aead::Aad::empty(),
             &mut extended_plaintext,
-            AES_GCM_128_TAG_LENGTH,
+            AES_GCM_128_TAG_SIZE,
         );
 
         // The encryption was done in-place. Rename for clarity
@@ -192,6 +197,9 @@ impl AuthenticatedEncryption for Aes128Gcm {
     }
 }
 
+/// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
+/// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
+/// etc.
 pub(crate) trait DiffieHellman {
     /// The type of a public value. In EC terminology, this is a scalar in the base field. In
     /// finite-field terminology, this is an exponent.
@@ -215,9 +223,13 @@ pub(crate) trait DiffieHellman {
 // NOTE: Although X25519Scalar can be initiated with arbitrary bytestrings, all scalars are clamped
 // by x25519::diffie_hellman before they are used, so chill out please.
 
+/// This represents the X25519 Diffie-Hellman key agreement protocol. Notably, it implements
+/// `DiffieHellman`.
 pub(crate) struct X25519;
-pub(crate) struct X25519Scalar([u8; X25519_SCALAR_LENGTH]);
-pub(crate) struct X25519Point([u8; X25519_POINT_LENGTH]);
+/// A scalar value in Curve25519
+pub(crate) struct X25519Scalar([u8; X25519_SCALAR_SIZE]);
+/// A curve point in Curve25519
+pub(crate) struct X25519Point([u8; X25519_POINT_SIZE]);
 
 impl DiffieHellman for X25519 {
     type Scalar = X25519Scalar;
@@ -230,10 +242,10 @@ impl DiffieHellman for X25519 {
     /// Returns: `Ok(privkey)` on success. Otherwise, if `key_bytes.len() != 32`, returns
     /// `Error::CryptoError`.
     fn scalar_from_bytes(bytes: &[u8]) -> Result<X25519Scalar, Error> {
-        if bytes.len() != X25519_SCALAR_LENGTH {
+        if bytes.len() != X25519_SCALAR_SIZE {
             return Err(Error::DHError("Wrong key size"));
         } else {
-            let mut buf = [0u8; X25519_SCALAR_LENGTH];
+            let mut buf = [0u8; X25519_SCALAR_SIZE];
             buf.copy_from_slice(bytes);
             Ok(X25519Scalar(buf))
         }
@@ -254,6 +266,8 @@ impl DiffieHellman for X25519 {
     }
 }
 
+/// A trait representing the contents of an MLS ciphersuite: a DH-like key-agreement protocol, a
+/// hashing algorithm, and an authenticated encryption algorithm.
 pub(crate) trait CipherSuite {
     type DH: DiffieHellman;
     type Hash: Digest;
@@ -272,7 +286,7 @@ pub(crate) trait CipherSuite {
     >;
 }
 
-/// This represents the X25519-SHA256-AES128GCM ciphersuite
+/// This represents the X25519-SHA256-AES128GCM ciphersuite. Notably, it implements `CipherSuite`.
 #[allow(non_camel_case_types)]
 pub(crate) struct X25519_SHA256_AES128GCM;
 
@@ -307,6 +321,7 @@ impl CipherSuite for X25519_SHA256_AES128GCM {
     }
 }
 
+/// A trait representing a digital signature scheme
 pub(crate) trait SignatureScheme {
     type PublicKey;
     type SecretKey;
@@ -320,6 +335,7 @@ pub(crate) trait SignatureScheme {
         T: rand::Rng + rand::CryptoRng;
 }
 
+/// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
 pub struct ED25519;
 
 impl SignatureScheme for ED25519 {

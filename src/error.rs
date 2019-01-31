@@ -1,3 +1,4 @@
+/// An error type for anything that goes wrong in this crate
 #[derive(Debug)]
 pub enum Error {
     /// For errors that occur in AEAD algorithms
