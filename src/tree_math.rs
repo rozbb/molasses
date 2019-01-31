@@ -440,7 +440,7 @@ mod test {
         } else {
             // I'm not a leaf. Make sure that my children are distinct, that they are siblings, and
             // that I'm their parent
-            assert!(my_left_child != my_right_child);
+            assert_ne!(my_left_child, my_right_child);
             assert_eq!(node_sibling(my_left_child, num_leaves), my_right_child);
             assert_eq!(node_sibling(my_right_child, num_leaves), my_left_child);
             assert_eq!(node_parent(my_left_child, num_leaves), me);
@@ -448,6 +448,5 @@ mod test {
         }
     }
 
-    // TODO: Panic tests
-
+    // TODO: Add Panic tests
 }
