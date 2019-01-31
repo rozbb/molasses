@@ -260,6 +260,16 @@ pub trait CipherSuite {
     type DH: DiffieHellman;
     type Hash: Digest;
     type Aead: AuthenticatedEncryption;
+
+    fn derive_key_pair(
+        bytes: &[u8],
+    ) -> Result<
+        (
+            <Self::DH as DiffieHellman>::Point,
+            <Self::DH as DiffieHellman>::Scalar,
+        ),
+        Error,
+    >;
 }
 
 /// This type is used to indicate a particular cipher suite
@@ -270,6 +280,27 @@ impl CipherSuite for X25519_SHA256_AES128GCM {
     type DH = X25519;
     type Hash = sha2::Sha256;
     type Aead = Aes128Gcm;
+
+    /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
+    /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
+    fn derive_key_pair(
+        bytes: &[u8],
+    ) -> Result<
+        (
+            <X25519 as DiffieHellman>::Point,
+            <X25519 as DiffieHellman>::Scalar,
+        ),
+        Error,
+    > {
+        let mut hasher = sha2::Sha256::new();
+        hasher.input(bytes);
+        let scalar_bytes = hasher.result();
+
+        let privkey = X25519::scalar_from_bytes(&scalar_bytes)?;
+        let pubkey = X25519::multiply_basepoint(&privkey);
+
+        Ok((pubkey, privkey))
+    }
 }
 
 #[cfg(test)]
