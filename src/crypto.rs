@@ -1,8 +1,8 @@
 use crate::error::Error;
 
 use digest::Digest;
+use rand::Rng;
 use ring::aead::AES_128_GCM as AES_128_GCM_ALG;
-use ring::rand::SecureRandom;
 use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 
 const AES_GCM_128_KEY_LENGTH: usize = 128 / 8;
@@ -42,16 +42,19 @@ pub trait AuthenticatedEncryption {
     where
         T: rand_core::RngCore + rand_core::CryptoRng;
 
-    fn open_in_place<'a>(
+    fn open(
         key: &Self::Key,
         nonce: Self::Nonce,
-        ciphertext_and_tag_modified_in_place: &'a mut [u8],
-    ) -> Result<&'a mut [u8], Error>;
+        ciphertext_and_tag: Vec<u8>,
+    ) -> Result<Vec<u8>, Error>;
 
-    fn seal_in_place(
+    fn seal<T>(
         key: &Self::Key,
-        plaintext_modified_in_place: &mut [u8],
-    ) -> Result<(Self::Nonce, usize), Error>;
+        plaintext: Vec<u8>,
+        csprng: &mut T,
+    ) -> Result<(Vec<u8>, Self::Nonce), Error>
+    where
+        T: rand_core::RngCore + rand_core::CryptoRng;
 }
 
 pub struct Aes128Gcm;
@@ -84,7 +87,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
 
     /// Makes a new secure-random AES-GCM key.
     ///
-    /// Returns: `Ok(key)` on success. On error , returns an `Error`.
+    /// Returns: `Ok(key)` on success. On error , returns `Error::OutOfEntropy`.
     fn key_from_random<T>(csprng: &mut T) -> Result<Aes128GcmKey, Error>
     where
         T: rand_core::RngCore + rand_core::CryptoRng,
@@ -107,45 +110,67 @@ impl AuthenticatedEncryption for Aes128Gcm {
     /// ciphertext, with no tags or garbage bytes (in particular, it's the same buffer as the input
     /// bytes, but without the last 16 bytes). If there is an error in any part of this process, it
     /// will be returned as an `Error::CryptoError` with description "Unspecified".
-    fn open_in_place<'a>(
+    fn open(
         key: &Aes128GcmKey,
         nonce: Self::Nonce,
-        ciphertext_and_tag_modified_in_place: &'a mut [u8],
-    ) -> Result<&'a mut [u8], Error> {
+        mut ciphertext_and_tag: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        let empty_aead = ring::aead::Aad::empty();
         // We use the standard decryption function with no associated data, and no "prefix bytes".
-        // The length of the buffer is checked by the ring library.
+        // The length of the buffer is checked by the ring library. The function returns a
+        // plaintext = ciphertext_and_tag[..plaintext.len()], so we'll return the
+        // ciphertext_and_tag vector truncated to plaintext.len();
         // For more details on this function, see docs on ring::aead::open_in_place at
         // https://briansmith.org/rustdoc/ring/aead/fn.open_in_place.html
-        ring::aead::open_in_place(
+        let plaintext_len = ring::aead::open_in_place(
             &key.opening_key,
             nonce,
-            ring::aead::Aad::empty(),
+            empty_aead,
             0,
-            ciphertext_and_tag_modified_in_place,
-        )
-        .map_err(From::from)
+            ciphertext_and_tag.as_mut_slice(),
+        )?
+        .len();
+
+        // Truncate and rename, since ciphertext_and_tag was modified in-place
+        ciphertext_and_tag.truncate(plaintext_len);
+        let plaintext = ciphertext_and_tag;
+        Ok(plaintext)
     }
 
-    /// Does an in-place authenticated encryption of the given plaintext. There must be 16 extra
-    /// bytes at the end of the buffer to leave room for the auth tag.
-    /// This function will generate its own random nonce using `ring::rand::SystemRandom`, or else
-    /// fail.
+    /// Performs an authenticated encryption of the given plaintext. This function will generate
+    /// its own random nonce using the given CSPRNG, or else fail.
     ///
-    /// Returns: `Ok((nonce, len))` upon success, where `nonce` is the nonce that was used for
-    /// encryption, and `len` is the length of the tagged ciphertext, i.e.,
-    /// `plaintext_modified_in_place[..len]` is of the form `ciphertext || tag`. If encryption
+    /// Returns: `Ok((ct, nonce))` upon success, where `ct` is the authenticated ciphertext, and
+    /// `nonce` is the nonce that was used for encryption. If encryption or creation of a nonce
     /// fails, an `Error` is returned.
-    fn seal_in_place<'a>(
+    fn seal<T>(
         key: &Aes128GcmKey,
-        plaintext_modified_in_place: &'a mut [u8],
-    ) -> Result<(Self::Nonce, usize), Error> {
-        let mut nonce = [0u8; AES_GCM_128_NONCE_LENGTH];
-        let rng = ring::rand::SystemRandom::new();
-        rng.fill(&mut nonce).map_err(|_| Error::OutOfEntropy)?;
+        mut plaintext: Vec<u8>,
+        csprng: &mut T,
+    ) -> Result<(Vec<u8>, Self::Nonce), Error>
+    where
+        T: rand_core::RngCore + rand_core::CryptoRng,
+    {
+        // Extend the plaintext to have space at the end of AES_GCM_TAG_LENGTH many bytes. This is
+        // where the tag goes for ring::aead::seal_in_place
+        let mut extended_plaintext = {
+            let buf = [0u8; AES_GCM_128_TAG_LENGTH];
+            plaintext.extend_from_slice(&buf);
+            plaintext
+        };
 
-        // The sealing algorithm consumes the nonce, so make a copy to return when we're done.
+        // Make new nonce
+        let nonce_bytes = {
+            let mut buf = [0u8; AES_GCM_128_NONCE_LENGTH];
+            csprng.try_fill(&mut buf).map_err(|_| Error::OutOfEntropy)?;
+            buf
+        };
+
+        // The sealing algorithm consumes the nonce, so make two copies: one to return when we're
+        // done, and one to give to the `seal_in_place` function.
         // The constructor used here is the trivial one (`Nonce` just holds a buffer of bytes)
-        let nonce_to_return = ring::aead::Nonce::assume_unique_for_key(nonce.clone());
+        let nonce1 = ring::aead::Nonce::assume_unique_for_key(nonce_bytes);
+        let nonce2 = ring::aead::Nonce::assume_unique_for_key(nonce_bytes);
 
         // We use the standard encryption function with no associated data. The length of the
         // buffer is checked by the ring library.
@@ -153,14 +178,17 @@ impl AuthenticatedEncryption for Aes128Gcm {
         // https://briansmith.org/rustdoc/ring/aead/fn.seal_in_place.html
         let res = ring::aead::seal_in_place(
             &key.sealing_key,
-            ring::aead::Nonce::assume_unique_for_key(nonce), // This is the trivial constructor
+            nonce1,
             ring::aead::Aad::empty(),
-            plaintext_modified_in_place,
+            &mut extended_plaintext,
             AES_GCM_128_TAG_LENGTH,
         );
 
+        // The encryption was done in-place. Rename for clarity
+        let authenticated_ciphertext = extended_plaintext;
+
         match res {
-            Ok(len) => Ok((nonce_to_return, len)),
+            Ok(_) => Ok((authenticated_ciphertext, nonce2)),
             Err(e) => Err(e.into()),
         }
     }
@@ -249,7 +277,6 @@ mod test {
     use crate::crypto::*;
 
     use quickcheck_macros::quickcheck;
-    use rand::RngCore;
 
     // TODO: AES-GCM KAT
 
@@ -259,21 +286,10 @@ mod test {
         let mut rng = rand::thread_rng();
         let key = Aes128Gcm::key_from_random(&mut rng).expect("failed to generate key");
 
-        // Recall we need free space at the end to put the tag in.
-        let padding = [0u8; AES_GCM_128_TAG_LENGTH];
-        let mut padded_plaintext = [plaintext.as_slice(), &padding[..]].concat();
-
-        let (nonce, len) = Aes128Gcm::seal_in_place(&key, padded_plaintext.as_mut_slice())
-            .expect("failed to encrypt");
-
-        // The length of the tagged ciphertext should be the length of the padded plaintext
-        assert_eq!(len, padded_plaintext.len());
-
-        // Change the name for clarity's sake
-        let mut authenticated_ciphertext = padded_plaintext;
+        let (auth_ciphertext, nonce) =
+            Aes128Gcm::seal(&key, plaintext.clone(), &mut rng).expect("failed to encrypt");
         let recovered_plaintext =
-            Aes128Gcm::open_in_place(&key, nonce, authenticated_ciphertext.as_mut_slice())
-                .expect("failed to decrypt");
+            Aes128Gcm::open(&key, nonce, auth_ciphertext).expect("failed to decrypt");
 
         assert_eq!(plaintext, recovered_plaintext);
     }
@@ -284,27 +300,17 @@ mod test {
         let mut rng = rand::thread_rng();
         let key = Aes128Gcm::key_from_random(&mut rng).expect("failed to generate key");
 
-        // Recall we need free space at the end to put the tag in.
-        let padding = [0u8; AES_GCM_128_TAG_LENGTH];
-        let mut padded_plaintext = [plaintext.as_slice(), &padding[..]].concat();
+        let (mut auth_ciphertext, nonce) =
+            Aes128Gcm::seal(&key, plaintext, &mut rng).expect("failed to encrypt");
 
-        let (nonce, len) = Aes128Gcm::seal_in_place(&key, padded_plaintext.as_mut_slice())
-            .expect("failed to encrypt");
+        let mut xor_bytes = vec![0u8; auth_ciphertext.len()];
+        rng.fill(xor_bytes.as_mut_slice());
 
-        // The length of the tagged ciphertext should be the length of the padded plaintext
-        assert_eq!(len, padded_plaintext.len());
-
-        // Change the name for clarity's sake
-        let mut authenticated_ciphertext = padded_plaintext;
-
-        let mut xor_bytes = vec![0u8; authenticated_ciphertext.len()];
-        rng.fill_bytes(xor_bytes.as_mut_slice());
-
-        for (ct_byte, xor_byte) in authenticated_ciphertext.iter_mut().zip(xor_bytes.iter()) {
+        for (ct_byte, xor_byte) in auth_ciphertext.iter_mut().zip(xor_bytes.iter()) {
             *ct_byte ^= xor_byte;
         }
 
-        let res = Aes128Gcm::open_in_place(&key, nonce, authenticated_ciphertext.as_mut_slice());
+        let res = Aes128Gcm::open(&key, nonce, auth_ciphertext);
         assert!(res.is_err());
     }
 

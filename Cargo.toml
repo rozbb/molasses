@@ -9,13 +9,13 @@ keywords = ["mls", "crypto", "protocol", "tls"]
 
 [dependencies]
 digest = "0.8"
+rand = "0.6"
 rand_core = "0.3"
 ring = "0.14"
 sha2 = "0.8"
 x25519-dalek = "0.4"
 
 [dev-dependencies]
-rand = "0.6"
 hex = "0.3"
 quickcheck = "0.8"
 quickcheck_macros = "0.8"
