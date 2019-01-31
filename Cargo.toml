@@ -9,9 +9,11 @@ keywords = ["mls", "crypto", "protocol", "tls"]
 
 [dependencies]
 digest = "0.8"
+ed25519-dalek = { version = "1.0.0-pre.1" }
 rand = "0.6"
 rand_core = "0.3"
 ring = "0.14"
+serde = "1.0"
 sha2 = "0.8"
 x25519-dalek = "0.4"
 

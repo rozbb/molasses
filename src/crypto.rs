@@ -5,6 +5,8 @@ use rand::Rng;
 use ring::aead::AES_128_GCM as AES_128_GCM_ALG;
 use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
 
+// TODO: Break this out into crypto/{ciphersuite.rs, sigscheme.rs} and maybe more
+
 const AES_GCM_128_KEY_LENGTH: usize = 128 / 8;
 const AES_GCM_128_TAG_LENGTH: usize = 128 / 8;
 const AES_GCM_128_NONCE_LENGTH: usize = 96 / 8;
@@ -12,17 +14,10 @@ const AES_GCM_128_NONCE_LENGTH: usize = 96 / 8;
 const X25519_POINT_LENGTH: usize = 32;
 const X25519_SCALAR_LENGTH: usize = 32;
 
-// Any error from ring should leak zero information by default
-impl From<ring::error::Unspecified> for Error {
-    fn from(_: ring::error::Unspecified) -> Self {
-        Error::CryptoError("Unspecified")
-    }
-}
-
 // These will just be two copies of the same thing. They're different types because ring requires
 // an OpeningKey for opening and a SealingKey for sealing. This incurs some 64 bytes of storage
 // overhead, but I frankly don't care.
-pub struct Aes128GcmKey {
+pub(crate) struct Aes128GcmKey {
     opening_key: ring::aead::OpeningKey,
     sealing_key: ring::aead::SealingKey,
 }
@@ -30,7 +25,7 @@ pub struct Aes128GcmKey {
 // ring does algorithm specification at runtime, but I'd rather encode these things in the type
 // system. So, similar to the Digest trait, we're making an AuthenticatedEncryption trait. I don't
 // think we'll need associated data in this crate, so we leave it out for simplicity
-pub trait AuthenticatedEncryption {
+pub(crate) trait AuthenticatedEncryption {
     /// Nonce type
     type Nonce;
     /// Key type
@@ -57,7 +52,7 @@ pub trait AuthenticatedEncryption {
         T: rand_core::RngCore + rand_core::CryptoRng;
 }
 
-pub struct Aes128Gcm;
+pub(crate) struct Aes128Gcm;
 
 impl AuthenticatedEncryption for Aes128Gcm {
     type Nonce = ring::aead::Nonce;
@@ -72,12 +67,14 @@ impl AuthenticatedEncryption for Aes128Gcm {
     fn key_from_bytes(key_bytes: &[u8]) -> Result<Aes128GcmKey, Error> {
         // TODO: Once associated consts stabilizes, I want key_byte: [u8; Self::KEY_LENGTH]
         if key_bytes.len() != AES_GCM_128_KEY_LENGTH {
-            return Err(Error::CryptoError("AES-GCM-128 requires 128-bit keys"));
+            return Err(Error::EncryptionError("AES-GCM-128 requires 128-bit keys"));
         }
 
         // Again, the opening and sealing keys for AES-GCM are the same.
-        let opening_key = ring::aead::OpeningKey::new(&AES_128_GCM_ALG, key_bytes)?;
-        let sealing_key = ring::aead::SealingKey::new(&AES_128_GCM_ALG, key_bytes)?;
+        let opening_key = ring::aead::OpeningKey::new(&AES_128_GCM_ALG, key_bytes)
+            .map_err(|_| Error::EncryptionError("Unspecified"))?;
+        let sealing_key = ring::aead::SealingKey::new(&AES_128_GCM_ALG, key_bytes)
+            .map_err(|_| Error::EncryptionError("Unspecified"))?;
 
         Ok(Aes128GcmKey {
             opening_key,
@@ -128,7 +125,8 @@ impl AuthenticatedEncryption for Aes128Gcm {
             empty_aead,
             0,
             ciphertext_and_tag.as_mut_slice(),
-        )?
+        )
+        .map_err(|_| Error::EncryptionError("Unspecified"))?
         .len();
 
         // Truncate and rename, since ciphertext_and_tag was modified in-place
@@ -189,12 +187,12 @@ impl AuthenticatedEncryption for Aes128Gcm {
 
         match res {
             Ok(_) => Ok((authenticated_ciphertext, nonce2)),
-            Err(e) => Err(e.into()),
+            Err(e) => Err(Error::EncryptionError("Unspecified")),
         }
     }
 }
 
-pub trait DiffieHellman {
+pub(crate) trait DiffieHellman {
     /// The type of a public value. In EC terminology, this is a scalar in the base field. In
     /// finite-field terminology, this is an exponent.
     type Scalar;
@@ -217,9 +215,9 @@ pub trait DiffieHellman {
 // NOTE: Although X25519Scalar can be initiated with arbitrary bytestrings, all scalars are clamped
 // by x25519::diffie_hellman before they are used, so chill out please.
 
-pub struct X25519;
-pub struct X25519Scalar([u8; X25519_SCALAR_LENGTH]);
-pub struct X25519Point([u8; X25519_POINT_LENGTH]);
+pub(crate) struct X25519;
+pub(crate) struct X25519Scalar([u8; X25519_SCALAR_LENGTH]);
+pub(crate) struct X25519Point([u8; X25519_POINT_LENGTH]);
 
 impl DiffieHellman for X25519 {
     type Scalar = X25519Scalar;
@@ -233,7 +231,7 @@ impl DiffieHellman for X25519 {
     /// `Error::CryptoError`.
     fn scalar_from_bytes(bytes: &[u8]) -> Result<X25519Scalar, Error> {
         if bytes.len() != X25519_SCALAR_LENGTH {
-            return Err(Error::CryptoError("Unspecified"));
+            return Err(Error::DHError("Wrong key size"));
         } else {
             let mut buf = [0u8; X25519_SCALAR_LENGTH];
             buf.copy_from_slice(bytes);
@@ -256,10 +254,12 @@ impl DiffieHellman for X25519 {
     }
 }
 
-pub trait CipherSuite {
+pub(crate) trait CipherSuite {
     type DH: DiffieHellman;
     type Hash: Digest;
     type Aead: AuthenticatedEncryption;
+
+    const ID: u16;
 
     fn derive_key_pair(
         bytes: &[u8],
@@ -272,14 +272,18 @@ pub trait CipherSuite {
     >;
 }
 
-/// This type is used to indicate a particular cipher suite
+/// This represents the X25519-SHA256-AES128GCM ciphersuite
 #[allow(non_camel_case_types)]
-pub struct X25519_SHA256_AES128GCM;
+pub(crate) struct X25519_SHA256_AES128GCM;
 
 impl CipherSuite for X25519_SHA256_AES128GCM {
     type DH = X25519;
     type Hash = sha2::Sha256;
     type Aead = Aes128Gcm;
+
+    /// This is for serialization purposes. The MLS specifies that this is variant of the
+    /// CipherSuite enum has value 0x0000.
+    const ID: u16 = 0;
 
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
     /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
@@ -300,6 +304,41 @@ impl CipherSuite for X25519_SHA256_AES128GCM {
         let pubkey = X25519::multiply_basepoint(&privkey);
 
         Ok((pubkey, privkey))
+    }
+}
+
+pub(crate) trait SignatureScheme {
+    type PublicKey;
+    type SecretKey;
+
+    const ID: u16;
+
+    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, Error>;
+
+    fn secret_key_from_random<T>(csprng: &mut T) -> Result<Self::SecretKey, Error>
+    where
+        T: rand::Rng + rand::CryptoRng;
+}
+
+pub struct ED25519;
+
+impl SignatureScheme for ED25519 {
+    type PublicKey = ed25519_dalek::PublicKey;
+    type SecretKey = ed25519_dalek::SecretKey;
+
+    /// This is for serialization purposes. The MLS specifies that this is variant of the
+    /// CipherSuite enum has value 0x0807.
+    const ID: u16 = 0x0807;
+
+    fn secret_key_from_bytes(byte: &[u8]) -> Result<ed25519_dalek::SecretKey, Error> {
+        unimplemented!()
+    }
+
+    fn secret_key_from_random<T>(csprng: &mut T) -> Result<Self::SecretKey, Error>
+    where
+        T: rand::Rng + rand::CryptoRng,
+    {
+        unimplemented!()
     }
 }
 
