@@ -386,5 +386,24 @@ mod test {
         );
     }
 
-    // TODO: Add randomize x25519 correctness test
+    // This comes from
+    // https://github.com/mlswg/mls-implementations/blob/master/test_vectors/treesnodes.md
+    #[test]
+    fn node_key_derivation_kat() {
+        let scalar = {
+            let hex_str = "e029fbe9de859e7bd6aea95ac258ae743a9eabccde9358420d8c975365938714";
+            eprintln!("hex_str.len() == {}", hex_str.len());
+            let bytes = hex::decode(hex_str).unwrap();
+            X25519::scalar_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+        };
+
+        let pubkey = X25519::multiply_basepoint(&scalar);
+
+        assert_eq!(
+            hex::encode(pubkey.0),
+            "6667b1715a0ad45b0510e850322a8d471d4485ebcbfcc0f3bcce7bcae7b44f7f"
+        );
+    }
+
+    // TODO: Add randomized x25519 correctness test and derive_key_pair KAT
 }
