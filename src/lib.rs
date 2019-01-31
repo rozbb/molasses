@@ -1,3 +1,5 @@
+mod codec;
+mod credential;
 pub mod crypto;
 pub mod error;
 pub mod ratchet_tree;
