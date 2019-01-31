@@ -3,7 +3,7 @@ use crate::tree_math;
 
 /// A node in a `RatchetTree` with ciphersuite `CS`. Every node must have a DH pubkey. It may also
 /// optionally contain the corresponding private key and a secret octet string.
-pub enum RatchetTreeNode<CS: CipherSuite> {
+pub(crate) enum RatchetTreeNode<CS: CipherSuite> {
     Blank,
     Filled {
         // To explain this notation a bit: CS::DH is the associated DH type of the given
@@ -20,7 +20,7 @@ pub enum RatchetTreeNode<CS: CipherSuite> {
 }
 
 // Contains a vector of nodes that could optionally be blanks
-pub struct RatchetTree<CS: CipherSuite> {
+pub(crate) struct RatchetTree<CS: CipherSuite> {
     nodes: Vec<RatchetTreeNode<CS>>,
 }
 
