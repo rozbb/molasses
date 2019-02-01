@@ -33,11 +33,11 @@ pub(crate) trait AuthenticatedEncryption {
     where
         T: rand_core::RngCore + rand_core::CryptoRng;
 
-    fn open(
+    fn open<'a>(
         key: &Self::Key,
         nonce: Self::Nonce,
-        ciphertext_and_tag: Vec<u8>,
-    ) -> Result<Vec<u8>, Error>;
+        ciphertext_and_tag: &'a mut [u8],
+    ) -> Result<&'a mut [u8], Error>;
 
     fn seal<T>(
         key: &Self::Key,
@@ -107,32 +107,24 @@ impl AuthenticatedEncryption for Aes128Gcm {
     /// ciphertext, with no tags or garbage bytes (in particular, it's the same buffer as the input
     /// bytes, but without the last 16 bytes). If there is an error in any part of this process, it
     /// will be returned as an `Error::CryptoError` with description "Unspecified".
-    fn open(
+    fn open<'a>(
         key: &Aes128GcmKey,
         nonce: Self::Nonce,
-        mut ciphertext_and_tag: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
-        let empty_aead = ring::aead::Aad::empty();
+        ciphertext_and_tag_modified_in_place: &'a mut [u8],
+    ) -> Result<&'a mut [u8], Error> {
         // We use the standard decryption function with no associated data, and no "prefix bytes".
         // The length of the buffer is checked by the ring library. The function returns a
-        // plaintext = ciphertext_and_tag[..plaintext.len()], so we'll return the
-        // ciphertext_and_tag vector truncated to plaintext.len();
-        // For more details on this function, see docs on ring::aead::open_in_place at
+        // plaintext = ciphertext_and_tag[..plaintext.len()] For more details on this function, see
+        // docs on ring::aead::open_in_place at
         // https://briansmith.org/rustdoc/ring/aead/fn.open_in_place.html
-        let plaintext_len = ring::aead::open_in_place(
+        ring::aead::open_in_place(
             &key.opening_key,
             nonce,
-            empty_aead,
+            ring::aead::Aad::empty(),
             0,
-            ciphertext_and_tag.as_mut_slice(),
+            ciphertext_and_tag_modified_in_place,
         )
-        .map_err(|_| Error::EncryptionError("Unspecified"))?
-        .len();
-
-        // Truncate and rename, since ciphertext_and_tag was modified in-place
-        ciphertext_and_tag.truncate(plaintext_len);
-        let plaintext = ciphertext_and_tag;
-        Ok(plaintext)
+        .map_err(|_| Error::EncryptionError("Unspecified"))
     }
 
     /// Performs an authenticated encryption of the given plaintext. This function will generate
@@ -206,31 +198,69 @@ mod test {
         let mut rng = rand::thread_rng();
         let key = Aes128Gcm::key_from_random(&mut rng).expect("failed to generate key");
 
-        let (auth_ciphertext, nonce) =
+        let (mut auth_ciphertext, nonce) =
             Aes128Gcm::seal(&key, plaintext.clone(), &mut rng).expect("failed to encrypt");
-        let recovered_plaintext =
-            Aes128Gcm::open(&key, nonce, auth_ciphertext).expect("failed to decrypt");
+        let recovered_plaintext = Aes128Gcm::open(&key, nonce, auth_ciphertext.as_mut_slice())
+            .expect("failed to decrypt");
 
+        // Make sure we get out what we put in
         assert_eq!(plaintext, recovered_plaintext);
     }
 
-    // Test that perturbations in encrypt_k(m) make it fail to decrypt
+    // Test that perturbations in auth_ct := encrypt_k(m) make it fail to decrypt. This includes
+    // perturbations in the tag of auth_ct.
     #[quickcheck]
-    fn aes_gcm_integrity(plaintext: Vec<u8>) {
+    fn aes_gcm_integrity_ct_and_tag(plaintext: Vec<u8>) {
         let mut rng = rand::thread_rng();
         let key = Aes128Gcm::key_from_random(&mut rng).expect("failed to generate key");
 
         let (mut auth_ciphertext, nonce) =
             Aes128Gcm::seal(&key, plaintext, &mut rng).expect("failed to encrypt");
 
+        // Make a random byte string that's exactly the length of the authenticated ciphertext.
+        // We'll XOR these bytes with the authenticated ciphertext.
         let mut xor_bytes = vec![0u8; auth_ciphertext.len()];
         rng.fill(xor_bytes.as_mut_slice());
 
+        // Do the XORing
         for (ct_byte, xor_byte) in auth_ciphertext.iter_mut().zip(xor_bytes.iter()) {
             *ct_byte ^= xor_byte;
         }
 
-        let res = Aes128Gcm::open(&key, nonce, auth_ciphertext);
+        // Make sure this fails to open
+        let res = Aes128Gcm::open(&key, nonce, auth_ciphertext.as_mut_slice());
+        assert!(res.is_err());
+    }
+
+    // Test that perturbations in auth_ct := encrypt_k(m) make it fail to decrypt. This includes
+    // only perturbations to the ciphertext of auth_ct, leaving the tag alone.
+    #[quickcheck]
+    fn aes_gcm_integrity_ct(plaintext: Vec<u8>) {
+        // This is only interesting if plaintext != "". Since XORing anything into the empty string
+        // is a noop, the open() operation below will actually succeed. This property is checked in
+        // aes_gcm_correctness.
+        if plaintext.len() == 0 {
+            return;
+        }
+
+        let mut rng = rand::thread_rng();
+        let key = Aes128Gcm::key_from_random(&mut rng).expect("failed to generate key");
+
+        let (mut auth_ciphertext, nonce) =
+            Aes128Gcm::seal(&key, plaintext, &mut rng).expect("failed to encrypt");
+
+        // Make a random byte string that's exactly the length of the authenticated ciphertext,
+        // minus the tag length. We'll XOR these bytes with the ciphertext part.
+        let mut xor_bytes = vec![0u8; auth_ciphertext.len() - AES_GCM_128_TAG_SIZE];
+        rng.fill(xor_bytes.as_mut_slice());
+
+        // Do the XORing
+        for (ct_byte, xor_byte) in auth_ciphertext.iter_mut().zip(xor_bytes.iter()) {
+            *ct_byte ^= xor_byte;
+        }
+
+        // Make sure this fails to open
+        let res = Aes128Gcm::open(&key, nonce, auth_ciphertext.as_mut_slice());
         assert!(res.is_err());
     }
 }
