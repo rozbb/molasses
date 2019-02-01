@@ -1,4 +1,4 @@
-use crate::crypto::{CipherSuite, DiffieHellman};
+use crate::crypto::{ciphersuite::CipherSuite, dh::DiffieHellman};
 use crate::tree_math;
 
 /// A node in a `RatchetTree` with ciphersuite `CS`. Every node must have a DH pubkey. It may also

@@ -1,4 +1,4 @@
-use crate::crypto::SignatureScheme;
+use crate::crypto::sig::SignatureScheme;
 
 // opaque cert_data<1..2^24-1>;
 struct X509CertData(Vec<u8>);

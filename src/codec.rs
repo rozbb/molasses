@@ -1,4 +1,7 @@
-use crate::crypto::{CipherSuite, SignatureScheme, ED25519, X25519_SHA256_AES128GCM};
+use crate::crypto::{
+    ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+    sig::{SignatureScheme, ED25519},
+};
 
 use serde::ser::{Serialize, Serializer};
 
