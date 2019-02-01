@@ -95,6 +95,8 @@ impl AuthenticatedEncryption for Aes128Gcm {
         T: rand_core::RngCore + rand_core::CryptoRng,
     {
         let mut key = [0u8; AES_GCM_128_KEY_SIZE];
+        // This could fail for a number of reasons, but the net result is that we don't have
+        // random bytes anymore
         csprng
             .try_fill_bytes(&mut key)
             .map_err(|_| Error::OutOfEntropy)?;
@@ -269,11 +271,11 @@ impl DiffieHellman for X25519 {
 /// A trait representing the contents of an MLS ciphersuite: a DH-like key-agreement protocol, a
 /// hashing algorithm, and an authenticated encryption algorithm.
 pub(crate) trait CipherSuite {
+    const ID: u16;
+
     type DH: DiffieHellman;
     type Hash: Digest;
     type Aead: AuthenticatedEncryption;
-
-    const ID: u16;
 
     fn derive_key_pair(
         bytes: &[u8],
@@ -291,13 +293,13 @@ pub(crate) trait CipherSuite {
 pub(crate) struct X25519_SHA256_AES128GCM;
 
 impl CipherSuite for X25519_SHA256_AES128GCM {
-    type DH = X25519;
-    type Hash = sha2::Sha256;
-    type Aead = Aes128Gcm;
-
     /// This is for serialization purposes. The MLS specifies that this is variant of the
     /// CipherSuite enum has value 0x0000.
     const ID: u16 = 0;
+
+    type DH = X25519;
+    type Hash = sha2::Sha256;
+    type Aead = Aes128Gcm;
 
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
     /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
@@ -323,38 +325,87 @@ impl CipherSuite for X25519_SHA256_AES128GCM {
 
 /// A trait representing a digital signature scheme
 pub(crate) trait SignatureScheme {
-    type PublicKey;
-    type SecretKey;
-
     const ID: u16;
 
-    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, Error>;
+    type KeyPair;
+    type PublicKey;
+    type Signature;
 
-    fn secret_key_from_random<T>(csprng: &mut T) -> Result<Self::SecretKey, Error>
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, Error>;
+
+    fn key_pair_from_bytes(byte: &[u8]) -> Result<Self::KeyPair, Error>;
+    fn key_pair_from_random<T>(csprng: &mut T) -> Self::KeyPair
     where
         T: rand::Rng + rand::CryptoRng;
+
+    fn sign(key_pair: &Self::KeyPair, msg: &[u8]) -> Self::Signature;
+
+    fn verify(public_key: &Self::PublicKey, msg: &[u8], sig: &Self::Signature)
+        -> Result<(), Error>;
 }
 
 /// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
-pub struct ED25519;
+pub(crate) struct ED25519;
+
+// We make newtypes of all of these things so that we can impl Serialize on them in codec.rs
+
+/// A public key in the Ed25519 signature scheme
+pub(crate) struct Ed25519PublicKey(ed25519_dalek::PublicKey);
+/// A key pair in the Ed25519 signature scheme. This contains a public key and a secret key.
+pub(crate) struct Ed25519KeyPair(ed25519_dalek::Keypair);
+/// A signature in the Ed25519 signature scheme
+pub(crate) struct Ed25519Signature(ed25519_dalek::Signature);
 
 impl SignatureScheme for ED25519 {
-    type PublicKey = ed25519_dalek::PublicKey;
-    type SecretKey = ed25519_dalek::SecretKey;
-
     /// This is for serialization purposes. The MLS specifies that this is variant of the
     /// CipherSuite enum has value 0x0807.
     const ID: u16 = 0x0807;
 
-    fn secret_key_from_bytes(byte: &[u8]) -> Result<ed25519_dalek::SecretKey, Error> {
-        unimplemented!()
+    type KeyPair = Ed25519KeyPair;
+    type PublicKey = Ed25519PublicKey;
+    type Signature = Ed25519Signature;
+
+    /// Creates a public key from the provided bytes
+    fn public_key_from_bytes(bytes: &[u8]) -> Result<Ed25519PublicKey, Error> {
+        match ed25519_dalek::PublicKey::from_bytes(bytes) {
+            Ok(pubkey) => Ok(Ed25519PublicKey(pubkey)),
+            Err(_) => Err(Error::SignatureError("Invalid public key")),
+        }
     }
 
-    fn secret_key_from_random<T>(csprng: &mut T) -> Result<Self::SecretKey, Error>
+    /// Creates a key pair from the provided bytes
+    fn key_pair_from_bytes(bytes: &[u8]) -> Result<Ed25519KeyPair, Error> {
+        match ed25519_dalek::Keypair::from_bytes(bytes) {
+            Ok(keypair) => Ok(Ed25519KeyPair(keypair)),
+            Err(_) => Err(Error::SignatureError("Invalid key pair")),
+        }
+    }
+
+    /// Generates a random key pair using the given CSPRNG
+    ///
+    /// Panics: Iff the CSPRNG fails on `fill_bytes`
+    fn key_pair_from_random<T>(csprng: &mut T) -> Ed25519KeyPair
     where
         T: rand::Rng + rand::CryptoRng,
     {
-        unimplemented!()
+        Ed25519KeyPair(ed25519_dalek::Keypair::generate(csprng))
+    }
+
+    /// Computes a signature of the given message under the given secret key
+    fn sign(key_pair: &Ed25519KeyPair, msg: &[u8]) -> Ed25519Signature {
+        Ed25519Signature(key_pair.0.sign(msg))
+    }
+
+    /// Verifies the signature of the given message under the given public key
+    fn verify(
+        public_key: &Ed25519PublicKey,
+        msg: &[u8],
+        sig: &Ed25519Signature,
+    ) -> Result<(), Error> {
+        public_key
+            .0
+            .verify(msg, &sig.0)
+            .map_err(|_| Error::SignatureError("Invalid signature"))
     }
 }
 
