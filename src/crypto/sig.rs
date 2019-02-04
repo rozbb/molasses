@@ -43,9 +43,6 @@ pub(crate) struct Ed25519KeyPair {
 /// A signature in the Ed25519 signature scheme
 pub(crate) struct Ed25519Signature(ed25519_dalek::Signature);
 
-impl ED25519 {
-}
-
 impl SignatureScheme for ED25519 {
     /// This is for serialization purposes. The MLS specifies that this is variant of the
     /// CipherSuite enum has value 0x0807.
@@ -121,8 +118,7 @@ mod test {
     use super::*;
 
     use quickcheck_macros::quickcheck;
-    use rand::SeedableRng;
-    use rand_core::RngCore;
+    use rand_core::{RngCore, SeedableRng};
 
     // Test vectors are from
     // https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libgcrypt.git;a=blob;f=tests/t-ed25519.inp;h=e13566f826321eece65e02c593bc7d885b3dbe23;hb=refs/heads/master%3E
@@ -177,7 +173,7 @@ mod test {
         // Make a secret key seeded with the above seed. This is so that this function is
         // deterministic.
         let secret_key = {
-            let mut rng = rand::StdRng::seed_from_u64(secret_seed);
+            let mut rng = rand::rngs::StdRng::seed_from_u64(secret_seed);
             let mut buf = [0u8; 32];
             rng.fill_bytes(&mut buf);
             ED25519::secret_key_from_bytes(&buf).unwrap()

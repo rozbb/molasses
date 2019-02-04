@@ -63,7 +63,8 @@ impl AuthenticatedEncryption for Aes128Gcm {
     /// Returns: `Ok(key)` on success. On error (don't ask me why this could fail), returns an
     /// `Error`.
     fn key_from_bytes(key_bytes: &[u8]) -> Result<Aes128GcmKey, Error> {
-        // TODO: Once associated consts stabilizes, I want key_byte: [u8; Self::KEY_SIZE]
+        // TODO: Once it's possible to do so, I want key_byte: [u8; Self::KEY_SIZE]. This is
+        // blocked on https://github.com/rust-lang/rust/issues/39211
         if key_bytes.len() != AES_GCM_128_KEY_SIZE {
             return Err(Error::EncryptionError("AES-GCM-128 requires 128-bit keys"));
         }
