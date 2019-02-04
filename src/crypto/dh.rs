@@ -79,6 +79,7 @@ mod test {
     use super::*;
 
     use quickcheck_macros::quickcheck;
+    use rand_core::{RngCore, SeedableRng};
 
     // Diffie Hellman test vectors from https://tools.ietf.org/html/rfc7748#section-6.1
     #[test]
@@ -121,13 +122,33 @@ mod test {
         );
     }
 
+    #[quickcheck]
+    fn x25519_correctness(secret_seed: u64) {
+        // Make a secret key seeded with the above seed. This is so that this function is
+        // deterministic.
+        let (scalar1, scalar2) = {
+            let mut rng = rand::rngs::StdRng::seed_from_u64(secret_seed);
+            let mut buf1 = [0u8; 32];
+            let mut buf2 = [0u8; 32];
+            rng.fill_bytes(&mut buf1);
+            rng.fill_bytes(&mut buf2);
+            (X25519::scalar_from_bytes(&buf1).unwrap(), X25519::scalar_from_bytes(&buf2).unwrap())
+        };
+
+        let (point1, point2) =
+            (X25519::multiply_basepoint(&scalar1), X25519::multiply_basepoint(&scalar2));
+        let (shared1, shared2) =
+            (X25519::diffie_hellman(&scalar1, &point2), X25519::diffie_hellman(&scalar2, &point1));
+
+        assert_eq!(&shared1.0, &shared2.0)
+    }
+
     // This comes from
     // https://github.com/mlswg/mls-implementations/blob/master/test_vectors/treesnodes.md
     #[test]
     fn node_key_derivation_kat() {
         let scalar = {
             let hex_str = "e029fbe9de859e7bd6aea95ac258ae743a9eabccde9358420d8c975365938714";
-            eprintln!("hex_str.len() == {}", hex_str.len());
             let bytes = hex::decode(hex_str).unwrap();
             X25519::scalar_from_bytes(&bytes).expect("couldn't make scalar from bytes")
         };
@@ -139,6 +160,4 @@ mod test {
             "6667b1715a0ad45b0510e850322a8d471d4485ebcbfcc0f3bcce7bcae7b44f7f"
         );
     }
-
-    // TODO: Add randomized x25519 correctness test
 }
