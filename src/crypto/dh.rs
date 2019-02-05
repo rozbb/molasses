@@ -39,6 +39,8 @@ pub(crate) struct X25519Scalar([u8; X25519_SCALAR_SIZE]);
 /// A curve point in Curve25519
 pub(crate) struct X25519Point([u8; X25519_POINT_SIZE]);
 
+// TODO: Urgent: Do the zero checks that the specification requires
+
 impl DiffieHellman for X25519 {
     type Scalar = X25519Scalar;
     type Point = X25519Point;
@@ -132,13 +134,20 @@ mod test {
             let mut buf2 = [0u8; 32];
             rng.fill_bytes(&mut buf1);
             rng.fill_bytes(&mut buf2);
-            (X25519::scalar_from_bytes(&buf1).unwrap(), X25519::scalar_from_bytes(&buf2).unwrap())
+            (
+                X25519::scalar_from_bytes(&buf1).unwrap(),
+                X25519::scalar_from_bytes(&buf2).unwrap(),
+            )
         };
 
-        let (point1, point2) =
-            (X25519::multiply_basepoint(&scalar1), X25519::multiply_basepoint(&scalar2));
-        let (shared1, shared2) =
-            (X25519::diffie_hellman(&scalar1, &point2), X25519::diffie_hellman(&scalar2, &point1));
+        let (point1, point2) = (
+            X25519::multiply_basepoint(&scalar1),
+            X25519::multiply_basepoint(&scalar2),
+        );
+        let (shared1, shared2) = (
+            X25519::diffie_hellman(&scalar1, &point2),
+            X25519::diffie_hellman(&scalar2, &point1),
+        );
 
         assert_eq!(&shared1.0, &shared2.0)
     }

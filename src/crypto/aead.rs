@@ -180,7 +180,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
 
         match res {
             Ok(_) => Ok((authenticated_ciphertext, nonce2)),
-            Err(e) => Err(Error::EncryptionError("Unspecified")),
+            Err(_) => Err(Error::EncryptionError("Unspecified")),
         }
     }
 }
