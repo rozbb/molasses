@@ -6,6 +6,13 @@ use serde::ser::{Serialize, Serializer};
 
 // TODO: Add more helpful panic messages
 
+/// Uses `TLSSerializer` to serialize the input to a vector of bytes
+pub(crate) fn serialize_to_bytes<T: Serialize>(value: &T) -> Vec<u8> {
+    let mut serializer = TLSSerializer::new();
+    value.serialize(&mut serializer);
+    serializer.buf.into_inner()
+}
+
 // This macro gives us a way of serializing things with TLS notation like <1..2^16-1>. Here's how
 // it works: we're given some serializable value: &T and we want to encode it so that we can
 // specify its length in bytes as a prefix. So we first write 0 to the serialization buffer (that's

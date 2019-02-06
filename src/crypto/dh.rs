@@ -16,7 +16,20 @@ pub(crate) trait DiffieHellman {
     /// finite-field terminology, this is an element of the field.
     type Point;
 
+    // TODO: Once it's possible to do so, I want to return [u8; Self::POINT_SIZE]. This is
+    // blocked on https://github.com/rust-lang/rust/issues/39211
+
+    // You may ask why this function isn't implemented as part of a serialization function for
+    // Self::Point. That's because the byte representation of this here point is independent of the
+    // wire format we choose. This representation is used in the calculation of ECIES ciphertexts,
+    // which are computed independently of wire format.
+    fn point_as_bytes(point: &Self::Point) -> Vec<u8>;
+
     fn scalar_from_bytes(bytes: &[u8]) -> Result<Self::Scalar, Error>;
+
+    fn scalar_from_random<T>(csprng: &mut T) -> Result<Self::Scalar, Error>
+    where
+        T: rand::Rng + rand::CryptoRng;
 
     fn multiply_basepoint(scalar: &Self::Scalar) -> Self::Point;
 
@@ -29,7 +42,9 @@ pub(crate) trait DiffieHellman {
 // portion of the API here, without doing any actual crypto.
 //
 // NOTE: Although X25519Scalar can be initiated with arbitrary bytestrings, all scalars are clamped
-// by x25519::diffie_hellman before they are used, so chill out please.
+// by x25519_dalek::x25519() before they are used. This is the only way in which scalars are used,
+// and the structs do not implement Eq, so there's no fear of accidentally assuming unique
+// representation of scalars.
 
 /// This represents the X25519 Diffie-Hellman key agreement protocol. Notably, it implements
 /// `DiffieHellman`.
@@ -45,12 +60,17 @@ impl DiffieHellman for X25519 {
     type Scalar = X25519Scalar;
     type Point = X25519Point;
 
-    /// Uses the key bytes as a scalar in GF(2^(255) - 19)
+    /// Outputs the internal byte representation of a given point
+    fn point_as_bytes(point: &Self::Point) -> Vec<u8> {
+        point.0.to_vec()
+    }
+
+    /// Uses the given bytes as a scalar in GF(2^(255) - 19)
     ///
-    /// Requires: `key_bytes.len() == 32`
+    /// Requires: `bytes.len() == 32`
     ///
-    /// Returns: `Ok(privkey)` on success. Otherwise, if `key_bytes.len() != 32`, returns
-    /// `Error::CryptoError`.
+    /// Returns: `Ok(scalar)` on success. Otherwise, if `bytes.len() != 32`, returns
+    /// `Error::DHError`.
     fn scalar_from_bytes(bytes: &[u8]) -> Result<X25519Scalar, Error> {
         if bytes.len() != X25519_SCALAR_SIZE {
             return Err(Error::DHError("Wrong key size"));
@@ -59,6 +79,19 @@ impl DiffieHellman for X25519 {
             buf.copy_from_slice(bytes);
             Ok(X25519Scalar(buf))
         }
+    }
+
+    /// Generates a random scalar value
+    ///
+    /// Returns: `Ok(scalar)` on success. Otherwise, if something goes wrong with the RNG, it
+    /// returns `Error::OutOfEntropy`.
+    fn scalar_from_random<T>(csprng: &mut T) -> Result<Self::Scalar, Error>
+    where
+        T: rand::Rng + rand::CryptoRng,
+    {
+        let mut buf = [0u8; X25519_SCALAR_SIZE];
+        csprng.try_fill(&mut buf).map_err(|_| Error::OutOfEntropy)?;
+        Ok(X25519Scalar(buf))
     }
 
     /// Calculates `scalar * P`, where `P` is the standard X25519 basepoint. This function is used

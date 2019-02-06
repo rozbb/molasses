@@ -265,6 +265,7 @@ mod test {
     use quickcheck::TestResult;
     use quickcheck_macros::quickcheck;
     use rand::Rng;
+    use serde::ser::Serialize;
 
     #[test]
     fn log2_kat() {
@@ -455,7 +456,13 @@ mod test {
     // https://github.com/mlswg/mls-implementations/blob/master/test_vectors/treemath.md
     //
 
-    macro_rules! unitary_func_test {(
+    // Anything that goes in this struct will get serialized with a u32 length tag
+    #[derive(Serialize)]
+    #[serde(rename = "ContainerU32__bound_u32")]
+    struct ContainerU32<T: Serialize>(T);
+
+    macro_rules! unitary_func_test {
+        (
         $name:ident,
         $size:expr,
         [$range_low:expr, $range_high:expr],
@@ -471,16 +478,16 @@ mod test {
                     test_vector.push(res as u32);
                 }
 
-                let mut serializer = crate::tls_ser::TLSSerializer::new();
-                crate::tls_ser::serialize_with_bound_u32(&test_vector, &mut &mut serializer);
-                let serialized_vec = hex::encode(&serializer.into_vec());
+                let dummy_container = ContainerU32(test_vector);
+                let serialized_vec = crate::tls_ser::serialize_to_bytes(&dummy_container);
 
-                assert_eq!(serialized_vec, $expected);
+                assert_eq!(hex::encode(&serialized_vec), $expected);
             }
         };
     }
 
-    macro_rules! binary_func_test {(
+    macro_rules! binary_func_test {
+        (
         $name:ident,
         $size:expr,
         [$range_low:expr, $range_high:expr],
@@ -496,11 +503,10 @@ mod test {
                     test_vector.push(res as u32);
                 }
 
-                let mut serializer = crate::tls_ser::TLSSerializer::new();
-                crate::tls_ser::serialize_with_bound_u32(&test_vector, &mut &mut serializer);
-                let serialized_vec = hex::encode(&serializer.into_vec());
+                let dummy_container = ContainerU32(test_vector);
+                let serialized_vec = crate::tls_ser::serialize_to_bytes(&dummy_container);
 
-                assert_eq!(serialized_vec, $expected);
+                assert_eq!(hex::encode(serialized_vec), $expected);
             }
         };
     }
@@ -538,7 +544,7 @@ mod test {
     unitary_func_test!(
         node_level_kat,
         255,
-        [0,253],
+        [0, 253],
         node_level,
         "000003f8000000000000000100000000000000020000000000000001000000000000000300000000000000010\
          00000000000000200000000000000010000000000000004000000000000000100000000000000020000000000\
@@ -568,7 +574,7 @@ mod test {
     unitary_func_test!(
         node_width_kat,
         255,
-        [1,254],
+        [1, 254],
         num_nodes_in_tree,
         "000003f800000001000000030000000500000007000000090000000b0000000d0000000f00000011000000130\
          000001500000017000000190000001b0000001d0000001f000000210000002300000025000000270000002900\
@@ -598,7 +604,7 @@ mod test {
     unitary_func_test!(
         node_left_child_kat,
         255,
-        [0,253],
+        [0, 253],
         node_left_child,
         "000003f8000000000000000000000002000000010000000400000004000000060000000300000008000000080\
          000000a000000090000000c0000000c0000000e00000007000000100000001000000012000000110000001400\
@@ -628,7 +634,7 @@ mod test {
     binary_func_test!(
         node_right_child_kat,
         255,
-        [0,253],
+        [0, 253],
         node_right_child,
         "000003f8000000000000000200000002000000050000000400000006000000060000000b000000080000000a0\
          000000a0000000d0000000c0000000e0000000e00000017000000100000001200000012000000150000001400\
@@ -658,7 +664,7 @@ mod test {
     binary_func_test!(
         node_parent_kat,
         255,
-        [0,253],
+        [0, 253],
         node_parent,
         "000003f8000000010000000300000001000000070000000500000003000000050000000f000000090000000b0\
          0000009000000070000000d0000000b0000000d0000001f000000110000001300000011000000170000001500\
@@ -688,7 +694,7 @@ mod test {
     binary_func_test!(
         node_sibling_kat,
         255,
-        [0,253],
+        [0, 253],
         node_sibling,
         "000003f80000000200000005000000000000000b000000060000000100000004000000170000000a0000000d0\
          0000008000000030000000e000000090000000c0000002f0000001200000015000000100000001b0000001600\
