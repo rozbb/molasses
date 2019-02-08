@@ -210,12 +210,12 @@ impl<'a> Serializer for &'a mut TLSSerializer {
         }
     }
 
-    /// `TLSSerializer` is also a `SeqSerializer` (see impl below)
+    /// `TLSSerializer` is also a `SerializeSeq` (see impl below)
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
         Ok(self)
     }
 
-    /// `TLSSerializer` is also a `StructSerializer` (see impl below)
+    /// `TLSSerializer` is also a `SerializeStruct` (see impl below)
     fn serialize_struct(
         self,
         name: &'static str,
@@ -283,15 +283,20 @@ impl<'a> Serializer for &'a mut TLSSerializer {
     }
     fn serialize_newtype_variant<T>(
         self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
-        unimplemented!()
+        if name.ends_with("__enum_u8") {
+            self.serialize_u8(variant_index as u8)?;
+            value.serialize(self)
+        } else {
+            value.serialize(self)
+        }
     }
     fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
         unimplemented!()
