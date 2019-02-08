@@ -2,6 +2,7 @@ use crate::crypto::{aead::AuthenticatedEncryption, ciphersuite::CipherSuite, dh:
 use crate::error::Error;
 
 use hmac::Hmac;
+use serde::ser::Serialize;
 
 /// A label struct used for ECIES key/nonce derivation
 #[derive(Serialize, Deserialize)]
@@ -70,7 +71,7 @@ fn ecies_decrypt<CS>(
     }: EciesCiphertext<CS>,
 ) -> Result<Vec<u8>, Error>
 where
-    CS: CipherSuite,
+    CS: CipherSuite
 {
     // This is `abP` where `bP` is the other person's public key is `bP` and my secret key is `a`
     let shared_secret =
