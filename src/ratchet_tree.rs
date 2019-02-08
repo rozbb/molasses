@@ -1,9 +1,9 @@
-use crate::crypto::{ciphersuite::CipherSuite, dh::DiffieHellman};
+use crate::crypto::dh::{DhPoint, DhScalar};
 use crate::tree_math;
 
-/// A node in a `RatchetTree` with ciphersuite `CS`. Every node must have a DH pubkey. It may also
-/// optionally contain the corresponding private key and a secret octet string.
-pub(crate) enum RatchetTreeNode<CS: CipherSuite> {
+/// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
+/// corresponding private key and a secret octet string.
+pub(crate) enum RatchetTreeNode {
     Blank,
     Filled {
         // To explain this notation a bit: CS::DH is the associated DH type of the given
@@ -13,21 +13,21 @@ pub(crate) enum RatchetTreeNode<CS: CipherSuite> {
         // necessary, since if, hypothetically it were the case that DH: Foo + Bar and both Foo and
         // Bar had the associated type Baz, then DH::Baz would be ambiguous. Instead, you'd write
         // <DH as Foo>::Baz or <DH as Bar>::Baz.
-        pubkey: <CS::DH as DiffieHellman>::Point,
-        privkey: Option<<CS::DH as DiffieHellman>::Scalar>,
+        pubkey: DhPoint,
+        privkey: Option<DhScalar>,
         secret: Option<Vec<u8>>,
     },
 }
 
 /// A left-balanced binary tree of `RatchetTreeNode`s
 // Contains a vector of nodes that could optionally be blanks
-pub(crate) struct RatchetTree<CS: CipherSuite> {
-    nodes: Vec<RatchetTreeNode<CS>>,
+pub(crate) struct RatchetTree {
+    nodes: Vec<RatchetTreeNode>,
 }
 
-impl<CS: CipherSuite> RatchetTree<CS> {
+impl RatchetTree {
     /// Returns an new empty `RatchetTree`
-    pub fn new() -> RatchetTree<CS> {
+    pub fn new() -> RatchetTree {
         RatchetTree { nodes: Vec::new() }
     }
 
@@ -45,7 +45,7 @@ impl<CS: CipherSuite> RatchetTree<CS> {
     //                                        / \     / \    |
     //                                       A   B   C   D   E
     //                                       0 1 2 3 4 5 6 7 8
-    pub fn add_leaf_node(&mut self, node: RatchetTreeNode<CS>) {
+    pub fn add_leaf_node(&mut self, node: RatchetTreeNode) {
         if self.nodes.is_empty() {
             self.nodes.push(node);
             return;
@@ -57,11 +57,11 @@ impl<CS: CipherSuite> RatchetTree<CS> {
 
     /// Returns the resolution of a given node: this an ordered list of non-blank nodes that
     /// collectively cover all non-blank descendants of the given node.
-    fn resolution(&self, idx: usize) -> Vec<&RatchetTreeNode<CS>> {
-        fn helper<'a, T: CipherSuite>(
+    fn resolution(&self, idx: usize) -> Vec<&RatchetTreeNode> {
+        fn helper<'a>(
             i: usize,
-            nodes: &'a Vec<RatchetTreeNode<T>>,
-            acc: &mut Vec<&'a RatchetTreeNode<T>>,
+            nodes: &'a Vec<RatchetTreeNode>,
+            acc: &mut Vec<&'a RatchetTreeNode>,
         ) {
             let num_leaves = tree_math::num_leaves_in_tree(nodes.len());
             match &nodes[i] {
@@ -86,7 +86,7 @@ impl<CS: CipherSuite> RatchetTree<CS> {
 
     // This has the same functionality as RatchetTreeIter, so one of them's got to go
     /// Turns a list of node indices into an iterator of tree nodes
-    fn make_node_iter(&self, indices: Vec<usize>) -> impl Iterator<Item = &RatchetTreeNode<CS>> {
+    fn make_node_iter(&self, indices: Vec<usize>) -> impl Iterator<Item = &RatchetTreeNode> {
         indices
             .into_iter()
             .map(move |i| self.nodes.get(i).expect("invalid index encountered"))
@@ -96,13 +96,13 @@ impl<CS: CipherSuite> RatchetTree<CS> {
 // This has the same functionality as make_node_iter, so one of them's got to go
 /// An iterator that holds a queue of indices into a RatchetTree, and returns references to the
 /// corresponding nodes in the tree.
-struct RatchetTreeIter<'a, CS: CipherSuite> {
-    underlying_tree: &'a RatchetTree<CS>,
+struct RatchetTreeIter<'a> {
+    underlying_tree: &'a RatchetTree,
     index_iter: std::vec::IntoIter<usize>,
 }
 
-impl<'a, CS: CipherSuite> RatchetTreeIter<'a, CS> {
-    fn new(underlying_tree: &'a RatchetTree<CS>, indices: Vec<usize>) -> RatchetTreeIter<'a, CS> {
+impl<'a> RatchetTreeIter<'a> {
+    fn new(underlying_tree: &'a RatchetTree, indices: Vec<usize>) -> RatchetTreeIter<'a> {
         let index_iter = indices.into_iter();
 
         RatchetTreeIter {
@@ -112,10 +112,10 @@ impl<'a, CS: CipherSuite> RatchetTreeIter<'a, CS> {
     }
 }
 
-impl<'a, CS: CipherSuite> Iterator for RatchetTreeIter<'a, CS> {
-    type Item = &'a RatchetTreeNode<CS>;
+impl<'a> Iterator for RatchetTreeIter<'a> {
+    type Item = &'a RatchetTreeNode;
 
-    fn next(&mut self) -> Option<&'a RatchetTreeNode<CS>> {
+    fn next(&mut self) -> Option<&'a RatchetTreeNode> {
         self.index_iter.next().map(|idx| {
             self.underlying_tree
                 .nodes
@@ -127,16 +127,16 @@ impl<'a, CS: CipherSuite> Iterator for RatchetTreeIter<'a, CS> {
 
 /// An iterator that holds a queue of indices into a RatchetTree, and returns references to the
 /// corresponding nodes in the tree.
-struct RatchetTreeIterMut<'a, CS: CipherSuite> {
-    underlying_tree: &'a mut RatchetTree<CS>,
+struct RatchetTreeIterMut<'a> {
+    underlying_tree: &'a mut RatchetTree,
     index_iter: std::vec::IntoIter<usize>,
 }
 
-impl<'a, CS: CipherSuite> RatchetTreeIterMut<'a, CS> {
+impl<'a> RatchetTreeIterMut<'a> {
     fn new(
-        underlying_tree: &'a mut RatchetTree<CS>,
+        underlying_tree: &'a mut RatchetTree,
         mut indices: Vec<usize>,
-    ) -> RatchetTreeIterMut<'a, CS> {
+    ) -> RatchetTreeIterMut<'a> {
         // We can't return a &mut to the same node twice, since that would violate aliasing
         // guarantees, i.e., we'd have two mutable references to the same data, which is Bad. So
         // dedup the vector beforehand. Remember that an index uniquely identifies a node, so we're
@@ -152,10 +152,10 @@ impl<'a, CS: CipherSuite> RatchetTreeIterMut<'a, CS> {
 }
 
 // This needs unsafe code in order to exist. I might delete this if there's little use for it.
-impl<'a, CS: CipherSuite> Iterator for RatchetTreeIterMut<'a, CS> {
-    type Item = &'a mut RatchetTreeNode<CS>;
+impl<'a> Iterator for RatchetTreeIterMut<'a> {
+    type Item = &'a mut RatchetTreeNode;
 
-    fn next(&mut self) -> Option<&'a mut RatchetTreeNode<CS>> {
+    fn next(&mut self) -> Option<&'a mut RatchetTreeNode> {
         self.index_iter.next().map(|idx| {
             let mut_ref = self
                 .underlying_tree

@@ -2,8 +2,12 @@
 #[macro_use]
 extern crate serde;
 
-mod codec;
-mod credential;
+// Internal modules still need macro_use
+#[macro_use]
+mod utils;
+
+//mod codec;
+//mod credential;
 pub mod crypto;
 pub mod error;
 pub mod ratchet_tree;
