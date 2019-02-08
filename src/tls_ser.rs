@@ -7,10 +7,10 @@ use serde::ser::{Serialize, Serializer};
 // TODO: Add more helpful panic messages
 
 /// Uses `TLSSerializer` to serialize the input to a vector of bytes
-pub(crate) fn serialize_to_bytes<T: Serialize>(value: &T) -> Vec<u8> {
+pub(crate) fn serialize_to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     let mut serializer = TLSSerializer::new();
-    value.serialize(&mut serializer);
-    serializer.buf.into_inner()
+    value.serialize(&mut serializer)?;
+    Ok(serializer.buf.into_inner())
 }
 
 // This macro gives us a way of serializing things with TLS notation like <1..2^16-1>. Here's how
