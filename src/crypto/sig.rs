@@ -1,114 +1,96 @@
+use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
-/// A trait representing a digital signature scheme
-pub(crate) trait SignatureScheme {
-    const ID: u16;
+pub(crate) const ED25519_IMPL: SignatureScheme = SignatureScheme { id: 0x0807 };
 
-    type PublicKey;
-    type SecretKey;
-    type Signature;
-
-    fn public_key_from_bytes(bytes: &[u8]) -> Result<Self::PublicKey, Error>;
-
-    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Self::SecretKey, Error>;
-
-    fn secret_key_from_random<T>(csprng: &mut T) -> Self::SecretKey
-    where
-        T: rand::Rng + rand::CryptoRng;
-
-    fn public_key_from_secret_key(secret: &Self::SecretKey) -> Self::PublicKey;
-
-    fn sign(secret: &Self::SecretKey, msg: &[u8]) -> Self::Signature;
-
-    fn verify(public_key: &Self::PublicKey, msg: &[u8], sig: &Self::Signature)
-        -> Result<(), Error>;
+/// An enum of possible types for a signature scheme's public key, depending on the underlying
+/// algorithm
+pub(crate) enum SigPublicKey {
+    Ed25519PublicKey(ed25519_dalek::PublicKey),
+}
+/// An enum of possible types for a signature scheme's secret key, depending on the underlying
+/// algorithm
+pub(crate) enum SigSecretKey {
+    Ed25519SecretKey(ed25519_dalek::SecretKey),
 }
 
-/// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
-pub(crate) struct ED25519;
-
-// We make newtypes of all of these things so that we can impl Serialize on them in codec.rs
-
-/// A public key in the Ed25519 signature scheme
-pub(crate) struct Ed25519PublicKey(ed25519_dalek::PublicKey);
-/// A private key in the Ed25519 signature scheme
-pub(crate) struct Ed25519SecretKey(ed25519_dalek::SecretKey);
-/*
-/// A key pair in the Ed25519 signature scheme. This contains a public key and a secret key.
-pub(crate) struct Ed25519KeyPair {
-    pub(crate) secret: Ed25519SecretKey,
-    pub(crate) public: Ed25519PublicKey,
+/// An enum of possible types for a signature scheme's signature, depending on the underlying
+/// algorithm
+pub(crate) enum Signature {
+    Ed25519Signature(ed25519_dalek::Signature),
 }
-*/
-/// A signature in the Ed25519 signature scheme
-pub(crate) struct Ed25519Signature(ed25519_dalek::Signature);
 
-impl SignatureScheme for ED25519 {
-    /// This is for serialization purposes. The MLS specifies that this is variant of the
-    /// CipherSuite enum has value 0x0807.
-    const ID: u16 = 0x0807;
+/// Represents the contents of an MLS signature scheme. Currently, this only implements Ed25519.
+/// The ID field is for serialization purposes.
+pub(crate) struct SignatureScheme {
+    pub(crate) id: u16,
+}
 
-    type PublicKey = Ed25519PublicKey;
-    type SecretKey = Ed25519SecretKey;
-    type Signature = Ed25519Signature;
-
+impl SignatureScheme {
     /// Creates a public key from the provided bytes
     ///
     /// Returns: `Ok(public_key)` iff no error occured. Otherwise, returns an
     /// `Err(Error::SignatureError)`.
-    fn public_key_from_bytes(bytes: &[u8]) -> Result<Ed25519PublicKey, Error> {
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error> {
         match ed25519_dalek::PublicKey::from_bytes(bytes) {
-            Ok(pubkey) => Ok(Ed25519PublicKey(pubkey)),
+            Ok(pubkey) => Ok(SigPublicKey::Ed25519PublicKey(pubkey)),
             Err(_) => Err(Error::SignatureError("Invalid public key")),
         }
     }
 
     /// Creates a key pair from the provided secret key bytes. This expects 32 bytes.
-    fn secret_key_from_bytes(bytes: &[u8]) -> Result<Ed25519SecretKey, Error> {
+    fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
         match ed25519_dalek::SecretKey::from_bytes(bytes) {
-            Ok(secret) => Ok(Ed25519SecretKey(secret)),
+            Ok(secret) => Ok(SigSecretKey::Ed25519SecretKey(secret)),
             Err(_) => Err(Error::SignatureError("Invalid secret key")),
         }
     }
 
     /// Generates a random key pair using the given CSPRNG
     ///
-    /// Panics: Iff the CSPRNG fails on `fill_bytes`
-    fn secret_key_from_random<T>(csprng: &mut T) -> Ed25519SecretKey
-    where
-        T: rand::Rng + rand::CryptoRng,
-    {
-        Ed25519SecretKey(ed25519_dalek::SecretKey::generate(csprng))
+    /// Returns: `Ok(secret_key)` on success. On error, returns `Error::SignatureErrror` or
+    /// `Error::OutOfEntropy`.
+    fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error> {
+        let mut key_bytes = [0u8; 32];
+        csprng
+            .try_fill_bytes(&mut key_bytes)
+            .map_err(|_| Error::OutOfEntropy);
+        let key = ed25519_dalek::SecretKey::from_bytes(&key_bytes)
+            .map_err(|_| Error::SignatureError("Could not make key from random"))?;
+        Ok(SigSecretKey::Ed25519SecretKey(key))
     }
 
     /// Computes the public key corresponding to the given secret key. This is done in the same way
-    /// that ed25519_dalek does it.
-    fn public_key_from_secret_key(secret: &Ed25519SecretKey) -> Ed25519PublicKey {
-        Ed25519PublicKey((&secret.0).into())
+    /// that `ed25519_dalek` does it.
+    fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey {
+        let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
+        SigPublicKey::Ed25519PublicKey(secret.into())
     }
 
     /// Computes a signature of the given message under the given secret key
-    fn sign(secret: &Ed25519SecretKey, msg: &[u8]) -> Ed25519Signature {
+    fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
         // For simplicity, we add the overhead of recomputing the public key on every signature
         // operation instead of having it passed into the function. Sue me.
-        let public = ED25519::public_key_from_secret_key(secret);
-        let expanded: ed25519_dalek::ExpandedSecretKey = (&secret.0).into();
+        let public = ED25519_IMPL.public_key_from_secret_key(secret);
 
-        Ed25519Signature(expanded.sign(&msg, &public.0))
+        let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
+        let public = enum_variant!(public, SigPublicKey::Ed25519PublicKey);
+
+        let expanded: ed25519_dalek::ExpandedSecretKey = secret.into();
+
+        Signature::Ed25519Signature(expanded.sign(&msg, &public))
     }
 
     /// Verifies the signature of the given message under the given public key
     ///
     /// Returns: `Ok(())` iff the signature succeeded. Otherwise, returns an
     /// `Err(Error::SignatureError)` which is a lot of errors, so you know it's bad.
-    fn verify(
-        public_key: &Ed25519PublicKey,
-        msg: &[u8],
-        sig: &Ed25519Signature,
-    ) -> Result<(), Error> {
+    fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
+        let public_key = enum_variant!(public_key, SigPublicKey::Ed25519PublicKey);
+        let sig = enum_variant!(sig, Signature::Ed25519Signature);
+
         public_key
-            .0
-            .verify(msg, &sig.0)
+            .verify(msg, sig)
             .map_err(|_| Error::SignatureError("Invalid signature"))
     }
 }
@@ -148,23 +130,31 @@ mod test {
             let msg = hex::decode(msg_hex).unwrap();
             let secret = {
                 let bytes = hex::decode(secret_hex).unwrap();
-                ED25519::secret_key_from_bytes(&bytes).unwrap()
+                ED25519_IMPL.secret_key_from_bytes(&bytes).unwrap()
             };
             let expected_public = {
                 let bytes = hex::decode(public_hex).unwrap();
-                ED25519::public_key_from_bytes(&bytes).unwrap()
+                let pubkey = ED25519_IMPL.public_key_from_bytes(&bytes).unwrap();
+                enum_variant!(pubkey, SigPublicKey::Ed25519PublicKey)
+            };
+            let derived_public = {
+                let pubkey = ED25519_IMPL.public_key_from_secret_key(&secret);
+                enum_variant!(pubkey, SigPublicKey::Ed25519PublicKey)
             };
 
             // Make sure the expected public key and the public key we derived are the same
             assert_eq!(
-                expected_public.0.to_bytes(),
-                ED25519::public_key_from_secret_key(&secret).0.to_bytes()
+                expected_public.to_bytes(),
+                derived_public.to_bytes()
             );
 
-            let sig = ED25519::sign(&secret, &msg);
+            let derived_sig = {
+                let sig = ED25519_IMPL.sign(&secret, &msg);
+                enum_variant!(sig, Signature::Ed25519Signature)
+            };
             let expected_sig = hex::decode(sig_hex).unwrap();
 
-            assert_eq!(sig.0.to_bytes().to_vec(), expected_sig);
+            assert_eq!(expected_sig, derived_sig.to_bytes().to_vec());
         }
     }
 
@@ -176,14 +166,14 @@ mod test {
             let mut rng = rand::rngs::StdRng::seed_from_u64(secret_seed);
             let mut buf = [0u8; 32];
             rng.fill_bytes(&mut buf);
-            ED25519::secret_key_from_bytes(&buf).unwrap()
+            ED25519_IMPL.secret_key_from_bytes(&buf).unwrap()
         };
-        let public_key = ED25519::public_key_from_secret_key(&secret_key);
+        let public_key = ED25519_IMPL.public_key_from_secret_key(&secret_key);
 
         // Sign the random message we were given
-        let sig = ED25519::sign(&secret_key, &msg);
+        let sig = ED25519_IMPL.sign(&secret_key, &msg);
 
         // Make sure the signature we just made is valid
-        assert!(ED25519::verify(&public_key, &msg, &sig).is_ok());
+        assert!(ED25519_IMPL.verify(&public_key, &msg, &sig).is_ok());
     }
 }

@@ -6,8 +6,8 @@ extern crate serde;
 #[macro_use]
 mod utils;
 
-//mod codec;
-//mod credential;
+mod codec;
+mod credential;
 pub mod crypto;
 pub mod error;
 pub mod ratchet_tree;

@@ -93,7 +93,9 @@ impl DiffieHellman for X25519 {
     /// returns `Error::OutOfEntropy`.
     fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhScalar, Error> {
         let mut buf = [0u8; X25519_SCALAR_SIZE];
-        csprng.try_fill_bytes(&mut buf).map_err(|_| Error::OutOfEntropy)?;
+        csprng
+            .try_fill_bytes(&mut buf)
+            .map_err(|_| Error::OutOfEntropy)?;
         Ok(DhScalar::X25519Scalar(buf))
     }
 
@@ -130,12 +132,16 @@ mod test {
         let alice_scalar = {
             let hex_str = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL.scalar_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+            X25519_IMPL
+                .scalar_from_bytes(&bytes)
+                .expect("couldn't make scalar from bytes")
         };
         let bob_scalar = {
             let hex_str = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL.scalar_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+            X25519_IMPL
+                .scalar_from_bytes(&bytes)
+                .expect("couldn't make scalar from bytes")
         };
 
         // Compute aP and bP where a is Alice's scalar, and b is Bob's
@@ -212,7 +218,9 @@ mod test {
         let scalar = {
             let hex_str = "e029fbe9de859e7bd6aea95ac258ae743a9eabccde9358420d8c975365938714";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL.scalar_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+            X25519_IMPL
+                .scalar_from_bytes(&bytes)
+                .expect("couldn't make scalar from bytes")
         };
 
         let pubkey = X25519_IMPL.multiply_basepoint(&scalar);

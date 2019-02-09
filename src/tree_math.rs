@@ -479,7 +479,7 @@ mod test {
                 }
 
                 let dummy_container = ContainerU32(test_vector);
-                let serialized_vec = crate::tls_ser::serialize_to_bytes(&dummy_container);
+                let serialized_vec = crate::tls_ser::serialize_to_bytes(&dummy_container).unwrap();
 
                 assert_eq!(hex::encode(&serialized_vec), $expected);
             }
@@ -504,7 +504,7 @@ mod test {
                 }
 
                 let dummy_container = ContainerU32(test_vector);
-                let serialized_vec = crate::tls_ser::serialize_to_bytes(&dummy_container);
+                let serialized_vec = crate::tls_ser::serialize_to_bytes(&dummy_container).unwrap();
 
                 assert_eq!(hex::encode(serialized_vec), $expected);
             }

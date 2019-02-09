@@ -93,12 +93,13 @@ impl AuthenticatedEncryption for Aes128Gcm {
     /// Makes a new secure-random AES-GCM key.
     ///
     /// Returns: `Ok(key)` on success. On error , returns `Error::OutOfEntropy`.
-    fn key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<AeadKey, Error>
-    {
+    fn key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<AeadKey, Error> {
         let mut key = [0u8; AES_GCM_128_KEY_SIZE];
         // This could fail for a number of reasons, but the net result is that we don't have
         // random bytes anymore
-        csprng.try_fill_bytes(&mut key).map_err(|_| Error::OutOfEntropy)?;
+        csprng
+            .try_fill_bytes(&mut key)
+            .map_err(|_| Error::OutOfEntropy)?;
 
         self.key_from_bytes(&key)
     }
@@ -115,7 +116,9 @@ impl AuthenticatedEncryption for Aes128Gcm {
 
         let mut nonce = [0u8; AES_GCM_128_NONCE_SIZE];
         nonce.copy_from_slice(nonce_bytes);
-        Ok(AeadNonce::Aes128GcmNonce(ring::aead::Nonce::assume_unique_for_key(nonce)))
+        Ok(AeadNonce::Aes128GcmNonce(
+            ring::aead::Nonce::assume_unique_for_key(nonce),
+        ))
     }
 
     /// Does an in-place authenticated decryption of the given ciphertext and tag. The input should
@@ -156,7 +159,12 @@ impl AuthenticatedEncryption for Aes128Gcm {
     ///
     /// Returns: `Ok(ct)` upon success, where `ct` is the authenticated ciphertext . If encryption
     /// fails, an `Error::EncryptionError` is returned.
-    fn seal(&self, key: &AeadKey, nonce: AeadNonce, mut plaintext: Vec<u8>) -> Result<Vec<u8>, Error> {
+    fn seal(
+        &self,
+        key: &AeadKey,
+        nonce: AeadNonce,
+        mut plaintext: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
         let nonce = enum_variant!(nonce, AeadNonce::Aes128GcmNonce);
 
@@ -215,13 +223,17 @@ mod test {
     #[quickcheck]
     fn aes_gcm_correctness(plaintext: Vec<u8>, rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        let key = AES128GCM_IMPL.key_from_random(&mut rng).expect("failed to generate key");
+        let key = AES128GCM_IMPL
+            .key_from_random(&mut rng)
+            .expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
 
-        let mut auth_ciphertext =
-            AES128GCM_IMPL.seal(&key, nonce1, plaintext.clone()).expect("failed to encrypt");
-        let recovered_plaintext = AES128GCM_IMPL.open(&key, nonce2, auth_ciphertext.as_mut_slice())
+        let mut auth_ciphertext = AES128GCM_IMPL
+            .seal(&key, nonce1, plaintext.clone())
+            .expect("failed to encrypt");
+        let recovered_plaintext = AES128GCM_IMPL
+            .open(&key, nonce2, auth_ciphertext.as_mut_slice())
             .expect("failed to decrypt");
 
         // Make sure we get out what we put in
@@ -233,12 +245,15 @@ mod test {
     #[quickcheck]
     fn aes_gcm_integrity_ct_and_tag(plaintext: Vec<u8>, rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        let key = AES128GCM_IMPL.key_from_random(&mut rng).expect("failed to generate key");
+        let key = AES128GCM_IMPL
+            .key_from_random(&mut rng)
+            .expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
 
-        let mut auth_ciphertext =
-            AES128GCM_IMPL.seal(&key, nonce1, plaintext).expect("failed to encrypt");
+        let mut auth_ciphertext = AES128GCM_IMPL
+            .seal(&key, nonce1, plaintext)
+            .expect("failed to encrypt");
 
         // Make a random byte string that's exactly the length of the authenticated ciphertext.
         // We'll XOR these bytes with the authenticated ciphertext.
@@ -267,12 +282,15 @@ mod test {
         }
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        let key = AES128GCM_IMPL.key_from_random(&mut rng).expect("failed to generate key");
+        let key = AES128GCM_IMPL
+            .key_from_random(&mut rng)
+            .expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
 
-        let mut auth_ciphertext =
-            AES128GCM_IMPL.seal(&key, nonce1, plaintext).expect("failed to encrypt");
+        let mut auth_ciphertext = AES128GCM_IMPL
+            .seal(&key, nonce1, plaintext)
+            .expect("failed to encrypt");
 
         // Make a random byte string that's exactly the length of the authenticated ciphertext,
         // minus the tag length. We'll XOR these bytes with the ciphertext part.

@@ -20,7 +20,7 @@ pub(crate) const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
 /// hashing algorithm, and an authenticated encryption algorithm.
 pub(crate) struct CipherSuite {
     /// For serialization purposes
-    id: u16,
+    pub(crate) id: u16,
     /// The trait object that implements our key exchange functionality
     dh_impl: &'static dyn DiffieHellman,
     /// The trait object that implements our authenticated encryption functionality
@@ -41,7 +41,7 @@ pub(crate) struct CipherSuite {
 impl CipherSuite {
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
     /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
-    fn derive_key_pair(&self, bytes: &[u8],) -> Result<(DhPoint, DhScalar), Error> {
+    fn derive_key_pair(&self, bytes: &[u8]) -> Result<(DhPoint, DhScalar), Error> {
         let digest = ring::digest::digest(self.hash_alg, bytes);
         let scalar_bytes = digest.as_ref();
 

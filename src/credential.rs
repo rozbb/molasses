@@ -1,4 +1,4 @@
-use crate::crypto::sig::SignatureScheme;
+use crate::crypto::sig::{SigPublicKey, SignatureScheme};
 
 use serde::{de::Deserialize, ser::Serialize};
 
@@ -14,13 +14,13 @@ struct X509CertData(Vec<u8>);
 #[serde(rename = "Identity__bound_u16")]
 pub(crate) struct Identity(pub(crate) Vec<u8>);
 
-pub(crate) struct BasicCredential<SS: SignatureScheme> {
+pub(crate) struct BasicCredential {
     pub(crate) identity: Identity,
-    pub(crate) signature_scheme: SS,
-    pub(crate) public_key: SS::PublicKey,
+    pub(crate) signature_scheme: &'static SignatureScheme,
+    pub(crate) public_key: SigPublicKey,
 }
 
-enum Credential<SS: SignatureScheme> {
-    Basic(BasicCredential<SS>),
+enum Credential {
+    Basic(BasicCredential),
     X509(X509CertData),
 }
