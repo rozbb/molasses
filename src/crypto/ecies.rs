@@ -25,21 +25,24 @@ impl EciesLabel {
 }
 
 /// A short ciphertext encrypted with the enclosed ephemeral DH key
-struct EciesCiphertext {
+struct EciesCiphertext<'a> {
     /// Pubkey the ciphertext is encrypted under
     ephemeral_public_key: DhPoint,
     /// The payload
     // opaque ciphertext<0..255>;
-    ciphertext: Vec<u8>,
+    ciphertext: &'a mut [u8],
 }
 
-/// Performs an ECIES encryption of a given plaintext under a given DH public key
-fn ecies_encrypt(
+/// Performs an ECIES encryption of a given plaintext under a given DH public key.
+///
+/// Requires: `plaintext` must have the form `message || extra` where `extra` is the tag length of
+/// the underlying authenticated encryption algorithm
+fn ecies_encrypt<'a>(
     cs: &CipherSuite,
     others_public_key: &DhPoint,
-    plaintext: Vec<u8>,
+    plaintext: &'a mut [u8],
     csprng: &mut dyn CryptoRng,
-) -> Result<EciesCiphertext, Error> {
+) -> Result<EciesCiphertext<'a>, Error> {
     // Denote this by `a`
     let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
     // Denote this by `aP`
@@ -53,7 +56,9 @@ fn ecies_encrypt(
 
     let (key, nonce) = derive_ecies_key_nonce(cs, &shared_secret_bytes);
 
-    let ciphertext = cs.aead_impl.seal(&key, nonce, plaintext)?;
+    cs.aead_impl.seal(&key, nonce, plaintext)?;
+    // Rename for clarity
+    let ciphertext = plaintext;
 
     let ret = EciesCiphertext {
         ephemeral_public_key: my_ephemeral_public_key,
@@ -62,14 +67,19 @@ fn ecies_encrypt(
     Ok(ret)
 }
 
-fn ecies_decrypt(
+/// Performs an ECIES decryption of a given ciphertext under a given DH ephemeral public key and
+/// known secret
+///
+/// Returns: `Ok(plaintext)` on success, where `plaintext` is a `&mut [u8]` to the decrypted
+/// plaintext corresponding to the ciphertext. Returns some sort of `Error` otherwise.
+fn ecies_decrypt<'a>(
     cs: &CipherSuite,
     my_secret_key: &DhScalar,
     EciesCiphertext {
         ephemeral_public_key,
-        mut ciphertext,
-    }: EciesCiphertext,
-) -> Result<Vec<u8>, Error> {
+        ciphertext,
+    }: EciesCiphertext<'a>,
+) -> Result<&'a mut [u8], Error> {
     // This is `abP` where `bP` is the other person's public key is `bP` and my secret key is `a`
     let shared_secret = cs
         .dh_impl
@@ -77,16 +87,7 @@ fn ecies_decrypt(
     let shared_secret_bytes = cs.dh_impl.point_as_bytes(&shared_secret);
 
     let (key, nonce) = derive_ecies_key_nonce(cs, &shared_secret_bytes);
-    let out_len = cs
-        .aead_impl
-        .open(&key, nonce, ciphertext.as_mut_slice())?
-        .len();
-    // Decryption was done in-place
-    let mut plaintext = ciphertext;
-    // However, it still has the tag on the end. Remove everything after the end of the plaintext
-    plaintext.truncate(out_len);
-
-    Ok(plaintext)
+    cs.aead_impl.open(&key, nonce, ciphertext)
 }
 
 // From the spec:
@@ -106,17 +107,14 @@ fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (Aead
     let nonce_label = EciesLabel::new(b"nonce", cs.aead_impl.nonce_size() as u16);
 
     // We're gonna used the serialized labels as the `info` parameter to HKDF-Expand
-    let serialized_key_label = crate::tls_ser::serialize_to_bytes(&key_label)
-        .expect("couldn't serialize ECIES key label");
+    let serialized_key_label =
+        crate::tls_ser::serialize_to_bytes(&key_label).expect("couldn't serialize ECIES key label");
     let serialized_nonce_label = crate::tls_ser::serialize_to_bytes(&nonce_label)
         .expect("couldn't serialize ECIES nonce label");
 
     // This is the keying information that we will expand
     let prk = ring::hmac::SigningKey::new(cs.hash_alg, &shared_secret_bytes);
 
-    // TODO: Once it's possible to do so, I want
-    // key_buf: [u8; <CS::Aead as AuthenticatedEncryption>::KEY_SIZE]. And ditto for
-    // nonce_buf. This is blocked on https://github.com/rust-lang/rust/issues/39211
     let mut key_buf = vec![0u8; cs.aead_impl.key_size()];
     let mut nonce_buf = vec![0u8; cs.aead_impl.nonce_size()];
 
@@ -143,12 +141,6 @@ mod test {
     use quickcheck_macros::quickcheck;
     use rand::SeedableRng;
 
-    // TODO: Test over all ciphersuites. I think this is gonna require a big refactor. If x: X you
-    // can't say x::foo() if foo() is an associated function to X. You have to do X::foo(). So I
-    // think I'm going to turn all the Struct::method things into object.method and instead of
-    // associated types I'll do consts that are static refs to empty objects that implement all
-    // these methods.
-
     const CIPHERSUITES: &[CipherSuite] = &[X25519_SHA256_AES128GCM];
 
     #[quickcheck]
@@ -158,17 +150,27 @@ mod test {
         for cs in CIPHERSUITES {
             println!("Current ciphersuite: {}", cs.name);
 
+            // Make sure there's enough room in the plaintext for the tag
+            let mut extended_plaintext =
+                [plaintext.clone(), vec![0u8; cs.aead_impl.tag_size()]].concat();
+
             // First make an identity we'll encrypt to
             let alice_scalar = cs.dh_impl.scalar_from_random(&mut rng).unwrap();
             let alice_point = cs.dh_impl.multiply_basepoint(&alice_scalar);
 
             // Now encrypt to Alice
-            let ecies_ciphertext: EciesCiphertext =
-                ecies_encrypt(cs, &alice_point, plaintext.clone(), &mut rng)
-                    .expect("failed to encrypt with ECIES");
+            let ecies_ciphertext: EciesCiphertext = ecies_encrypt(
+                cs,
+                &alice_point,
+                extended_plaintext.as_mut_slice(),
+                &mut rng,
+            )
+            .expect("failed to encrypt with ECIES");
+
             // Now let Alice decrypt it
-            let recovered_plaintext: Vec<u8> = ecies_decrypt(cs, &alice_scalar, ecies_ciphertext)
-                .expect("failed to decrypt ECIES ciphertext");
+            let recovered_plaintext = ecies_decrypt(cs, &alice_scalar, ecies_ciphertext)
+                .expect("failed to decrypt ECIES ciphertext")
+                .to_vec();
 
             assert_eq!(recovered_plaintext, plaintext);
         }

@@ -32,6 +32,7 @@ pub(crate) trait AuthenticatedEncryption {
     // Recall we can't have const trait methods if we want this to be a trait object
     fn key_size(&self) -> usize;
     fn nonce_size(&self) -> usize;
+    fn tag_size(&self) -> usize;
 
     fn key_from_bytes(&self, key_bytes: &[u8]) -> Result<AeadKey, Error>;
 
@@ -50,7 +51,7 @@ pub(crate) trait AuthenticatedEncryption {
         ciphertext_and_tag: &'a mut [u8],
     ) -> Result<&'a mut [u8], Error>;
 
-    fn seal(&self, key: &AeadKey, nonce: AeadNonce, plaintext: Vec<u8>) -> Result<Vec<u8>, Error>;
+    fn seal(&self, key: &AeadKey, nonce: AeadNonce, plaintext: &mut [u8]) -> Result<(), Error>;
 }
 
 /// This represents the AES-128-GCM authenticated encryption algorithm. Notably, it implements
@@ -78,6 +79,11 @@ impl AuthenticatedEncryption for Aes128Gcm {
     /// Returns `AES_128_GCM_NONCE_SIZE`
     fn nonce_size(&self) -> usize {
         AES_128_GCM_NONCE_SIZE
+    }
+
+    /// Returns `AES_128_GCM_TAG_SIZE`
+    fn tag_size(&self) -> usize {
+        AES_128_GCM_TAG_SIZE
     }
 
     /// Makes a new AES-GCM key from the given key bytes.
@@ -169,26 +175,20 @@ impl AuthenticatedEncryption for Aes128Gcm {
         .map_err(|_| Error::EncryptionError("Unspecified"))
     }
 
-    /// Performs an authenticated encryption of the given plaintext
+    /// Does an in-place authenticated encryption of the given plaintext. The input MUST look like
+    /// `plaintext || extra`, where `extra` is 16 bytes long and its contents does note matter.
+    /// After a successful run, the input will be modified to consist of a tagged ciphertext. That
+    /// is, it will be of the form `ciphertext || tag` where `tag` is 16 bytes long.
     ///
-    /// Returns: `Ok(ct)` upon success, where `ct` is the authenticated ciphertext . If encryption
-    /// fails, an `Error::EncryptionError` is returned.
-    fn seal(
-        &self,
-        key: &AeadKey,
-        nonce: AeadNonce,
-        mut plaintext: Vec<u8>,
-    ) -> Result<Vec<u8>, Error> {
+    /// Requires: `plaintext.len() >= 16`
+    ///
+    /// Returns: `Ok(())` on sucess, indicating that the inputted buffer contains the tagged
+    /// ciphertext. If there is an error in any part of this process, it will be returned as an
+    /// `Error::CryptoError` with description "Unspecified".
+    #[must_use]
+    fn seal(&self, key: &AeadKey, nonce: AeadNonce, plaintext: &mut [u8]) -> Result<(), Error> {
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
         let nonce = enum_variant!(nonce, AeadNonce::Aes128GcmNonce);
-
-        // Extend the plaintext to have space at the end of AES_GCM_TAG_SIZE many bytes. This is
-        // where the tag goes for ring::aead::seal_in_place
-        let mut extended_plaintext = {
-            let buf = [0u8; AES_128_GCM_TAG_SIZE];
-            plaintext.extend_from_slice(&buf);
-            plaintext
-        };
 
         // We use the standard encryption function with no associated data. The length of the
         // buffer is checked by the ring library.
@@ -198,16 +198,14 @@ impl AuthenticatedEncryption for Aes128Gcm {
             &key.sealing_key,
             nonce,
             ring::aead::Aad::empty(),
-            &mut extended_plaintext,
+            plaintext,
             AES_128_GCM_TAG_SIZE,
         );
 
-        // The encryption was done in-place. Rename for clarity
-        let authenticated_ciphertext = extended_plaintext;
-
-        match res {
-            Ok(_) => Ok(authenticated_ciphertext),
-            Err(_) => Err(Error::EncryptionError("Unspecified")),
+        if res.is_ok() {
+            Ok(())
+        } else {
+            Err(Error::EncryptionError("Unspecified"))
         }
     }
 }
@@ -242,12 +240,18 @@ mod test {
             .expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
+        // Make sure there's enough room in the plaintext for the tag
+        let mut extended_plaintext = [plaintext.as_slice(), &[0u8; AES_128_GCM_TAG_SIZE]].concat();
 
-        let mut auth_ciphertext = AES128GCM_IMPL
-            .seal(&key, nonce1, plaintext.clone())
+        AES128GCM_IMPL
+            .seal(&key, nonce1, extended_plaintext.as_mut_slice())
             .expect("failed to encrypt");
+
+        // Rename for clarity, since plaintext was modified in-place
+        let auth_ciphertext = extended_plaintext.as_mut_slice();
+
         let recovered_plaintext = AES128GCM_IMPL
-            .open(&key, nonce2, auth_ciphertext.as_mut_slice())
+            .open(&key, nonce2, auth_ciphertext)
             .expect("failed to decrypt");
 
         // Make sure we get out what we put in
@@ -257,17 +261,22 @@ mod test {
     // Test that perturbations in auth_ct := encrypt_k(m) make it fail to decrypt. This includes
     // perturbations in the tag of auth_ct.
     #[quickcheck]
-    fn aes_gcm_integrity_ct_and_tag(plaintext: Vec<u8>, rng_seed: u64) {
+    fn aes_gcm_integrity_ct_and_tag(mut plaintext: Vec<u8>, rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         let key = AES128GCM_IMPL
             .key_from_random(&mut rng)
             .expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
+        // Make sure there's enough room in the plaintext for the tag
+        plaintext.extend(vec![0u8; AES_128_GCM_TAG_SIZE]);
 
-        let mut auth_ciphertext = AES128GCM_IMPL
-            .seal(&key, nonce1, plaintext)
+        AES128GCM_IMPL
+            .seal(&key, nonce1, plaintext.as_mut_slice())
             .expect("failed to encrypt");
+
+        // Rename for clarity, since plaintext was modified in-place
+        let auth_ciphertext = plaintext.as_mut_slice();
 
         // Make a random byte string that's exactly the length of the authenticated ciphertext.
         // We'll XOR these bytes with the authenticated ciphertext.
@@ -280,14 +289,14 @@ mod test {
         }
 
         // Make sure this fails to open
-        let res = AES128GCM_IMPL.open(&key, nonce2, auth_ciphertext.as_mut_slice());
+        let res = AES128GCM_IMPL.open(&key, nonce2, auth_ciphertext);
         assert!(res.is_err());
     }
 
     // Test that perturbations in auth_ct := encrypt_k(m) make it fail to decrypt. This includes
     // only perturbations to the ciphertext of auth_ct, leaving the tag alone.
     #[quickcheck]
-    fn aes_gcm_integrity_ct(plaintext: Vec<u8>, rng_seed: u64) {
+    fn aes_gcm_integrity_ct(mut plaintext: Vec<u8>, rng_seed: u64) {
         // This is only interesting if plaintext != "". Since XORing anything into the empty string
         // is a noop, the open() operation below will actually succeed. This property is checked in
         // aes_gcm_correctness.
@@ -301,10 +310,15 @@ mod test {
             .expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
+        // Make sure there's enough room in the plaintext for the tag
+        plaintext.extend(vec![0u8; AES_128_GCM_TAG_SIZE]);
 
-        let mut auth_ciphertext = AES128GCM_IMPL
-            .seal(&key, nonce1, plaintext)
+        AES128GCM_IMPL
+            .seal(&key, nonce1, plaintext.as_mut_slice())
             .expect("failed to encrypt");
+
+        // Rename for clarity, since plaintext was modified in-place
+        let auth_ciphertext = plaintext.as_mut_slice();
 
         // Make a random byte string that's exactly the length of the authenticated ciphertext,
         // minus the tag length. We'll XOR these bytes with the ciphertext part.
@@ -317,7 +331,7 @@ mod test {
         }
 
         // Make sure this fails to open
-        let res = AES128GCM_IMPL.open(&key, nonce2, auth_ciphertext.as_mut_slice());
+        let res = AES128GCM_IMPL.open(&key, nonce2, auth_ciphertext);
         assert!(res.is_err());
     }
 }

@@ -54,7 +54,7 @@ impl SignatureScheme {
         let mut key_bytes = [0u8; 32];
         csprng
             .try_fill_bytes(&mut key_bytes)
-            .map_err(|_| Error::OutOfEntropy);
+            .map_err(|_| Error::OutOfEntropy)?;
         let key = ed25519_dalek::SecretKey::from_bytes(&key_bytes)
             .map_err(|_| Error::SignatureError("Could not make key from random"))?;
         Ok(SigSecretKey::Ed25519SecretKey(key))
@@ -85,6 +85,7 @@ impl SignatureScheme {
     ///
     /// Returns: `Ok(())` iff the signature succeeded. Otherwise, returns an
     /// `Err(Error::SignatureError)` which is a lot of errors, so you know it's bad.
+    #[must_use]
     fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
         let public_key = enum_variant!(public_key, SigPublicKey::Ed25519PublicKey);
         let sig = enum_variant!(sig, Signature::Ed25519Signature);
