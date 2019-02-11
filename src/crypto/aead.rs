@@ -5,11 +5,11 @@ use crate::error::Error;
 pub(crate) const AES128GCM_IMPL: Aes128Gcm = Aes128Gcm;
 
 /// Size of opening / sealing keys, in bytes
-const AES_GCM_128_KEY_SIZE: usize = 128 / 8;
+const AES_128_GCM_KEY_SIZE: usize = 128 / 8;
 /// Size of tag, in bytes
-const AES_GCM_128_TAG_SIZE: usize = 128 / 8;
+const AES_128_GCM_TAG_SIZE: usize = 128 / 8;
 /// Size of nonces, in bytes
-const AES_GCM_128_NONCE_SIZE: usize = 96 / 8;
+const AES_128_GCM_NONCE_SIZE: usize = 96 / 8;
 
 /// An enum of possible types for an AEAD key, depending on the underlying algorithm
 pub(crate) enum AeadKey {
@@ -29,6 +29,10 @@ pub(crate) enum AeadNonce {
 // system. So, similar to the Digest trait, we're making an AuthenticatedEncryption trait. I don't
 // think we'll need associated data in this crate, so we leave it out for simplicity
 pub(crate) trait AuthenticatedEncryption {
+    // Recall we can't have const trait methods if we want this to be a trait object
+    fn key_size(&self) -> usize;
+    fn nonce_size(&self) -> usize;
+
     fn key_from_bytes(&self, key_bytes: &[u8]) -> Result<AeadKey, Error>;
 
     // TODO: Determine whether this method is actually necessary
@@ -66,14 +70,24 @@ pub(crate) struct Aes128GcmKey {
 pub(crate) struct Aes128GcmNonce(ring::aead::Nonce);
 
 impl AuthenticatedEncryption for Aes128Gcm {
+    /// Returns `AES_128_GCM_KEY_SIZE`
+    fn key_size(&self) -> usize {
+        AES_128_GCM_KEY_SIZE
+    }
+
+    /// Returns `AES_128_GCM_NONCE_SIZE`
+    fn nonce_size(&self) -> usize {
+        AES_128_GCM_NONCE_SIZE
+    }
+
     /// Makes a new AES-GCM key from the given key bytes.
     ///
-    /// Requires: `key_bytes.len() == AES_GCM_128_KEY_SIZE`
+    /// Requires: `key_bytes.len() == AES_128_GCM_KEY_SIZE`
     ///
     /// Returns: `Ok(key)` on success. On error (don't ask me why this could fail), returns an
     /// `Error`.
     fn key_from_bytes(&self, key_bytes: &[u8]) -> Result<AeadKey, Error> {
-        if key_bytes.len() != AES_GCM_128_KEY_SIZE {
+        if key_bytes.len() != AES_128_GCM_KEY_SIZE {
             return Err(Error::EncryptionError("AES-GCM-128 requires 128-bit keys"));
         }
 
@@ -94,7 +108,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
     ///
     /// Returns: `Ok(key)` on success. On error , returns `Error::OutOfEntropy`.
     fn key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<AeadKey, Error> {
-        let mut key = [0u8; AES_GCM_128_KEY_SIZE];
+        let mut key = [0u8; AES_128_GCM_KEY_SIZE];
         // This could fail for a number of reasons, but the net result is that we don't have
         // random bytes anymore
         csprng
@@ -106,15 +120,15 @@ impl AuthenticatedEncryption for Aes128Gcm {
 
     /// Makes a new AES-GCM nonce from the given bytes.
     ///
-    /// Requires: `nonce_bytes.len() == AES_GCM_128_NONCE_SIZE`
+    /// Requires: `nonce_bytes.len() == AES_128_GCM_NONCE_SIZE`
     ///
     /// Returns: `Ok(Self::
     fn nonce_from_bytes(&self, nonce_bytes: &[u8]) -> Result<AeadNonce, Error> {
-        if nonce_bytes.len() != AES_GCM_128_NONCE_SIZE {
+        if nonce_bytes.len() != AES_128_GCM_NONCE_SIZE {
             return Err(Error::EncryptionError("AES-GCM-128 requires 96-bit nonces"));
         }
 
-        let mut nonce = [0u8; AES_GCM_128_NONCE_SIZE];
+        let mut nonce = [0u8; AES_128_GCM_NONCE_SIZE];
         nonce.copy_from_slice(nonce_bytes);
         Ok(AeadNonce::Aes128GcmNonce(
             ring::aead::Nonce::assume_unique_for_key(nonce),
@@ -171,7 +185,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
         // Extend the plaintext to have space at the end of AES_GCM_TAG_SIZE many bytes. This is
         // where the tag goes for ring::aead::seal_in_place
         let mut extended_plaintext = {
-            let buf = [0u8; AES_GCM_128_TAG_SIZE];
+            let buf = [0u8; AES_128_GCM_TAG_SIZE];
             plaintext.extend_from_slice(&buf);
             plaintext
         };
@@ -185,7 +199,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
             nonce,
             ring::aead::Aad::empty(),
             &mut extended_plaintext,
-            AES_GCM_128_TAG_SIZE,
+            AES_128_GCM_TAG_SIZE,
         );
 
         // The encryption was done in-place. Rename for clarity
@@ -209,7 +223,7 @@ mod test {
 
     // Returns a pair of identical nonces. For testing purposes only
     fn make_nonce_pair<T: RngCore>(rng: &mut T) -> (AeadNonce, AeadNonce) {
-        let mut buf = [0u8; AES_GCM_128_NONCE_SIZE];
+        let mut buf = [0u8; AES_128_GCM_NONCE_SIZE];
 
         rng.fill_bytes(&mut buf);
 
@@ -294,7 +308,7 @@ mod test {
 
         // Make a random byte string that's exactly the length of the authenticated ciphertext,
         // minus the tag length. We'll XOR these bytes with the ciphertext part.
-        let mut xor_bytes = vec![0u8; auth_ciphertext.len() - AES_GCM_128_TAG_SIZE];
+        let mut xor_bytes = vec![0u8; auth_ciphertext.len() - AES_128_GCM_TAG_SIZE];
         rng.fill_bytes(xor_bytes.as_mut_slice());
 
         // Do the XORing

@@ -1,16 +1,15 @@
 use crate::{
     crypto::{
-        aead::{Aes128Gcm, AuthenticatedEncryption, AES128GCM_IMPL},
+        aead::{AuthenticatedEncryption, AES128GCM_IMPL},
         dh::{DhPoint, DhScalar, DiffieHellman, X25519_IMPL},
     },
     error::Error,
 };
 
-use digest::Digest;
-
 /// This represents the X25519-SHA256-AES128GCM ciphersuite. Notably, it implements `CipherSuite`.
 pub(crate) const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     id: 0,
+    name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
     hash_alg: &ring::digest::SHA256,
@@ -21,10 +20,12 @@ pub(crate) const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
 pub(crate) struct CipherSuite {
     /// For serialization purposes
     pub(crate) id: u16,
+    /// The name of this cipher suite
+    pub(crate) name: &'static str,
     /// The trait object that implements our key exchange functionality
-    dh_impl: &'static dyn DiffieHellman,
+    pub(crate) dh_impl: &'static dyn DiffieHellman,
     /// The trait object that implements our authenticated encryption functionality
-    aead_impl: &'static dyn AuthenticatedEncryption,
+    pub(crate) aead_impl: &'static dyn AuthenticatedEncryption,
     /// The `ring::digest::Algorithm` that implements our hashing functionality
     // We're gonna have to break the mold here. Originally this was Hash: digest::Digest. But to
     // define HKDF and HMAC over a generic Digest, one needs the following constraints:
@@ -35,7 +36,7 @@ pub(crate) struct CipherSuite {
     // but we can kill off all the ArrayLength stuff once associated constants for array lengths
     // becomes possible. Until then, we're probably just gonna use Vecs. The other downside is that
     // using a const locks us into whatever ring implements. Currently, it's just the SHA2 family.
-    hash_alg: &'static ring::digest::Algorithm,
+    pub(crate) hash_alg: &'static ring::digest::Algorithm,
 }
 
 impl CipherSuite {

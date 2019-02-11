@@ -1,7 +1,6 @@
 use crate::{
-    credential::{BasicCredential, Identity},
+    credential::BasicCredential,
     crypto::{ciphersuite::CipherSuite, sig::SignatureScheme},
-    error::Error,
 };
 
 use serde::ser::{Serialize, SerializeStruct, Serializer};

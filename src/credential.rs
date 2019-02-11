@@ -1,7 +1,5 @@
 use crate::crypto::sig::{SigPublicKey, SignatureScheme};
 
-use serde::{de::Deserialize, ser::Serialize};
-
 // TODO: Decide whether we check the size on the lower end while (de)serializing
 
 // opaque cert_data<1..2^24-1>;

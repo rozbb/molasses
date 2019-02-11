@@ -143,10 +143,7 @@ mod test {
             };
 
             // Make sure the expected public key and the public key we derived are the same
-            assert_eq!(
-                expected_public.to_bytes(),
-                derived_public.to_bytes()
-            );
+            assert_eq!(expected_public.to_bytes(), derived_public.to_bytes());
 
             let derived_sig = {
                 let sig = ED25519_IMPL.sign(&secret, &msg);
