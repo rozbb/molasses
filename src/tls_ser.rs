@@ -6,17 +6,17 @@ use serde::ser::{Serialize, Serializer};
 
 // TODO: Add more helpful panic messages
 
-/// Uses `TLSSerializer` to serialize the input to a vector of bytes
+/// Uses `TlsSerializer` to serialize the input to a vector of bytes
 pub(crate) fn serialize_to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
-    let mut serializer = TLSSerializer::new();
+    let mut serializer = TlsSerializer::new();
     value.serialize(&mut serializer)?;
     Ok(serializer.buf.into_inner())
 }
 
-// This macro gives us a way of serializing things with TLS notation like <1..2^16-1>. Here's how
+// This macro gives us a way of serializing things with Tls notation like <1..2^16-1>. Here's how
 // it works: we're given some serializable value: &T and we want to encode it so that we can
 // specify its length in bytes as a prefix. So we first write 0 to the serialization buffer (that's
-// TLSSerializer.buf), then serialize the whole value out. Once it's serialized, we now know how
+// TlsSerializer.buf), then serialize the whole value out. Once it's serialized, we now know how
 // many bytes its serialization takes, so we seek back to the prefix location, and put that in as
 // the length. One downside of this: we have to serialize the whole thing before we can reject it
 // as too long. But this is nice and simple and I don't think it'll backfire unless the local
@@ -31,10 +31,10 @@ macro_rules! serialize_with_bound {
             ),
             pub(crate) fn $fn_name<'a, T: Serialize + ?Sized>(
                 v: &T,
-                s: &mut &'a mut TLSSerializer,
+                s: &mut &'a mut TlsSerializer,
             ) -> Result<
-                <&'a mut TLSSerializer as Serializer>::Ok,
-                <&'a mut TLSSerializer as Serializer>::Error,
+                <&'a mut TlsSerializer as Serializer>::Ok,
+                <&'a mut TlsSerializer as Serializer>::Error,
             > {
                 // Starting position
                 let len_pos = s.buf.position();
@@ -73,8 +73,8 @@ serialize_with_bound!(u64, u64, serialize_with_bound_u64, write_u64, BigEndian);
 /// Serializes an object with a length in bytes that must be representable by `u8`
 pub(crate) fn serialize_with_bound_u8<'a, T: Serialize + ?Sized>(
     v: &T,
-    s: &mut &'a mut TLSSerializer,
-) -> Result<<&'a mut TLSSerializer as Serializer>::Ok, <&'a mut TLSSerializer as Serializer>::Error>
+    s: &mut &'a mut TlsSerializer,
+) -> Result<<&'a mut TlsSerializer as Serializer>::Ok, <&'a mut TlsSerializer as Serializer>::Error>
 {
     // Starting position
     let len_pos = s.buf.position();
@@ -100,8 +100,8 @@ pub(crate) fn serialize_with_bound_u8<'a, T: Serialize + ?Sized>(
 /// Serializes an object with a length in bytes that must be representable by `u24` (i.e. 3 bytes)
 pub(crate) fn serialize_with_bound_u24<'a, T: Serialize + ?Sized>(
     v: &T,
-    s: &mut &'a mut TLSSerializer,
-) -> Result<<&'a mut TLSSerializer as Serializer>::Ok, <&'a mut TLSSerializer as Serializer>::Error>
+    s: &mut &'a mut TlsSerializer,
+) -> Result<<&'a mut TlsSerializer as Serializer>::Ok, <&'a mut TlsSerializer as Serializer>::Error>
 {
     // Starting position
     let len_pos = s.buf.position();
@@ -124,17 +124,17 @@ pub(crate) fn serialize_with_bound_u24<'a, T: Serialize + ?Sized>(
     Ok(())
 }
 
-/// This implements some subset of the TLS wire format. I still don't have a good source on the
+/// This implements some subset of the Tls wire format. I still don't have a good source on the
 /// format, but it seems as though the idea is "concat everything, and specify length in the
 /// prefix". The output of this is verified against known serializations.
-pub(crate) struct TLSSerializer {
+pub(crate) struct TlsSerializer {
     buf: std::io::Cursor<Vec<u8>>,
 }
 
-impl TLSSerializer {
-    /// Makes a new empty `TLSSerializer` object
-    pub(crate) fn new() -> TLSSerializer {
-        TLSSerializer {
+impl TlsSerializer {
+    /// Makes a new empty `TlsSerializer` object
+    pub(crate) fn new() -> TlsSerializer {
+        TlsSerializer {
             buf: std::io::Cursor::new(Vec::new()),
         }
     }
@@ -149,7 +149,7 @@ impl TLSSerializer {
 // for us, we don't actually need that much functionality out of our serializer. So we're going to
 // leave most things unimplemented, and then implement them if we ever end up needing them.
 
-impl<'a> Serializer for &'a mut TLSSerializer {
+impl<'a> Serializer for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
@@ -211,12 +211,12 @@ impl<'a> Serializer for &'a mut TLSSerializer {
         }
     }
 
-    /// `TLSSerializer` is also a `SerializeSeq` (see impl below)
+    /// `TlsSerializer` is also a `SerializeSeq` (see impl below)
     fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
         Ok(self)
     }
 
-    /// `TLSSerializer` is also a `SerializeStruct` (see impl below)
+    /// `TlsSerializer` is also a `SerializeStruct` (see impl below)
     fn serialize_struct(
         self,
         name: &'static str,
@@ -325,7 +325,7 @@ impl<'a> Serializer for &'a mut TLSSerializer {
 }
 
 /// Serializes slices, vecs, etc.
-impl<'a> serde::ser::SerializeSeq for &'a mut TLSSerializer {
+impl<'a> serde::ser::SerializeSeq for &'a mut TlsSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -343,8 +343,8 @@ impl<'a> serde::ser::SerializeSeq for &'a mut TLSSerializer {
     }
 }
 
-/// Serializes structs. This does the same thing as `TLSSerializer as SerializeSeq`
-impl<'a> serde::ser::SerializeStruct for &'a mut TLSSerializer {
+/// Serializes structs. This does the same thing as `TlsSerializer as SerializeSeq`
+impl<'a> serde::ser::SerializeStruct for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
@@ -366,7 +366,7 @@ impl<'a> serde::ser::SerializeStruct for &'a mut TLSSerializer {
 // More unimplemented stuff
 //
 
-impl<'a> serde::ser::SerializeTuple for &'a mut TLSSerializer {
+impl<'a> serde::ser::SerializeTuple for &'a mut TlsSerializer {
     type Ok = ();
     type Error = Error;
 
@@ -381,7 +381,7 @@ impl<'a> serde::ser::SerializeTuple for &'a mut TLSSerializer {
     }
 }
 
-impl<'a> serde::ser::SerializeTupleStruct for &'a mut TLSSerializer {
+impl<'a> serde::ser::SerializeTupleStruct for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
@@ -396,7 +396,7 @@ impl<'a> serde::ser::SerializeTupleStruct for &'a mut TLSSerializer {
     }
 }
 
-impl<'a> serde::ser::SerializeTupleVariant for &'a mut TLSSerializer {
+impl<'a> serde::ser::SerializeTupleVariant for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
@@ -411,7 +411,7 @@ impl<'a> serde::ser::SerializeTupleVariant for &'a mut TLSSerializer {
     }
 }
 
-impl<'a> serde::ser::SerializeMap for &'a mut TLSSerializer {
+impl<'a> serde::ser::SerializeMap for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
@@ -432,7 +432,7 @@ impl<'a> serde::ser::SerializeMap for &'a mut TLSSerializer {
     }
 }
 
-impl<'a> serde::ser::SerializeStructVariant for &'a mut TLSSerializer {
+impl<'a> serde::ser::SerializeStructVariant for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 

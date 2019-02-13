@@ -263,7 +263,7 @@ fn tree_leaves(num_leaves: usize) -> Vec<usize> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tls_de::TLSDeserializer;
+    use crate::tls_de::TlsDeserializer;
 
     use quickcheck::TestResult;
     use quickcheck_macros::quickcheck;
@@ -494,7 +494,7 @@ mod test {
     #[test]
     fn deserialize_test_vec() {
         let mut f = std::fs::File::open("test_vectors/tree_math.bin").unwrap();
-        let mut deserializer = TLSDeserializer::from_reader(&mut f);
+        let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = TreeMathTestVectors::deserialize(&mut deserializer).unwrap();
 
         let size = 255;

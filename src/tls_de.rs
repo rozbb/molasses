@@ -51,21 +51,21 @@ where
     Ok(res)
 }
 
-/// This implements some subset of the TLS wire format. I still don't have a good source on the
+/// This implements some subset of the Tls wire format. I still don't have a good source on the
 /// format, but it seems as though the idea is "concat everything, and specify length in the
 /// prefix".
-pub(crate) struct TLSDeserializer<'a, R: std::io::Read> {
+pub(crate) struct TlsDeserializer<'a, R: std::io::Read> {
     reader: &'a mut R,
 }
 
-impl<'a, R: std::io::Read> TLSDeserializer<'a, R> {
-    /// Makes a new `TLSDeserializer` from the given byte reader
-    pub(crate) fn from_reader(reader: &'a mut R) -> TLSDeserializer<R> {
-        TLSDeserializer { reader: reader }
+impl<'a, R: std::io::Read> TlsDeserializer<'a, R> {
+    /// Makes a new `TlsDeserializer` from the given byte reader
+    pub(crate) fn from_reader(reader: &'a mut R) -> TlsDeserializer<R> {
+        TlsDeserializer { reader: reader }
     }
 }
 
-impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TLSDeserializer<'a, R> {
+impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserializer<'a, R> {
     type Error = Error;
 
     //
@@ -121,11 +121,11 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TLSDeserialize
 
         // Make a sub-reader that only reads the number of bytes specified by the length tag. Then
         // deserialize the contents normally. It will finish when it runs out of things to read.
-        // This is guaranteed by the logic in TLSVecSeq.
+        // This is guaranteed by the logic in TlsVecSeq.
         if let Some(len) = field_len {
             // Make a new deserializer with a sub-buffer
             let mut sub_reader = self.reader.take(len);
-            let mut sub_deserializer = TLSDeserializer::from_reader(&mut sub_reader);
+            let mut sub_deserializer = TlsDeserializer::from_reader(&mut sub_reader);
 
             // Deserialize the contents normally
             visitor.visit_newtype_struct(&mut sub_deserializer)
@@ -137,17 +137,17 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TLSDeserialize
     }
 
     /// Hint that the `Deserialize` type is expecting a sequence of values. This will make a new
-    /// `TLSVecSeq` object and run `Visitor::visit_seq` on that.
+    /// `TlsVecSeq` object and run `Visitor::visit_seq` on that.
     fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
-        let s = TLSVecSeq::new(self);
+        let s = TlsVecSeq::new(self);
         visitor.visit_seq(s)
     }
 
     /// Hint that the `Deserialize` type is expecting a struct with a particular name and fields.
-    /// This will make a new `TLSStructSeq` object with the given fields and run
+    /// This will make a new `TlsStructSeq` object with the given fields and run
     /// `Visitor::visit_seq` on that.
     fn deserialize_struct<V>(
         self,
@@ -158,7 +158,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TLSDeserialize
     where
         V: Visitor<'de>,
     {
-        let s = TLSStructSeq::new(self, fields);
+        let s = TlsStructSeq::new(self, fields);
         visitor.visit_seq(s)
     }
 
@@ -277,23 +277,23 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TLSDeserialize
 
 /// This deals with the logic of deserializing structs. This is just a sequence of fields. If the
 /// field name has a length tag size, this is handled appropriately.
-struct TLSStructSeq<'a, 'b, R: std::io::Read> {
+struct TlsStructSeq<'a, 'b, R: std::io::Read> {
     /// A reference to the deserializer that called us
-    de: &'a mut TLSDeserializer<'b, R>,
+    de: &'a mut TlsDeserializer<'b, R>,
     /// The fields of this struct
     fields: &'static [&'static str],
     /// An index to which field is currently being deserialized
     field_idx: usize,
 }
 
-impl<'a, 'b, R: std::io::Read> TLSStructSeq<'a, 'b, R> {
-    /// Returns a new `TLSStructSeq` with the given deserializer, the given fields, and starting
+impl<'a, 'b, R: std::io::Read> TlsStructSeq<'a, 'b, R> {
+    /// Returns a new `TlsStructSeq` with the given deserializer, the given fields, and starting
     /// index 0
     fn new(
-        de: &'a mut TLSDeserializer<'b, R>,
+        de: &'a mut TlsDeserializer<'b, R>,
         fields: &'static [&'static str],
-    ) -> TLSStructSeq<'a, 'b, R> {
-        TLSStructSeq {
+    ) -> TlsStructSeq<'a, 'b, R> {
+        TlsStructSeq {
             de: de,
             fields: fields,
             field_idx: 0,
@@ -301,7 +301,7 @@ impl<'a, 'b, R: std::io::Read> TLSStructSeq<'a, 'b, R> {
     }
 }
 
-impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TLSStructSeq<'a, 'b, R> {
+impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'a, 'b, R> {
     type Error = Error;
 
     /// Deserializes the next field in the struct
@@ -320,14 +320,14 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TLSStructSeq<'
         // If this is a variable-length field, read off the length
         let field_len = get_field_len(field, &mut self.de.reader)?;
 
-        // As in TLSDeserializer::deserialize_newtype_struct, make a sub-reader that only reads the
+        // As in TlsDeserializer::deserialize_newtype_struct, make a sub-reader that only reads the
         // number of bytes specified by the length tag. Then deserialize the contents normally. It
         // will finish when it runs out of things to read. This is guaranteed by the logic in
-        // TLSVecSeq.
+        // TlsVecSeq.
         if let Some(len) = field_len {
             // Make a sub-buffer to read from
             let mut sub_reader = self.de.reader.take(len);
-            let mut sub_deserializer = TLSDeserializer::from_reader(&mut sub_reader);
+            let mut sub_deserializer = TlsDeserializer::from_reader(&mut sub_reader);
 
             // Deserialize from it normally
             seed.deserialize(&mut sub_deserializer).map(Some)
@@ -341,18 +341,18 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TLSStructSeq<'
 /// This deals with the logic of deserializing sequences (mostly `Vec`s). The logic is simple: keep
 /// deserializing items until you run out of buffer space. The reader that this is given is limited
 /// to the total number of bytes we're supposed to read, so there's no fear of overrun.
-struct TLSVecSeq<'a, 'b, R: std::io::Read> {
-    de: &'a mut TLSDeserializer<'b, R>,
+struct TlsVecSeq<'a, 'b, R: std::io::Read> {
+    de: &'a mut TlsDeserializer<'b, R>,
 }
 
-impl<'a, 'b, R: std::io::Read> TLSVecSeq<'a, 'b, R> {
-    /// Makes a new `TLSVecSeq` object from the given deserializer
-    fn new(de: &'a mut TLSDeserializer<'b, R>) -> TLSVecSeq<'a, 'b, R> {
-        TLSVecSeq { de: de }
+impl<'a, 'b, R: std::io::Read> TlsVecSeq<'a, 'b, R> {
+    /// Makes a new `TlsVecSeq` object from the given deserializer
+    fn new(de: &'a mut TlsDeserializer<'b, R>) -> TlsVecSeq<'a, 'b, R> {
+        TlsVecSeq { de: de }
     }
 }
 
-impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TLSVecSeq<'a, 'b, R> {
+impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsVecSeq<'a, 'b, R> {
     type Error = Error;
 
     /// Deserializes the next item in the list
@@ -450,8 +450,8 @@ mod test {
         ];
 
         let mut buf = &bar_bytes[..];
-        let mut deserializer = TLSDeserializer::from_reader(&mut buf);
-        let bar = Biff::deserialize(&mut deserializer).unwrap();
+        let mut deserializer = TlsDeserializer::from_reader(&mut buf);
+        let biff = Biff::deserialize(&mut deserializer).unwrap();
 
         let expected = Biff {
             a: 0x01000000,
@@ -474,6 +474,6 @@ mod test {
             e: 0x00000002,
         };
 
-        assert_eq!(bar, expected);
+        assert_eq!(biff, expected);
     }
 }
