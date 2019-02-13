@@ -112,7 +112,7 @@ pub(crate) fn serialize_with_bound_u24<'a, T: Serialize + ?Sized>(
     // End position - start position - size of length tag = length of serialized output
     let len: u64 = s.buf.position() - len_pos - 3;
 
-    if len > (1u64 << 24) {
+    if len >= (1u64 << 24) {
         panic!("tried to serialize a u24-bounded object that was too long")
     }
 
@@ -185,8 +185,9 @@ impl<'a> Serializer for &'a mut TLSSerializer {
         Ok(())
     }
 
-    /// This is a bit of a hack: if the name we get ends with "__bound_u*" where * is 8, 16, 24,
-    /// 32, or 64, then we serialize the inner type, prefixing it with its length
+    /// Serializes a newtype struct. This is a bit of a hack: if the name of the struct ends with
+    /// `__bound_uX` where X = 8, 16, 24, 32, or 64, then we prefix the serialized inner type with
+    /// its length in bytes. This length tag will be the width of the specified X.
     fn serialize_newtype_struct<T>(
         mut self,
         name: &'static str,
@@ -261,10 +262,7 @@ impl<'a> Serializer for &'a mut TLSSerializer {
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
         unimplemented!()
     }
-    fn serialize_some<T>(self, _v: &T) -> Result<Self::Ok, Self::Error>
-    where
-        T: ?Sized + Serialize,
-    {
+    fn serialize_some<T: ?Sized + Serialize>(self, _v: &T) -> Result<Self::Ok, Self::Error> {
         unimplemented!()
     }
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
@@ -273,12 +271,25 @@ impl<'a> Serializer for &'a mut TLSSerializer {
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
         unimplemented!()
     }
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        unimplemented!()
+    }
+    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
+        unimplemented!()
+    }
     fn serialize_unit_variant(
         self,
         _name: &'static str,
         _variant_index: u32,
         _variant: &'static str,
     ) -> Result<Self::Ok, Self::Error> {
+        unimplemented!()
+    }
+    fn serialize_tuple_struct(
+        self,
+        _name: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         unimplemented!()
     }
     fn serialize_newtype_variant<T>(
@@ -291,21 +302,6 @@ impl<'a> Serializer for &'a mut TLSSerializer {
     where
         T: ?Sized + Serialize,
     {
-        if name.ends_with("__enum_u8") {
-            self.serialize_u8(variant_index as u8)?;
-            value.serialize(self)
-        } else {
-            value.serialize(self)
-        }
-    }
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_tuple_struct(
-        self,
-        _name: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeTupleStruct, Self::Error> {
         unimplemented!()
     }
     fn serialize_tuple_variant(
@@ -315,9 +311,6 @@ impl<'a> Serializer for &'a mut TLSSerializer {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         unimplemented!()
     }
     fn serialize_struct_variant(
@@ -331,6 +324,7 @@ impl<'a> Serializer for &'a mut TLSSerializer {
     }
 }
 
+/// Serializes slices, vecs, etc.
 impl<'a> serde::ser::SerializeSeq for &'a mut TLSSerializer {
     type Ok = ();
     type Error = Error;
@@ -348,6 +342,29 @@ impl<'a> serde::ser::SerializeSeq for &'a mut TLSSerializer {
         Ok(())
     }
 }
+
+/// Serializes structs. This does the same thing as `TLSSerializer as SerializeSeq`
+impl<'a> serde::ser::SerializeStruct for &'a mut TLSSerializer {
+    type Ok = ();
+    type Error = crate::error::Error;
+
+    /// Structs are serialized sequentially as well, without any delimiters between fields, since
+    /// variable-sized fields are length-prefixed
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        value.serialize(&mut **self)
+    }
+
+    fn end(self) -> Result<Self::Ok, Self::Error> {
+        Ok(())
+    }
+}
+
+//
+// More unimplemented stuff
+//
 
 impl<'a> serde::ser::SerializeTuple for &'a mut TLSSerializer {
     type Ok = ();
@@ -412,24 +429,6 @@ impl<'a> serde::ser::SerializeMap for &'a mut TLSSerializer {
     }
     fn end(self) -> Result<Self::Ok, Self::Error> {
         unimplemented!()
-    }
-}
-
-impl<'a> serde::ser::SerializeStruct for &'a mut TLSSerializer {
-    type Ok = ();
-    type Error = crate::error::Error;
-
-    /// Structs are serialized sequentially as well, without any delimiters between fields, since
-    /// variable-sized fields are length-prefixed
-    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
-    where
-        T: ?Sized + Serialize,
-    {
-        value.serialize(&mut **self)
-    }
-
-    fn end(self) -> Result<Self::Ok, Self::Error> {
-        Ok(())
     }
 }
 

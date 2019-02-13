@@ -76,10 +76,10 @@ impl DiffieHellman for X25519 {
     /// Requires: `bytes.len() == 32`
     ///
     /// Returns: `Ok(scalar)` on success. Otherwise, if `bytes.len() != 32`, returns
-    /// `Error::DHError`.
+    /// `Error::DhError`.
     fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhScalar, Error> {
         if bytes.len() != X25519_SCALAR_SIZE {
-            return Err(Error::DHError("Wrong key size"));
+            return Err(Error::DhError("Wrong key size"));
         } else {
             let mut buf = [0u8; X25519_SCALAR_SIZE];
             buf.copy_from_slice(bytes);

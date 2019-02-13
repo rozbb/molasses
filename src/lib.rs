@@ -11,5 +11,6 @@ mod credential;
 pub mod crypto;
 pub mod error;
 pub mod ratchet_tree;
+mod tls_de;
 mod tls_ser;
 mod tree_math;

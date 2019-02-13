@@ -148,8 +148,6 @@ mod test {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
         for cs in CIPHERSUITES {
-            println!("Current ciphersuite: {}", cs.name);
-
             // Make sure there's enough room in the plaintext for the tag
             let mut extended_plaintext =
                 [plaintext.clone(), vec![0u8; cs.aead_impl.tag_size()]].concat();
@@ -165,11 +163,17 @@ mod test {
                 extended_plaintext.as_mut_slice(),
                 &mut rng,
             )
-            .expect("failed to encrypt with ECIES");
+            .expect(&format!(
+                "failed to encrypt ECIES plaintext; ciphersuite {}",
+                cs.name
+            ));
 
             // Now let Alice decrypt it
             let recovered_plaintext = ecies_decrypt(cs, &alice_scalar, ecies_ciphertext)
-                .expect("failed to decrypt ECIES ciphertext")
+                .expect(&format!(
+                    "failed to decrypt ECIES ciphertext; ciphersuite {}",
+                    cs.name
+                ))
                 .to_vec();
 
             assert_eq!(recovered_plaintext, plaintext);
