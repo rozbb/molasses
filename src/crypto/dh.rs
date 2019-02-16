@@ -164,31 +164,28 @@ mod test {
         // Compute b(aP) and a(bP) and make sure they are the same
         let shared_secret_a = {
             let point = X25519_IMPL.diffie_hellman(&alice_scalar, &bob_pubkey);
-            enum_variant!(point, DhPoint::X25519Point)
+             X25519_IMPL.point_as_bytes(point)
         };
         let shared_secret_b = {
             let point = X25519_IMPL.diffie_hellman(&bob_scalar, &alice_pubkey);
-            enum_variant!(point, DhPoint::X25519Point)
+             X25519_IMPL.point_as_bytes(point)
         };
-
-        let alice_pubkey = enum_variant!(alice_pubkey, DhPoint::X25519Point);
-        let bob_pubkey = enum_variant!(bob_pubkey, DhPoint::X25519Point);
 
         // Known-answer for aP
         assert_eq!(
-            hex::encode(&alice_pubkey),
+            hex::encode(&X25519_IMPL.point_as_bytes(alice_pubkey)),
             "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
         );
         // Known-answer for bP
         assert_eq!(
-            hex::encode(&bob_pubkey),
+            hex::encode(&X25519_IMPL.point_as_bytes(bob_pubkey)),
             "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
         );
         // Test b(aP) == a(bP)
         assert_eq!(shared_secret_a, shared_secret_b);
         // Known-answer for abP
         assert_eq!(
-            hex::encode(shared_secret_a),
+            hex::encode(&shared_secret_a),
             "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
         );
     }
@@ -218,10 +215,7 @@ mod test {
             X25519_IMPL.diffie_hellman(&scalar2, &point1),
         );
 
-        let shared1 = enum_variant!(shared1, DhPoint::X25519Point);
-        let shared2 = enum_variant!(shared2, DhPoint::X25519Point);
-
-        assert_eq!(shared1, shared2)
+        assert_eq!(X25519_IMPL.point_as_bytes(shared1), X25519_IMPL.point_as_bytes(shared2));
     }
 
     // This comes from
@@ -237,10 +231,9 @@ mod test {
         };
 
         let pubkey = X25519_IMPL.multiply_basepoint(&scalar);
-        let pubkey = enum_variant!(pubkey, DhPoint::X25519Point);
 
         assert_eq!(
-            hex::encode(&pubkey),
+            hex::encode(&X25519_IMPL.point_as_bytes(pubkey)),
             "6667b1715a0ad45b0510e850322a8d471d4485ebcbfcc0f3bcce7bcae7b44f7f"
         );
     }
