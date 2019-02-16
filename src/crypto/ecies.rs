@@ -25,24 +25,29 @@ impl EciesLabel {
 }
 
 /// A short ciphertext encrypted with the enclosed ephemeral DH key
-struct EciesCiphertext<'a> {
+#[derive(Deserialize, Serialize)]
+pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
     ephemeral_public_key: DhPoint,
     /// The payload
     // opaque ciphertext<0..255>;
-    ciphertext: &'a mut [u8],
+    #[serde(rename = "ciphertext__bound_u8")]
+    ciphertext: Vec<u8>,
 }
 
 /// Performs an ECIES encryption of a given plaintext under a given DH public key.
 ///
-/// Requires: `plaintext` must have the form `message || extra` where `extra` is the tag length of
-/// the underlying authenticated encryption algorithm
-fn ecies_encrypt<'a>(
+/// Returns: `Ok(ciphertext)` on success. If there is an issue with random nonce generation or
+/// sealing the plaintext, an `Error` is returned.
+fn ecies_encrypt(
     cs: &CipherSuite,
     others_public_key: &DhPoint,
-    plaintext: &'a mut [u8],
+    mut plaintext: Vec<u8>,
     csprng: &mut dyn CryptoRng,
-) -> Result<EciesCiphertext<'a>, Error> {
+) -> Result<EciesCiphertext, Error> {
+    // Make room for the tag
+    plaintext.extend(std::iter::repeat(0u8).take(cs.aead_impl.tag_size()));
+
     // Denote this by `a`
     let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
     // Denote this by `aP`
@@ -52,11 +57,11 @@ fn ecies_encrypt<'a>(
     let shared_secret = cs
         .dh_impl
         .diffie_hellman(&my_ephemeral_secret, &others_public_key);
-    let shared_secret_bytes = cs.dh_impl.point_as_bytes(&shared_secret);
+    let shared_secret_bytes = cs.dh_impl.point_as_bytes(shared_secret);
 
     let (key, nonce) = derive_ecies_key_nonce(cs, &shared_secret_bytes);
 
-    cs.aead_impl.seal(&key, nonce, plaintext)?;
+    cs.aead_impl.seal(&key, nonce, plaintext.as_mut_slice())?;
     // Rename for clarity
     let ciphertext = plaintext;
 
@@ -70,24 +75,36 @@ fn ecies_encrypt<'a>(
 /// Performs an ECIES decryption of a given ciphertext under a given DH ephemeral public key and
 /// known secret
 ///
-/// Returns: `Ok(plaintext)` on success, where `plaintext` is a `&mut [u8]` to the decrypted
-/// plaintext corresponding to the ciphertext. Returns some sort of `Error` otherwise.
-fn ecies_decrypt<'a>(
+/// Returns: `Ok(plaintext)` on success. Returns an `Error::EncryptionError` if something goes
+/// wrong.
+fn ecies_decrypt(
     cs: &CipherSuite,
     my_secret_key: &DhScalar,
     EciesCiphertext {
         ephemeral_public_key,
-        ciphertext,
-    }: EciesCiphertext<'a>,
-) -> Result<&'a mut [u8], Error> {
+        mut ciphertext,
+    }: EciesCiphertext,
+) -> Result<Vec<u8>, Error> {
     // This is `abP` where `bP` is the other person's public key is `bP` and my secret key is `a`
     let shared_secret = cs
         .dh_impl
         .diffie_hellman(&my_secret_key, &ephemeral_public_key);
-    let shared_secret_bytes = cs.dh_impl.point_as_bytes(&shared_secret);
+    let shared_secret_bytes = cs.dh_impl.point_as_bytes(shared_secret);
 
+    // Derive the key and nonce, then open the ciphertext. The length of the subslice it gives is
+    // the length we'll truncate the plaintext to. Recall this happens because there was a MAC at
+    // the end of the ciphertext.
     let (key, nonce) = derive_ecies_key_nonce(cs, &shared_secret_bytes);
-    cs.aead_impl.open(&key, nonce, ciphertext)
+    let plaintext_len = cs
+        .aead_impl
+        .open(&key, nonce, ciphertext.as_mut_slice())?
+        .len();
+
+    // Rename for clarity
+    let mut plaintext = ciphertext;
+
+    plaintext.truncate(plaintext_len);
+    Ok(plaintext)
 }
 
 // From the spec:
@@ -143,30 +160,22 @@ mod test {
 
     const CIPHERSUITES: &[CipherSuite] = &[X25519_SHA256_AES128GCM];
 
+    // Checks that decrypt(encrypt_k(m)) == m
     #[quickcheck]
     fn ecies_correctness(plaintext: Vec<u8>, rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
         for cs in CIPHERSUITES {
-            // Make sure there's enough room in the plaintext for the tag
-            let mut extended_plaintext =
-                [plaintext.clone(), vec![0u8; cs.aead_impl.tag_size()]].concat();
-
             // First make an identity we'll encrypt to
             let alice_scalar = cs.dh_impl.scalar_from_random(&mut rng).unwrap();
             let alice_point = cs.dh_impl.multiply_basepoint(&alice_scalar);
 
             // Now encrypt to Alice
-            let ecies_ciphertext: EciesCiphertext = ecies_encrypt(
-                cs,
-                &alice_point,
-                extended_plaintext.as_mut_slice(),
-                &mut rng,
-            )
-            .expect(&format!(
-                "failed to encrypt ECIES plaintext; ciphersuite {}",
-                cs.name
-            ));
+            let ecies_ciphertext: EciesCiphertext =
+                ecies_encrypt(cs, &alice_point, plaintext.clone(), &mut rng).expect(&format!(
+                    "failed to encrypt ECIES plaintext; ciphersuite {}",
+                    cs.name
+                ));
 
             // Now let Alice decrypt it
             let recovered_plaintext = ecies_decrypt(cs, &alice_scalar, ecies_ciphertext)

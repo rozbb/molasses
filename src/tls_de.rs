@@ -151,7 +151,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     /// `Visitor::visit_seq` on that.
     fn deserialize_struct<V>(
         self,
-        name: &'static str,
+        _name: &'static str,
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
@@ -225,7 +225,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     }
     fn deserialize_unit_struct<V>(
         self,
-        name: &'static str,
+        _name: &'static str,
         _visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
@@ -235,16 +235,16 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     }
     fn deserialize_enum<V>(
         self,
-        name: &'static str,
-        variants: &'static [&'static str],
-        visitor: V,
+        _name: &'static str,
+        _variants: &'static [&'static str],
+        _visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
         unimplemented!()
     }
-    fn deserialize_tuple<V>(self, len: usize, _visitor: V) -> Result<V::Value, Self::Error>
+    fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
     where
         V: Visitor<'de>,
     {
@@ -252,8 +252,8 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     }
     fn deserialize_tuple_struct<V>(
         self,
-        name: &'static str,
-        len: usize,
+        _name: &'static str,
+        _len: usize,
         _visitor: V,
     ) -> Result<V::Value, Self::Error>
     where

@@ -1,7 +1,7 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
-pub(crate) const ED25519_IMPL: SignatureScheme = SignatureScheme { id: 0x0807 };
+pub(crate) const ED25519_IMPL: SignatureScheme = SignatureScheme { name: "ED25519" };
 
 /// An enum of possible types for a signature scheme's public key, depending on the underlying
 /// algorithm
@@ -21,11 +21,12 @@ pub(crate) enum Signature {
 }
 
 /// Represents the contents of an MLS signature scheme. Currently, this only implements Ed25519.
-/// The ID field is for serialization purposes.
 pub(crate) struct SignatureScheme {
-    pub(crate) id: u16,
+    pub(crate) name: &'static str,
 }
 
+// This implementation is for Ed25519 only, currently. In the future, we should wrap Ed25519 with
+// a trait, and use the same trait for other signature implementations
 impl SignatureScheme {
     /// Creates a public key from the provided bytes
     ///
@@ -67,8 +68,14 @@ impl SignatureScheme {
         SigPublicKey::Ed25519PublicKey(secret.into())
     }
 
+    /// Returns the byte representation of this signature
+    pub(crate) fn signature_to_bytes(&self, signature: &Signature) -> Vec<u8> {
+        let signature = enum_variant!(signature, Signature::Ed25519Signature);
+        signature.to_bytes().to_vec()
+    }
+
     /// Computes a signature of the given message under the given secret key
-    fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
+    pub(crate) fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
         // For simplicity, we add the overhead of recomputing the public key on every signature
         // operation instead of having it passed into the function. Sue me.
         let public = ED25519_IMPL.public_key_from_secret_key(secret);

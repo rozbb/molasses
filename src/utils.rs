@@ -43,7 +43,6 @@ macro_rules! make_enum_u8_discriminant {
             where
                 D: serde::Deserializer<'de>,
             {
-                // Make a visitor type that just deserializes from u8 to an enum variant
                 struct Visitor;
 
                 impl<'de> serde::de::Visitor<'de> for Visitor {

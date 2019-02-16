@@ -27,13 +27,13 @@ pub(crate) enum DhScalar {
     X25519Scalar([u8; X25519_SCALAR_SIZE]),
 }
 
-/// An enum of possible types for a public DH value, depending on the underlying algorithm. In EC
-/// terminology, this is a scalar in the base field. In finite-field terminology, this is an
-/// exponent.
-pub(crate) enum DhPoint {
-    /// A curve point in Curve25519
-    X25519Point([u8; X25519_POINT_SIZE]),
-}
+// opaque DHPublicKey<1..2^16-1>
+/// Because these are untagged during serialization and deserialization, we can only represent
+/// curve points as bytes, without any variant tag (such as X25519Scalar). So we use this type for
+/// all DH stuff. I know, this sucks.
+#[derive(Deserialize, Serialize)]
+#[serde(rename = "DhPoint__bound_u16")]
+pub(crate) struct DhPoint(Vec<u8>);
 
 /// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
@@ -43,7 +43,9 @@ pub(crate) trait DiffieHellman {
     // DhPoint. That's because the byte representation of this here point is independent of the
     // wire format we choose. This representation is used in the calculation of ECIES ciphertexts,
     // which are computed independently of wire format.
-    fn point_as_bytes(&self, point: &DhPoint) -> Vec<u8>;
+    fn point_as_bytes(&self, point: DhPoint) -> Vec<u8>;
+
+    fn point_from_bytes(&self, bytes: Vec<u8>) -> DhPoint;
 
     fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhScalar, Error>;
 
@@ -65,10 +67,17 @@ pub(crate) struct X25519;
 
 impl DiffieHellman for X25519 {
     /// Outputs the internal byte representation of a given point
-    fn point_as_bytes(&self, point: &DhPoint) -> Vec<u8> {
-        let point = enum_variant!(point, DhPoint::X25519Point);
+    fn point_as_bytes(&self, point: DhPoint) -> Vec<u8> {
+        point.0
+    }
 
-        point.to_vec()
+    /// Makes a `DhPoint` from the given bytes
+    ///
+    /// Requires: `bytes.len() == X25519_POINT_SIZE == 32`
+    fn point_from_bytes(&self, bytes: Vec<u8>) -> DhPoint {
+        // This has to be the right length
+        assert_eq!(bytes.len(), X25519_POINT_SIZE);
+        DhPoint(bytes)
     }
 
     /// Uses the given bytes as a scalar in GF(2^(255) - 19)
@@ -105,17 +114,21 @@ impl DiffieHellman for X25519 {
         let scalar = enum_variant!(scalar, DhScalar::X25519Scalar);
 
         let point_bytes = x25519(*scalar, X25519_BASEPOINT_BYTES);
-        DhPoint::X25519Point(point_bytes)
+        self.point_from_bytes(point_bytes.to_vec())
     }
 
     /// Computes `privkey * Pubkey` where `privkey` is your local secret (a scalar) and `Pubkey` is
     /// someone's public key (a curve point)
     fn diffie_hellman(&self, privkey: &DhScalar, pubkey: &DhPoint) -> DhPoint {
         let privkey = enum_variant!(privkey, DhScalar::X25519Scalar);
-        let pubkey = enum_variant!(pubkey, DhPoint::X25519Point);
+        let pubkey = {
+            let mut buf = [0u8; X25519_POINT_SIZE];
+            buf.copy_from_slice(&pubkey.0);
+            buf
+        };
 
-        let shared_secret = x25519(*privkey, *pubkey);
-        DhPoint::X25519Point(shared_secret)
+        let shared_secret = x25519(*privkey, pubkey);
+        DhPoint(shared_secret.to_vec())
     }
 }
 

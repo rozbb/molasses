@@ -1,8 +1,14 @@
 use crate::crypto::dh::{DhPoint, DhScalar};
 use crate::tree_math;
 
+// Ratchet trees are serialized in DirectPath messages as optional<PublicKey> tree<1..2^32-1>
+// So we encode RatchetTree as a Vec<RatchetTreeNode> with length bound u32, and we encode
+// RatchetTreeNode as enum { Blank, Filled { DhPoint } }, which is encoded in the same way as an
+// Option<DhPoint> would be.
+
 /// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
 /// corresponding private key and a secret octet string.
+#[derive(Serialize)]
 pub(crate) enum RatchetTreeNode {
     Blank,
     Filled {
@@ -14,14 +20,18 @@ pub(crate) enum RatchetTreeNode {
         // Bar had the associated type Baz, then DH::Baz would be ambiguous. Instead, you'd write
         // <DH as Foo>::Baz or <DH as Bar>::Baz.
         pubkey: DhPoint,
+        #[serde(skip)]
         privkey: Option<DhScalar>,
+        #[serde(skip)]
         secret: Option<Vec<u8>>,
     },
 }
 
 /// A left-balanced binary tree of `RatchetTreeNode`s
 // Contains a vector of nodes that could optionally be blanks
+#[derive(Serialize)]
 pub(crate) struct RatchetTree {
+    #[serde(rename = "nodes__bound_u32")]
     nodes: Vec<RatchetTreeNode>,
 }
 
@@ -35,16 +45,16 @@ impl RatchetTree {
     // while keeping everything in place. Instead of a proof, stare this diagram where I add a new
     // leaf node to a tree of 3 leaves, and then add another leaf to that. The stars represent
     // non-leaf nodes.
-    //        *                   *                        *
-    //       / \                /   \                _____/ \
-    //      /   \    Add(D)    /     \    Add(E)    /        |
-    //     *     C   =====>   *       *   =====>   *         |
-    //    / \                / \     / \         /   \       |
-    //   A   B              A   B   C   D       /     \      |
-    //   0 1 2 3 4          0 1 2 3 4 5 6      *       *     |
-    //                                        / \     / \    |
-    //                                       A   B   C   D   E
-    //                                       0 1 2 3 4 5 6 7 8
+    //         *                   *                        *
+    //       /   \               /   \                _____/ \
+    //      /     C   Add(D)    /     \    Add(E)    /        |
+    //     *          =====>   *       *   =====>   *         |
+    //    / \                 / \     / \         /   \       |
+    //   A   B               A   B   C   D       /     \      |
+    //   0 1 2 3  4          0 1 2 3 4 5 6      *       *     |
+    //                                         / \     / \    |
+    //                                        A   B   C   D   E
+    //                                        0 1 2 3 4 5 6 7 8
     pub fn add_leaf_node(&mut self, node: RatchetTreeNode) {
         if self.nodes.is_empty() {
             self.nodes.push(node);

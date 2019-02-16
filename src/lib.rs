@@ -10,6 +10,8 @@ mod codec;
 mod credential;
 pub mod crypto;
 pub mod error;
+mod group_state;
+mod handshake;
 pub mod ratchet_tree;
 mod tls_de;
 mod tls_ser;

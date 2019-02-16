@@ -212,15 +212,15 @@ impl<'a> Serializer for &'a mut TlsSerializer {
     }
 
     /// `TlsSerializer` is also a `SerializeSeq` (see impl below)
-    fn serialize_seq(self, len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
+    fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
         Ok(self)
     }
 
     /// `TlsSerializer` is also a `SerializeStruct` (see impl below)
     fn serialize_struct(
         self,
-        name: &'static str,
-        len: usize,
+        _name: &'static str,
+        _len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
         Ok(self)
     }
@@ -294,10 +294,10 @@ impl<'a> Serializer for &'a mut TlsSerializer {
     }
     fn serialize_newtype_variant<T>(
         self,
-        name: &'static str,
-        variant_index: u32,
-        variant: &'static str,
-        value: &T,
+        _name: &'static str,
+        _variant_index: u32,
+        _variant: &'static str,
+        _value: &T,
     ) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
@@ -350,7 +350,7 @@ impl<'a> serde::ser::SerializeStruct for &'a mut TlsSerializer {
 
     /// Structs are serialized sequentially as well, without any delimiters between fields, since
     /// variable-sized fields are length-prefixed
-    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_field<T>(&mut self, _key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -370,7 +370,7 @@ impl<'a> serde::ser::SerializeTuple for &'a mut TlsSerializer {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_element<T>(&mut self, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_element<T>(&mut self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -385,7 +385,7 @@ impl<'a> serde::ser::SerializeTupleStruct for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
-    fn serialize_field<T>(&mut self, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_field<T>(&mut self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -400,7 +400,7 @@ impl<'a> serde::ser::SerializeTupleVariant for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
-    fn serialize_field<T>(&mut self, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_field<T>(&mut self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -415,13 +415,13 @@ impl<'a> serde::ser::SerializeMap for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
-    fn serialize_key<T>(&mut self, key: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_key<T>(&mut self, _key: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
         unimplemented!()
     }
-    fn serialize_value<T>(&mut self, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_value<T>(&mut self, _value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
@@ -436,7 +436,11 @@ impl<'a> serde::ser::SerializeStructVariant for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
-    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_field<T>(
+        &mut self,
+        _key: &'static str,
+        _value: &T,
+    ) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {

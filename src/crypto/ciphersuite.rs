@@ -2,30 +2,31 @@ use crate::{
     crypto::{
         aead::{AuthenticatedEncryption, AES128GCM_IMPL},
         dh::{DhPoint, DhScalar, DiffieHellman, X25519_IMPL},
+        sig::{SignatureScheme, ED25519_IMPL},
     },
     error::Error,
 };
 
 /// This represents the X25519-SHA256-AES128GCM ciphersuite. Notably, it implements `CipherSuite`.
 pub(crate) const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
-    id: 0,
     name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
+    sig_impl: &ED25519_IMPL,
     hash_alg: &ring::digest::SHA256,
 };
 
 /// Represents the contents of an MLS ciphersuite: a DH-like key-agreement protocol, a
 /// hashing algorithm, and an authenticated encryption algorithm.
 pub(crate) struct CipherSuite {
-    /// For serialization purposes
-    pub(crate) id: u16,
     /// The name of this cipher suite
     pub(crate) name: &'static str,
     /// The trait object that implements our key exchange functionality
     pub(crate) dh_impl: &'static dyn DiffieHellman,
     /// The trait object that implements our authenticated encryption functionality
     pub(crate) aead_impl: &'static dyn AuthenticatedEncryption,
+    /// The object that implements our signature scheme
+    pub(crate) sig_impl: &'static SignatureScheme,
     /// The `ring::digest::Algorithm` that implements our hashing functionality
     // We're gonna have to break the mold here. Originally this was Hash: digest::Digest. But to
     // define HKDF and HMAC over a generic Digest, one needs the following constraints:
