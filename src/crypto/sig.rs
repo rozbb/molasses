@@ -3,11 +3,14 @@ use crate::error::Error;
 
 pub(crate) const ED25519_IMPL: SignatureScheme = SignatureScheme { name: "ED25519" };
 
-/// An enum of possible types for a signature scheme's public key, depending on the underlying
-/// algorithm
-pub(crate) enum SigPublicKey {
-    Ed25519PublicKey(ed25519_dalek::PublicKey),
-}
+// opaque SignaturePublicKey<1..2^16-1>
+/// Because these are untagged during serialization and deserialization, we can only represent
+/// signature scheme public keys as bytes, without any variant tag (such as Ed25519PublicKey). So
+/// we use this type for all signature stuff. I know, this sucks.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename = "SigPublicKey__bound_u16")]
+pub(crate) struct SigPublicKey(Vec<u8>);
+
 /// An enum of possible types for a signature scheme's secret key, depending on the underlying
 /// algorithm
 pub(crate) enum SigSecretKey {
@@ -21,6 +24,7 @@ pub(crate) enum Signature {
 }
 
 /// Represents the contents of an MLS signature scheme. Currently, this only implements Ed25519.
+#[derive(Debug)]
 pub(crate) struct SignatureScheme {
     pub(crate) name: &'static str,
 }
@@ -28,19 +32,23 @@ pub(crate) struct SignatureScheme {
 // This implementation is for Ed25519 only, currently. In the future, we should wrap Ed25519 with
 // a trait, and use the same trait for other signature implementations
 impl SignatureScheme {
+    /// This is just for testing purposes. This should be the `SigPublicKey` form of whatever we do
+    /// in the `sign` function to derive a public key from a secret key.
+    #[cfg(test)]
+    fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey {
+        let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
+
+        let public_key: ed25519_dalek::PublicKey = secret.into();
+        SigPublicKey(public_key.as_bytes().to_vec())
+    }
+
     /// Creates a public key from the provided bytes
-    ///
-    /// Returns: `Ok(public_key)` iff no error occured. Otherwise, returns an
-    /// `Err(Error::SignatureError)`.
-    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error> {
-        match ed25519_dalek::PublicKey::from_bytes(bytes) {
-            Ok(pubkey) => Ok(SigPublicKey::Ed25519PublicKey(pubkey)),
-            Err(_) => Err(Error::SignatureError("Invalid public key")),
-        }
+    fn public_key_from_bytes(&self, bytes: Vec<u8>) -> SigPublicKey {
+        SigPublicKey(bytes)
     }
 
     /// Creates a key pair from the provided secret key bytes. This expects 32 bytes.
-    fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
+    pub(crate) fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
         match ed25519_dalek::SecretKey::from_bytes(bytes) {
             Ok(secret) => Ok(SigSecretKey::Ed25519SecretKey(secret)),
             Err(_) => Err(Error::SignatureError("Invalid secret key")),
@@ -61,13 +69,6 @@ impl SignatureScheme {
         Ok(SigSecretKey::Ed25519SecretKey(key))
     }
 
-    /// Computes the public key corresponding to the given secret key. This is done in the same way
-    /// that `ed25519_dalek` does it.
-    fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey {
-        let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
-        SigPublicKey::Ed25519PublicKey(secret.into())
-    }
-
     /// Returns the byte representation of this signature
     pub(crate) fn signature_to_bytes(&self, signature: &Signature) -> Vec<u8> {
         let signature = enum_variant!(signature, Signature::Ed25519Signature);
@@ -76,26 +77,27 @@ impl SignatureScheme {
 
     /// Computes a signature of the given message under the given secret key
     pub(crate) fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
+        let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
+
         // For simplicity, we add the overhead of recomputing the public key on every signature
         // operation instead of having it passed into the function. Sue me.
-        let public = ED25519_IMPL.public_key_from_secret_key(secret);
+        let public_key: ed25519_dalek::PublicKey = secret.into();
+        let expanded_secret: ed25519_dalek::ExpandedSecretKey = secret.into();
 
-        let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
-        let public = enum_variant!(public, SigPublicKey::Ed25519PublicKey);
-
-        let expanded: ed25519_dalek::ExpandedSecretKey = secret.into();
-
-        Signature::Ed25519Signature(expanded.sign(&msg, &public))
+        Signature::Ed25519Signature(expanded_secret.sign(&msg, &public_key))
     }
 
     /// Verifies the signature of the given message under the given public key
     ///
     /// Returns: `Ok(())` iff the signature succeeded. Otherwise, returns an
-    /// `Err(Error::SignatureError)` which is a lot of errors, so you know it's bad.
+    /// `Err(Error::SignatureError)` which is a lot of "Error"s, so you know it's bad.
     #[must_use]
     fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
-        let public_key = enum_variant!(public_key, SigPublicKey::Ed25519PublicKey);
         let sig = enum_variant!(sig, Signature::Ed25519Signature);
+
+        // Convert the public key bytes into the ed25519_dalek representation
+        let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key.0)
+            .map_err(|_| Error::SignatureError("Invalid public key"))?;
 
         public_key
             .verify(msg, sig)
@@ -142,16 +144,12 @@ mod test {
             };
             let expected_public = {
                 let bytes = hex::decode(public_hex).unwrap();
-                let pubkey = ED25519_IMPL.public_key_from_bytes(&bytes).unwrap();
-                enum_variant!(pubkey, SigPublicKey::Ed25519PublicKey)
+                ED25519_IMPL.public_key_from_bytes(bytes)
             };
-            let derived_public = {
-                let pubkey = ED25519_IMPL.public_key_from_secret_key(&secret);
-                enum_variant!(pubkey, SigPublicKey::Ed25519PublicKey)
-            };
+            let derived_public = ED25519_IMPL.public_key_from_secret_key(&secret);
 
             // Make sure the expected public key and the public key we derived are the same
-            assert_eq!(expected_public.to_bytes(), derived_public.to_bytes());
+            assert_eq!(expected_public.0, derived_public.0);
 
             let derived_sig = {
                 let sig = ED25519_IMPL.sign(&secret, &msg);
