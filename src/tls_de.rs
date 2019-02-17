@@ -3,7 +3,7 @@ use crate::error::Error;
 use std::io::Read;
 
 use byteorder::{BigEndian, ReadBytesExt};
-use serde::de::{Deserializer, Visitor};
+use serde::de::{Deserializer, IntoDeserializer, Visitor};
 
 // TODO: Make this parser more conservative in what it accepts. Currently, it will happily return
 // incomplete vectors (i.e., it'll read a length, get to the end of a buffer that's too short, and
@@ -146,6 +146,31 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
         visitor.visit_seq(s)
     }
 
+    fn deserialize_enum<V>(
+        self,
+        name: &'static str,
+        variants: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        if name.ends_with("__enum_u8") {
+            let s = TlsEnumU8::new(self);
+            visitor.visit_enum(s)
+        } else {
+            panic!("don't know how to deserialize non-__enum_u8 enums")
+        }
+    }
+
+    fn deserialize_tuple<V>(self, len: usize, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: Visitor<'de>,
+    {
+        let s = TlsTupleSeq::new(self, len);
+        visitor.visit_seq(s)
+    }
+
     /// Hint that the `Deserialize` type is expecting a struct with a particular name and fields.
     /// This will make a new `TlsStructSeq` object with the given fields and run
     /// `Visitor::visit_seq` on that.
@@ -233,23 +258,6 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     {
         unimplemented!()
     }
-    fn deserialize_enum<V>(
-        self,
-        _name: &'static str,
-        _variants: &'static [&'static str],
-        _visitor: V,
-    ) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        unimplemented!()
-    }
-    fn deserialize_tuple<V>(self, _len: usize, _visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: Visitor<'de>,
-    {
-        unimplemented!()
-    }
     fn deserialize_tuple_struct<V>(
         self,
         _name: &'static str,
@@ -297,6 +305,47 @@ impl<'a, 'b, R: std::io::Read> TlsStructSeq<'a, 'b, R> {
             de: de,
             fields: fields,
             field_idx: 0,
+        }
+    }
+}
+
+/// This deals with the logic of deserializing tuples. It's just a fixed-length sequence of items
+struct TlsTupleSeq<'a, 'b, R: std::io::Read> {
+    /// A reference to the deserializer that called us
+    de: &'a mut TlsDeserializer<'b, R>,
+    /// The number of elements in the tuple
+    len: usize,
+    /// Our current position in the tuple
+    idx: usize,
+}
+
+impl<'a, 'b, R: std::io::Read> TlsTupleSeq<'a, 'b, R> {
+    /// Returns a new `TlsTupleSeq` with the given deserializer and length, and sets the starting
+    /// index to 0
+    fn new(de: &'a mut TlsDeserializer<'b, R>, len: usize) -> TlsTupleSeq<'a, 'b, R> {
+        TlsTupleSeq {
+            de: de,
+            len: len,
+            idx: 0,
+        }
+    }
+}
+
+impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsTupleSeq<'a, 'b, R> {
+    type Error = Error;
+
+    /// Deserializes the next field in the tuple
+    fn next_element_seed<T>(&mut self, seed: T) -> Result<Option<T::Value>, Error>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        // If we're done, return None. Otherwise increment the counter and deserialize the next
+        // thing
+        if self.idx >= self.len {
+            Ok(None)
+        } else {
+            self.idx += 1;
+            seed.deserialize(&mut *self.de).map(Some)
         }
     }
 }
@@ -380,6 +429,76 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsVecSeq<'a, 
     }
 }
 
+/// This deals with the logic of deserializing enums with variant indices of size u8
+struct TlsEnumU8<'a, 'b, R: std::io::Read> {
+    de: &'a mut TlsDeserializer<'b, R>,
+}
+
+impl<'a, 'b, R: std::io::Read> TlsEnumU8<'a, 'b, R> {
+    /// Makes a new `TlsEnumU8` object from the given deserializer
+    fn new(de: &'a mut TlsDeserializer<'b, R>) -> TlsEnumU8<'a, 'b, R> {
+        TlsEnumU8 { de: de }
+    }
+}
+
+impl<'de, 'a, 'b, R: std::io::Read> serde::de::EnumAccess<'de> for TlsEnumU8<'a, 'b, R> {
+    type Error = Error;
+    type Variant = Self;
+
+    /// Deserializes an enum variant
+    fn variant_seed<V>(self, seed: V) -> Result<(V::Value, Self::Variant), Error>
+    where
+        V: serde::de::DeserializeSeed<'de>,
+    {
+        // The variant index is a u8. Serde lets us turn that number into a deserializer which we
+        // can then use to get find correct variant.
+        let idx: u8 = serde::de::Deserialize::deserialize(&mut *self.de)?;
+        let variant_de: serde::de::value::U8Deserializer<Error> = idx.into_deserializer();
+        // Now that we have the variant index, deserialize the contents (if there are any)
+        let val = seed.deserialize(variant_de)?;
+        Ok((val, self))
+    }
+}
+
+impl<'de, 'a, 'b, R> serde::de::VariantAccess<'de> for TlsEnumU8<'a, 'b, R>
+where
+    R: std::io::Read,
+{
+    type Error = Error;
+
+    fn unit_variant(self) -> Result<(), Error> {
+        Ok(())
+    }
+
+    // For newtypes, just deserialize the insides
+    fn newtype_variant_seed<T>(self, seed: T) -> Result<T::Value, Error>
+    where
+        T: serde::de::DeserializeSeed<'de>,
+    {
+        seed.deserialize(&mut *self.de)
+    }
+
+    // For tuples, deserialize the insides as a tuple
+    fn tuple_variant<V>(self, len: usize, visitor: V) -> Result<V::Value, Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        self.de.deserialize_tuple(len, visitor)
+    }
+
+    // For structs, deserialize the insides as a tuple
+    fn struct_variant<V>(
+        self,
+        fields: &'static [&'static str],
+        visitor: V,
+    ) -> Result<V::Value, Error>
+    where
+        V: serde::de::Visitor<'de>,
+    {
+        self.de.deserialize_tuple(fields.len(), visitor)
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -412,6 +531,16 @@ mod test {
     }
 
     #[derive(Debug, Deserialize, Eq, PartialEq)]
+    #[serde(rename = "Hacc__enum_u8")]
+    enum Hacc {
+        Nothing,
+        Something {
+            sa: u16,
+            sb: u32,
+        }
+    }
+
+    #[derive(Debug, Deserialize, Eq, PartialEq)]
     struct Biff {
         a: u32,
         b: u32,
@@ -419,6 +548,8 @@ mod test {
         #[serde(rename = "d__bound_u16")]
         d: Vec<Fan>,
         e: u32,
+        f: Hacc,
+        g: Hacc,
     }
 
     // Make a byte sequence by hand whose deserialization we know, then test the result against
@@ -426,7 +557,7 @@ mod test {
     #[test]
     fn deserialization_kat() {
         #[rustfmt::skip]
-        let mut bar_bytes = [
+        let mut biff_bytes = [
             0x01, 0x00, 0x00, 0x00,          // u32
             0x00, 0x00, 0x00, 0x01,          // u32
             0xff,                            // u8
@@ -447,9 +578,13 @@ mod test {
                     0xcc, 0xdd,              //     u16
                 0x32,                        //   Eek::Sklounst
             0x00, 0x00, 0x00, 0x02,          // u32
+            0x00,                            // Hacc::Nothing
+            0x01,                            // Hacc::Something
+                0x33, 0x44,                  //   u16
+                0x55, 0x66, 0x77, 0x88,      //   u32
         ];
 
-        let mut buf = &bar_bytes[..];
+        let mut buf = &biff_bytes[..];
         let mut deserializer = TlsDeserializer::from_reader(&mut buf);
         let biff = Biff::deserialize(&mut deserializer).unwrap();
 
@@ -472,6 +607,11 @@ mod test {
                 },
             ],
             e: 0x00000002,
+            f: Hacc::Nothing,
+            g: Hacc::Something {
+                sa: 0x3344,
+                sb: 0x55667788,
+            },
         };
 
         assert_eq!(biff, expected);

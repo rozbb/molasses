@@ -16,18 +16,6 @@ const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)]
 const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16)] =
     &[(&ED25519_IMPL, "ED25519", 0x0807)];
 
-impl Serialize for BasicCredential {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        let mut struct_serializer = serializer.serialize_struct("BasicCredential", 3)?;
-        struct_serializer.serialize_field("identity", &self.identity)?;
-        // TODO: FINISH
-        struct_serializer.end()
-    }
-}
-
 // Implement Serialize for our CipherSuites and SignatureSchemes. This just serializes their ID
 
 impl Serialize for CipherSuite {
