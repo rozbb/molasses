@@ -398,6 +398,7 @@ mod test {
         assert_eq!(node_sibling(7, num_leaves), 7);
     }
 
+    // Checks correctness of relationships in the tree (e.g., the parent of my child is me)
     #[quickcheck]
     fn tree_relations_correctness(num_leaves: usize) {
         if num_leaves == 0 || num_leaves > MAX_LEAVES {
@@ -420,17 +421,17 @@ mod test {
         // Recall left_child < parent < right_child
         match me.cmp(&my_parent) {
             std::cmp::Ordering::Less => {
-                // I am the left child of my parent
+                // Check that I am the left child of my parent
                 assert_eq!(node_left_child(my_parent), me);
                 assert_eq!(node_right_child(my_parent, num_leaves), my_sibling);
             }
             std::cmp::Ordering::Greater => {
-                // I am the left child of my parent
+                // Check that I am the left child of my parent
                 assert_eq!(node_left_child(my_parent), my_sibling);
                 assert_eq!(node_right_child(my_parent, num_leaves), me);
             }
             std::cmp::Ordering::Equal => {
-                // I am my own parent. I must be the root node
+                // I am my own parent. Check that I must be the root node
                 assert_eq!(root_idx(num_leaves), me);
             }
         }
@@ -491,8 +492,9 @@ mod test {
         sibling: Vec<u32>,
     }
 
+    // Tests against the official tree math test vector. See above comment for explanation.
     #[test]
-    fn deserialize_test_vec() {
+    fn official_tree_kat() {
         let mut f = std::fs::File::open("test_vectors/tree_math.bin").unwrap();
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = TreeMathTestVectors::deserialize(&mut deserializer).unwrap();

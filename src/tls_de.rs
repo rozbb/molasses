@@ -9,6 +9,10 @@ use serde::de::{Deserializer, IntoDeserializer, Visitor};
 // incomplete vectors (i.e., it'll read a length, get to the end of a buffer that's too short, and
 // then return what it has instead of blocking or erroring).
 
+fn make_custom_error<T: core::fmt::Display>(msg: T) -> Error {
+    <Error as serde::de::Error>::custom(msg)
+}
+
 /// Given a reader and the name of a field or unit struct, find the length of the upcoming data.
 /// This only makes sense for variable-length data types. So for example if we were parsing the `v`
 /// field of
@@ -104,6 +108,17 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
         visitor.visit_u64(self.reader.read_u64::<BigEndian>()?)
     }
 
+    /// Hint that the `Deserialize` type is expecting an `Option` value. This reads a single byte
+    /// that's a 0 or 1, then reads nothing or the contents of the `Some` variant, respectively.
+    fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
+        let value: u8 = serde::de::Deserialize::deserialize(&mut *self)?;
+        match value {
+            0 => visitor.visit_none(),
+            1 => visitor.visit_some(&mut *self),
+            _ => Err(make_custom_error("expected binary tag for Option type"))
+        }
+    }
+
     /// Hint that the `Deserialize` type is expecting a newtype struct with a particular name. This
     /// will use our hacky naming scheme to find the length of the inner type (if it is a
     /// variable-length type) and deserialize the contents normally.
@@ -159,7 +174,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
             let s = TlsEnumU8::new(self);
             visitor.visit_enum(s)
         } else {
-            panic!("don't know how to deserialize non-__enum_u8 enums")
+            Err(make_custom_error("don't know how to deserialize non-__enum_u8 enums"))
         }
     }
 
@@ -240,9 +255,6 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
         unimplemented!()
     }
     fn deserialize_byte_buf<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
-        unimplemented!()
-    }
-    fn deserialize_option<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {
         unimplemented!()
     }
     fn deserialize_unit<V: Visitor<'de>>(self, _visitor: V) -> Result<V::Value, Self::Error> {

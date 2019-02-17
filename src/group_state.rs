@@ -10,37 +10,51 @@ pub(crate) struct GroupState {
     /// You can think of this as a context variable. It helps us implement crypto ops and
     /// disambiguate serialized data structures
     #[serde(skip)]
-    cs: &'static CipherSuite,
+    pub(crate) cs: &'static CipherSuite,
+
     /// A long-lived signing key used to authenticate the sender of a message
     #[serde(skip)]
     pub(crate) identity_key: SigSecretKey,
+
     // opaque group_id<0..255>;
     /// An application-defined identifier for the group
-    group_id: Vec<u8>,
+    #[serde(rename = "group_id__bound_u8")]
+    pub(crate) group_id: Vec<u8>,
+
     /// Represents the current version of the group key
     pub(crate) epoch: u32,
+
     // optional<Credential> roster<1..2^32-1>;
     /// Contains credentials for the occupied slots in the tree, including the identity and
     /// signature public key for the holder of the slot
-    roster: Vec<Option<Credential>>,
+    #[serde(rename = "roster__bound_u32")]
+    pub(crate) roster: Vec<Option<Credential>>,
+
     // optional<PublicKey> tree<1..2^32-1>;
     /// The tree field contains the public keys corresponding to the nodes of the ratchet tree for
     /// this group. The number of leaves in this tree MUST be equal to the length of `roster`
-    tree: RatchetTree,
+    pub(crate) tree: RatchetTree,
+
     // opaque transcript_hash<0..255>;
     /// Contains a running hash of `GroupOperation` messages that led to this state
+    #[serde(rename = "transcript_hash__bound_u8")]
     pub(crate) transcript_hash: Vec<u8>,
+
     /// This is also known as the signer index
     #[serde(skip)]
     pub(crate) my_position_in_roster: u32,
+
     //
     // These are a bunch of secrets derived via HKDF-Expand
     //
+
     /// The initial secret used to derive all the rest
     #[serde(skip)]
-    init_secret: Vec<u8>,
+    pub(crate) init_secret: Vec<u8>,
+
     #[serde(skip)]
-    application_secret: Vec<u8>,
+    pub(crate) application_secret: Vec<u8>,
+
     #[serde(skip)]
     pub(crate) confirmation_key: ring::hmac::SigningKey,
 }
@@ -93,10 +107,10 @@ impl GroupState {
 
     /// This is the `Derive-Secret` function defined in section 5.9 of the spec. It's used as a
     /// helper function for `derive_new_secrets`
-    fn derive_secret(
+    pub(crate) fn derive_secret(
+        state: &GroupState,
         prk: &ring::hmac::SigningKey,
         label_info: &[u8],
-        state: &GroupState,
     ) -> Vec<u8> {
         // This struct is only used for `derive_secret` calculations
         #[derive(Serialize)]
@@ -135,14 +149,14 @@ impl GroupState {
         let epoch_secret: ring::hmac::SigningKey = ring::hkdf::extract(&salt, &update_secret);
 
         // application_secret = Derive-Secret(epoch_secret, "app", GroupState_[n])
-        let application_secret = GroupState::derive_secret(&epoch_secret, b"app", self);
+        let application_secret = GroupState::derive_secret(self, &epoch_secret, b"app");
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
         let confirmation_key = {
-            let key_bytes = GroupState::derive_secret(&epoch_secret, b"confirm", self);
+            let key_bytes = GroupState::derive_secret(self, &epoch_secret, b"confirm");
             ring::hmac::SigningKey::new(self.cs.hash_alg, &key_bytes)
         };
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
-        let init_secret = GroupState::derive_secret(&epoch_secret, b"init", self);
+        let init_secret = GroupState::derive_secret(self, &epoch_secret, b"init");
 
         self.application_secret = application_secret;
         self.confirmation_key = confirmation_key;

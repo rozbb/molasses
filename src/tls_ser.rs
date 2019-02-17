@@ -2,7 +2,7 @@ use crate::error::Error;
 
 use byteorder::{BigEndian, WriteBytesExt};
 use doc_comment::doc_comment;
-use serde::ser::{Serialize, Serializer};
+use serde::ser::{Serialize, SerializeSeq, Serializer};
 
 // TODO: Add more helpful panic messages
 
@@ -211,6 +211,15 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         }
     }
 
+    /// This just forwards to `serialize_seq`
+    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
+        let mut seq = self.serialize_seq(Some(v.len()))?;
+        for b in v {
+            seq.serialize_element(b)?;
+        }
+        seq.end()
+    }
+
     /// `TlsSerializer` is also a `SerializeSeq` (see impl below)
     fn serialize_seq(self, _len: Option<usize>) -> Result<Self::SerializeSeq, Self::Error> {
         Ok(self)
@@ -254,9 +263,6 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         unimplemented!()
     }
     fn serialize_str(self, _v: &str) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
         unimplemented!()
     }
     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {

@@ -8,7 +8,8 @@ use crate::tree_math;
 
 /// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
 /// corresponding private key and a secret octet string.
-#[derive(Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename = "RatchetTreeNode__enum_u8")]
 pub(crate) enum RatchetTreeNode {
     Blank,
     Filled {
@@ -29,10 +30,10 @@ pub(crate) enum RatchetTreeNode {
 
 /// A left-balanced binary tree of `RatchetTreeNode`s
 // Contains a vector of nodes that could optionally be blanks
-#[derive(Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct RatchetTree {
     #[serde(rename = "nodes__bound_u32")]
-    nodes: Vec<RatchetTreeNode>,
+    pub(crate) nodes: Vec<RatchetTreeNode>,
 }
 
 impl RatchetTree {

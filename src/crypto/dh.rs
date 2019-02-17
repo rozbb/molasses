@@ -27,11 +27,18 @@ pub(crate) enum DhScalar {
     X25519Scalar([u8; X25519_SCALAR_SIZE]),
 }
 
+impl core::fmt::Debug for DhScalar {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        // Ensure that the secret value isn't accidentally logged
+        f.write_str("DhScalar: CONTENTS OMITTED")
+    }
+}
+
 // opaque DHPublicKey<1..2^16-1>
 /// Because these are untagged during serialization and deserialization, we can only represent
 /// curve points as bytes, without any variant tag (such as X25519Scalar). So we use this type for
 /// all DH stuff. I know, this sucks.
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "DhPoint__bound_u16")]
 pub(crate) struct DhPoint(Vec<u8>);
 
@@ -164,11 +171,11 @@ mod test {
         // Compute b(aP) and a(bP) and make sure they are the same
         let shared_secret_a = {
             let point = X25519_IMPL.diffie_hellman(&alice_scalar, &bob_pubkey);
-             X25519_IMPL.point_as_bytes(point)
+            X25519_IMPL.point_as_bytes(point)
         };
         let shared_secret_b = {
             let point = X25519_IMPL.diffie_hellman(&bob_scalar, &alice_pubkey);
-             X25519_IMPL.point_as_bytes(point)
+            X25519_IMPL.point_as_bytes(point)
         };
 
         // Known-answer for aP
@@ -215,7 +222,10 @@ mod test {
             X25519_IMPL.diffie_hellman(&scalar2, &point1),
         );
 
-        assert_eq!(X25519_IMPL.point_as_bytes(shared1), X25519_IMPL.point_as_bytes(shared2));
+        assert_eq!(
+            X25519_IMPL.point_as_bytes(shared1),
+            X25519_IMPL.point_as_bytes(shared2)
+        );
     }
 
     // This comes from

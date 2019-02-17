@@ -1,9 +1,6 @@
-use crate::{
-    credential::BasicCredential,
-    crypto::{
-        ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
-        sig::{Signature, SignatureScheme, ED25519_IMPL},
-    },
+use crate::crypto::{
+    ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+    sig::{Signature, SignatureScheme, ED25519_IMPL},
 };
 
 use serde::{

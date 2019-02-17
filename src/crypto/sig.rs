@@ -17,6 +17,13 @@ pub(crate) enum SigSecretKey {
     Ed25519SecretKey(ed25519_dalek::SecretKey),
 }
 
+impl core::fmt::Debug for SigSecretKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        // Ensure that the secret value isn't accidentally logged
+        f.write_str("SigSecretKey: CONTENTS OMITTED")
+    }
+}
+
 /// An enum of possible types for a signature scheme's signature, depending on the underlying
 /// algorithm
 pub(crate) enum Signature {

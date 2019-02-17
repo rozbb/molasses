@@ -17,6 +17,13 @@ pub(crate) enum AeadKey {
     Aes128GcmKey(Aes128GcmKey),
 }
 
+impl core::fmt::Debug for AeadKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        // Ensure that the secret value isn't accidentally logged
+        f.write_str("AeadKey: CONTENTS OMITTED")
+    }
+}
+
 /// An enum of possible types for an AEAD nonce, depending on the underlying algorithm
 pub(crate) enum AeadNonce {
     /// A nonce in AES-128-GCM

@@ -25,13 +25,13 @@ impl EciesLabel {
 }
 
 /// A short ciphertext encrypted with the enclosed ephemeral DH key
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
     ephemeral_public_key: DhPoint,
     /// The payload
-    // opaque ciphertext<0..255>;
-    #[serde(rename = "ciphertext__bound_u8")]
+    // opaque ciphertext<0..2^24-1>;
+    #[serde(rename = "ciphertext__bound_u24")]
     ciphertext: Vec<u8>,
 }
 
