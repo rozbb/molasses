@@ -115,7 +115,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
         match value {
             0 => visitor.visit_none(),
             1 => visitor.visit_some(&mut *self),
-            _ => Err(make_custom_error("expected binary tag for Option type"))
+            _ => Err(make_custom_error("expected binary tag for Option type")),
         }
     }
 
@@ -174,7 +174,9 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
             let s = TlsEnumU8::new(self);
             visitor.visit_enum(s)
         } else {
-            Err(make_custom_error("don't know how to deserialize non-__enum_u8 enums"))
+            Err(make_custom_error(
+                "don't know how to deserialize non-__enum_u8 enums",
+            ))
         }
     }
 
@@ -514,118 +516,20 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    // Use the test vectors from the serialization code
+    use crate::tls_ser::test::{biff_bytes, make_biff, Biff};
 
     use serde::de::Deserialize;
 
-    // I'm bad at naming things. These are just structs that I'm using to test deserialization
-    // though, so whatever
-
-    make_enum_u8_discriminant!(Eek {
-        Draxx = 0x05,
-        Them = 0xff,
-        Sklounst = 0x32,
-    });
-
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    struct Ripp(u16);
-
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    #[serde(rename = "Biff__bound_u16")]
-    struct Shake(Vec<u16>);
-
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    struct Fan {
-        #[serde(rename = "v__bound_u8")]
-        fv: Vec<u32>,
-        fp: Ripp,
-        fs: Shake,
-        fe: Eek,
-    }
-
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    #[serde(rename = "Hacc__enum_u8")]
-    enum Hacc {
-        Nothing,
-        Something {
-            sa: u16,
-            sb: u32,
-        }
-    }
-
-    #[derive(Debug, Deserialize, Eq, PartialEq)]
-    struct Biff {
-        a: u32,
-        b: u32,
-        c: u8,
-        #[serde(rename = "d__bound_u16")]
-        d: Vec<Fan>,
-        e: u32,
-        f: Hacc,
-        g: Hacc,
-    }
-
-    // Make a byte sequence by hand whose deserialization we know, then test the result against
-    // what we expect. This uses the above stupidly named structs.
+    // Make a byte sequence by hand whose Biff-deserialization we know, then test that it is what
+    // we expect. This uses some stupidly named structs.
     #[test]
     fn deserialization_kat() {
-        #[rustfmt::skip]
-        let mut biff_bytes = [
-            0x01, 0x00, 0x00, 0x00,          // u32
-            0x00, 0x00, 0x00, 0x01,          // u32
-            0xff,                            // u8
-            0x00, 0x20,                      // 32 bytes of Vec<Fan>
-                0x0c,                        //   12 bytes of Vec<u32>
-                    0xff, 0xff, 0xff, 0x00,  //     u32
-                    0x00, 0x00, 0x00, 0xff,  //     u32
-                    0x00, 0xff, 0x00, 0xff,  //     u32
-                0x09, 0x08,                  //   Ripp
-                0x00, 0x00,                  //   0 bytes of Shake
-                                             //     [nothing]
-                0x05,                        //   Eek::Draxx
-                0x04,                        //   4 bytes of Vec<u32>
-                    0x10, 0x10, 0x10, 0x10,  //     u32
-                0x07, 0x06,                  //   Ripp
-                0x00, 0x04,                  //   4 bytes of Shake
-                    0xaa, 0xbb,              //     u16
-                    0xcc, 0xdd,              //     u16
-                0x32,                        //   Eek::Sklounst
-            0x00, 0x00, 0x00, 0x02,          // u32
-            0x00,                            // Hacc::Nothing
-            0x01,                            // Hacc::Something
-                0x33, 0x44,                  //   u16
-                0x55, 0x66, 0x77, 0x88,      //   u32
-        ];
-
-        let mut buf = &biff_bytes[..];
+        let mut buf = biff_bytes;
         let mut deserializer = TlsDeserializer::from_reader(&mut buf);
-        let biff = Biff::deserialize(&mut deserializer).unwrap();
+        let expected_biff = make_biff();
+        let deserialized_biff = Biff::deserialize(&mut deserializer).unwrap();
 
-        let expected = Biff {
-            a: 0x01000000,
-            b: 0x00000001,
-            c: 0xff,
-            d: vec![
-                Fan {
-                    fv: vec![0xffffff00, 0x000000ff, 0x00ff00ff],
-                    fp: Ripp(0x0908),
-                    fs: Shake(Vec::new()),
-                    fe: Eek::Draxx,
-                },
-                Fan {
-                    fv: vec![0x10101010],
-                    fp: Ripp(0x0706),
-                    fs: Shake(vec![0xaabb, 0xccdd]),
-                    fe: Eek::Sklounst,
-                },
-            ],
-            e: 0x00000002,
-            f: Hacc::Nothing,
-            g: Hacc::Something {
-                sa: 0x3344,
-                sb: 0x55667788,
-            },
-        };
-
-        assert_eq!(biff, expected);
+        assert_eq!(deserialized_biff, expected_biff);
     }
 }

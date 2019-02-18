@@ -53,7 +53,7 @@ impl<'de> Deserialize<'de> for &'static CipherSuite {
                         return Ok(cs);
                     }
                 }
-                Err(E::custom(format!(
+                Err(E::custom(format_args!(
                     "could not deserialize {:x} into cipher suite",
                     value
                 )))
@@ -101,7 +101,7 @@ impl<'de> Deserialize<'de> for &'static SignatureScheme {
                         return Ok(ss);
                     }
                 }
-                Err(E::custom(format!(
+                Err(E::custom(format_args!(
                     "could not deserialize {:x} into signature scheme",
                     value
                 )))

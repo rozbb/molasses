@@ -4,8 +4,6 @@ use byteorder::{BigEndian, WriteBytesExt};
 use doc_comment::doc_comment;
 use serde::ser::{Serialize, SerializeSeq, Serializer};
 
-// TODO: Add more helpful panic messages
-
 /// Uses `TlsSerializer` to serialize the input to a vector of bytes
 pub(crate) fn serialize_to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, Error> {
     let mut serializer = TlsSerializer::new();
@@ -30,32 +28,40 @@ macro_rules! serialize_with_bound {
                 "`",
             ),
             pub(crate) fn $fn_name<'a, T: Serialize + ?Sized>(
-                v: &T,
-                s: &mut &'a mut TlsSerializer,
+                value: &T,
+                serializer: &mut &'a mut TlsSerializer,
             ) -> Result<
                 <&'a mut TlsSerializer as Serializer>::Ok,
                 <&'a mut TlsSerializer as Serializer>::Error,
             > {
                 // Starting position
-                let len_pos = s.buf.position();
+                let len_pos = serializer.buf.position();
                 // Write a dummy zero here, then serialize everything we get, then rewrite the
                 // correct length in the position of the dummy zero.
-                s.buf.$write_fn::<$endianness>(0)?;
-                v.serialize(&mut **s)?;
+                serializer.buf.$write_fn::<$endianness>(0)?;
+                value.serialize(&mut **serializer)?;
                 // End position - start position - size of length tag = length of serialized output
-                let len: u64 = s.buf.position() - len_pos - (std::mem::size_of::<$t>() as u64);
+                let len: u64 =
+                    serializer.buf.position() - len_pos - (std::mem::size_of::<$t>() as u64);
 
                 if len > (std::$ti::MAX as u64) {
-                    panic!(
-                        "tried to serialize a {}-bounded object that was too long",
-                        stringify!($t),
-                    )
+                    let err = <Error as serde::ser::Error>::custom(
+                        format_args!(
+                            "tried to serialize a {}-bounded object that was too long",
+                            stringify!($t)
+                        )
+                    );
+                    return Err(err)
                 }
 
-                // If we haven't panicked yet, we're within the bound
+                // If we haven't errored out yet, we're within the bound
                 let len: $t = len as $t;
-                s.buf.set_position(len_pos);
-                s.buf.$write_fn::<$endianness>(len)?;
+                // Save the position at the end of the buffer, seek to the length tag, write, the
+                // length, then seek back to the end.
+                let curr_pos = serializer.buf.position();
+                serializer.buf.set_position(len_pos);
+                serializer.buf.$write_fn::<$endianness>(len)?;
+                serializer.buf.set_position(curr_pos);
 
                 Ok(())
             }
@@ -72,56 +78,93 @@ serialize_with_bound!(u64, u64, serialize_with_bound_u64, write_u64, BigEndian);
 
 /// Serializes an object with a length in bytes that must be representable by `u8`
 pub(crate) fn serialize_with_bound_u8<'a, T: Serialize + ?Sized>(
-    v: &T,
-    s: &mut &'a mut TlsSerializer,
+    value: &T,
+    serializer: &mut &'a mut TlsSerializer,
 ) -> Result<<&'a mut TlsSerializer as Serializer>::Ok, <&'a mut TlsSerializer as Serializer>::Error>
 {
     // Starting position
-    let len_pos = s.buf.position();
+    let len_pos = serializer.buf.position();
     // Write a dummy zero here, then serialize everything we get, then rewrite the correct
     // length in the position of the dummy zero.
-    s.buf.write_u8(0)?;
-    v.serialize(&mut **s)?;
+    serializer.buf.write_u8(0)?;
+    value.serialize(&mut **serializer)?;
     // End position - start position - size of length tag = length of serialized output
-    let len: u64 = s.buf.position() - len_pos - 1;
+    let len: u64 = serializer.buf.position() - len_pos - 1;
 
     if len > (std::u8::MAX as u64) {
-        panic!("tried to serialize a u8-bounded object that was too long")
+        let err = <Error as serde::ser::Error>::custom(
+            "tried to serialize a u8-bounded object that was too long",
+        );
+        return Err(err);
     }
 
-    // If we haven't panicked yet, we're within the bound
+    // If we haven't errored out yet, we're within the bound
     let len: u8 = len as u8;
-    s.buf.set_position(len_pos);
-    s.buf.write_u8(len)?;
+    // Save the position at the end of the buffer, seek to the length tag, write, the
+    // length, then seek back to the end.
+    let curr_pos = serializer.buf.position();
+    serializer.buf.set_position(len_pos);
+    serializer.buf.write_u8(len)?;
+    serializer.buf.set_position(curr_pos);
 
     Ok(())
 }
 
 /// Serializes an object with a length in bytes that must be representable by `u24` (i.e. 3 bytes)
 pub(crate) fn serialize_with_bound_u24<'a, T: Serialize + ?Sized>(
-    v: &T,
-    s: &mut &'a mut TlsSerializer,
+    value: &T,
+    serializer: &mut &'a mut TlsSerializer,
 ) -> Result<<&'a mut TlsSerializer as Serializer>::Ok, <&'a mut TlsSerializer as Serializer>::Error>
 {
     // Starting position
-    let len_pos = s.buf.position();
+    let len_pos = serializer.buf.position();
     // Write a dummy zero here, then serialize everything we get, then rewrite the correct
     // length in the position of the dummy zero.
-    s.buf.write_u24::<BigEndian>(0)?;
-    v.serialize(&mut **s)?;
+    serializer.buf.write_u24::<BigEndian>(0)?;
+    value.serialize(&mut **serializer)?;
     // End position - start position - size of length tag = length of serialized output
-    let len: u64 = s.buf.position() - len_pos - 3;
+    let len: u64 = serializer.buf.position() - len_pos - 3;
 
     if len >= (1u64 << 24) {
-        panic!("tried to serialize a u24-bounded object that was too long")
+        let err = <Error as serde::ser::Error>::custom(
+            "tried to serialize a u24-bounded object that was too long",
+        );
+        return Err(err);
     }
 
-    // If we haven't panicked yet, we're within the bound
+    // If we haven't errored out yet, we're within the bound
     let len: u32 = len as u32;
-    s.buf.set_position(len_pos);
-    s.buf.write_u24::<BigEndian>(len)?;
+    // Save the position at the end of the buffer, seek to the length tag, write, the
+    // length, then seek back to the end.
+    let curr_pos = serializer.buf.position();
+    serializer.buf.set_position(len_pos);
+    serializer.buf.write_u24::<BigEndian>(len)?;
+    serializer.buf.set_position(curr_pos);
 
     Ok(())
+}
+
+pub(crate) fn serialize_with_optional_bound<'a, T>(
+    field: &'static str,
+    value: &T,
+    serializer: &mut &'a mut TlsSerializer,
+) -> Result<<&'a mut TlsSerializer as Serializer>::Ok, <&'a mut TlsSerializer as Serializer>::Error>
+where
+    T: Serialize + ?Sized,
+{
+    if field.ends_with("__bound_u8") {
+        serialize_with_bound_u8(value, serializer)
+    } else if field.ends_with("__bound_u16") {
+        serialize_with_bound_u16(value, serializer)
+    } else if field.ends_with("__bound_u24") {
+        serialize_with_bound_u24(value, serializer)
+    } else if field.ends_with("__bound_u32") {
+        serialize_with_bound_u32(value, serializer)
+    } else if field.ends_with("__bound_u64") {
+        serialize_with_bound_u64(value, serializer)
+    } else {
+        value.serialize(&mut **serializer)
+    }
 }
 
 /// This implements some subset of the Tls wire format. I still don't have a good source on the
@@ -196,19 +239,7 @@ impl<'a> Serializer for &'a mut TlsSerializer {
     where
         T: ?Sized + Serialize,
     {
-        if name.ends_with("__bound_u8") {
-            serialize_with_bound_u8(value, &mut self)
-        } else if name.ends_with("__bound_u16") {
-            serialize_with_bound_u16(value, &mut self)
-        } else if name.ends_with("__bound_u24") {
-            serialize_with_bound_u24(value, &mut self)
-        } else if name.ends_with("__bound_u32") {
-            serialize_with_bound_u32(value, &mut self)
-        } else if name.ends_with("__bound_u64") {
-            serialize_with_bound_u64(value, &mut self)
-        } else {
-            value.serialize(self)
-        }
+        serialize_with_optional_bound(name, value, &mut self)
     }
 
     /// This just forwards to `serialize_seq`
@@ -231,6 +262,57 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeStruct, Self::Error> {
+        Ok(self)
+    }
+
+    /// To serialize unit types, just write the variant down as a number
+    fn serialize_unit_variant(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        _variant: &'static str,
+    ) -> Result<Self::Ok, Self::Error> {
+        if name.ends_with("__enum_u8") {
+            // Make sure the variant index isn't out of our range
+            assert!(
+                variant_index <= core::u8::MAX as u32,
+                "enum variant index out of bounds"
+            );
+            self.serialize_u8(variant_index as u8)
+        } else {
+            let err = <Error as serde::ser::Error>::custom(
+                "don't know how to serialize a non-__enum_u8 enum"
+            );
+            return Err(err);
+        }
+    }
+
+    /// To serialize newtypes, we serialize it like a unit type, and then serialize the contents.
+    fn serialize_newtype_variant<T>(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        value: &T,
+    ) -> Result<Self::Ok, Self::Error>
+    where
+        T: ?Sized + Serialize,
+    {
+        self.serialize_unit_variant(name, variant_index, variant)?;
+        value.serialize(self)
+    }
+
+    /// Same thing as newtype variant. Serialize a struct variant by treating it as a unit variant,
+    /// then serializing the struct it contains. `TlsSerializer` is also a `SerializeStructVariant`
+    fn serialize_struct_variant(
+        self,
+        name: &'static str,
+        variant_index: u32,
+        variant: &'static str,
+        _len: usize,
+    ) -> Result<Self::SerializeStructVariant, Self::Error> {
+        // Serialize the variant and then return myself as a SerializeStructVariant
+        self.serialize_unit_variant(name, variant_index, variant)?;
         Ok(self)
     }
 
@@ -283,31 +365,11 @@ impl<'a> Serializer for &'a mut TlsSerializer {
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
         unimplemented!()
     }
-    fn serialize_unit_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-    ) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
-    }
     fn serialize_tuple_struct(
         self,
         _name: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleStruct, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_newtype_variant<T>(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _value: &T,
-    ) -> Result<Self::Ok, Self::Error>
-    where
-        T: ?Sized + Serialize,
-    {
         unimplemented!()
     }
     fn serialize_tuple_variant(
@@ -317,15 +379,6 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         _variant: &'static str,
         _len: usize,
     ) -> Result<Self::SerializeTupleVariant, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_struct_variant(
-        self,
-        _name: &'static str,
-        _variant_index: u32,
-        _variant: &'static str,
-        _len: usize,
-    ) -> Result<Self::SerializeStructVariant, Self::Error> {
         unimplemented!()
     }
 }
@@ -356,11 +409,11 @@ impl<'a> serde::ser::SerializeStruct for &'a mut TlsSerializer {
 
     /// Structs are serialized sequentially as well, without any delimiters between fields, since
     /// variable-sized fields are length-prefixed
-    fn serialize_field<T>(&mut self, _key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
-        value.serialize(&mut **self)
+        serialize_with_optional_bound(key, value, self)
     }
 
     fn end(self) -> Result<Self::Ok, Self::Error> {
@@ -442,17 +495,136 @@ impl<'a> serde::ser::SerializeStructVariant for &'a mut TlsSerializer {
     type Ok = ();
     type Error = crate::error::Error;
 
-    fn serialize_field<T>(
-        &mut self,
-        _key: &'static str,
-        _value: &T,
-    ) -> Result<Self::Ok, Self::Error>
+    fn serialize_field<T>(&mut self, key: &'static str, value: &T) -> Result<Self::Ok, Self::Error>
     where
         T: ?Sized + Serialize,
     {
-        unimplemented!()
+        serialize_with_optional_bound(key, value, self)
     }
+
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test {
+    use super::*;
+
+    use serde::de::Deserialize;
+
+    // I'm bad at naming things. These are just structs that I'm using to test (de)serialization
+    // though, so whatever.
+    // We're making some of these pub(crate), because tls_de will use these data structures for
+    // testing deserialization
+
+    make_enum_u8_discriminant!(Eek {
+        Draxx = 0x05,
+        Them = 0xff,
+        Sklounst = 0x32,
+    });
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct Ripp(u16);
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename = "Biff__bound_u16")]
+    struct Shake(Vec<u16>);
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    struct Fan {
+        #[serde(rename = "fv__bound_u8")]
+        fv: Vec<u32>,
+        fp: Ripp,
+        fs: Shake,
+        fe: Eek,
+    }
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    #[serde(rename = "Hacc__enum_u8")]
+    enum Hacc {
+        Nothing,
+        Something { sa: u16, sb: u32 },
+    }
+
+    #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+    pub(crate) struct Biff {
+        a: u32,
+        b: u32,
+        c: u8,
+        #[serde(rename = "d__bound_u16")]
+        d: Vec<Fan>,
+        e: u32,
+        f: Hacc,
+        g: Hacc,
+    }
+
+    // This represents the known Biff data structure that's returned by make_biff()
+    #[rustfmt::skip]
+    pub(crate) const biff_bytes: &'static [u8] = &[
+        0x01, 0x00, 0x00, 0x00,          // u32
+        0x00, 0x00, 0x00, 0x01,          // u32
+        0xff,                            // u8
+        0x00, 0x20,                      // 32 bytes of Vec<Fan>
+            0x0c,                        //   12 bytes of Vec<u32>
+                0xff, 0xff, 0xff, 0x00,  //     u32
+                0x00, 0x00, 0x00, 0xff,  //     u32
+                0x00, 0xff, 0x00, 0xff,  //     u32
+            0x09, 0x08,                  //   Ripp
+            0x00, 0x00,                  //   0 bytes of Shake
+                                         //     [nothing]
+            0x05,                        //   Eek::Draxx
+            0x04,                        //   4 bytes of Vec<u32>
+                0x10, 0x10, 0x10, 0x10,  //     u32
+            0x07, 0x06,                  //   Ripp
+            0x00, 0x04,                  //   4 bytes of Shake
+                0xaa, 0xbb,              //     u16
+                0xcc, 0xdd,              //     u16
+            0x32,                        //   Eek::Sklounst
+        0x00, 0x00, 0x00, 0x02,          // u32
+        0x00,                            // Hacc::Nothing
+        0x01,                            // Hacc::Something
+            0x33, 0x44,                  //   u16
+            0x55, 0x66, 0x77, 0x88,      //   u32
+    ];
+
+    // This is the Biff whose serialization is biff_bytes
+    pub(crate) fn make_biff() -> Biff {
+        Biff {
+            a: 0x01000000,
+            b: 0x00000001,
+            c: 0xff,
+            d: vec![
+                Fan {
+                    fv: vec![0xffffff00, 0x000000ff, 0x00ff00ff],
+                    fp: Ripp(0x0908),
+                    fs: Shake(Vec::new()),
+                    fe: Eek::Draxx,
+                },
+                Fan {
+                    fv: vec![0x10101010],
+                    fp: Ripp(0x0706),
+                    fs: Shake(vec![0xaabb, 0xccdd]),
+                    fe: Eek::Sklounst,
+                },
+            ],
+            e: 0x00000002,
+            f: Hacc::Nothing,
+            g: Hacc::Something {
+                sa: 0x3344,
+                sb: 0x55667788,
+            },
+        }
+    }
+
+    // Make a Biff whose serialization we know, then make sure the serialization is correct. This
+    // uses the above stupidly named structs.
+    #[test]
+    fn serialization_kat() {
+        let biff = make_biff();
+        let serialized = serialize_to_bytes(&biff).unwrap();
+        let expected_bytes = biff_bytes;
+
+        assert_eq!(serialized.as_slice(), expected_bytes);
     }
 }
