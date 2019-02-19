@@ -281,7 +281,7 @@ impl<'a> Serializer for &'a mut TlsSerializer {
             self.serialize_u8(variant_index as u8)
         } else {
             let err = <Error as serde::ser::Error>::custom(
-                "don't know how to serialize a non-__enum_u8 enum"
+                "don't know how to serialize a non-__enum_u8 enum",
             );
             return Err(err);
         }

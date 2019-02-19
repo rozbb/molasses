@@ -12,15 +12,21 @@ mod test {
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
             dh::DhPoint,
-            ecies::{ecies_decrypt, EciesCiphertext},
+            ecies::{ecies_decrypt, ecies_encrypt_with_scalar, EciesCiphertext},
         },
         group_state::GroupState,
         ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
+        tls_ser::serialize_to_bytes,
     };
 
     use serde::de::Deserialize;
 
+    // This is all the serializable bits of a GroupState. We have this separate because GroupState
+    // is only ever meant to be serialized. The fields in it that are for us and not for
+    // serialization require a Default instance in order for GroupState to impl Deserialize. Since
+    // I don't think that's a good idea, I'll just initialize all those things to 0 myself. See
+    // group_from_test_group.
     #[derive(Debug, Deserialize)]
     pub(crate) struct TestGroupState {
         #[serde(rename = "group_id__bound_u8")]
@@ -33,6 +39,7 @@ mod test {
         pub(crate) transcript_hash: Vec<u8>,
     }
 
+    // Makes a mostly empty GroupState from a recently-deserialized TestGroupState
     fn group_from_test_group(tgs: TestGroupState) -> GroupState {
         let cs = &X25519_SHA256_AES128GCM;
         let zeros = vec![0u8; cs.hash_alg.output_len];
@@ -59,6 +66,7 @@ mod test {
     //
     // struct {
     //   opaque hkdf_extract_out<0..255>;
+    //   group_state: GroupState,
     //   opaque derive_secret_out<0..255>;
     //   DHPublicKey derive_key_pair_pub;
     //   ECIESCiphertext ecies_out;
@@ -130,6 +138,7 @@ mod test {
         case_x25519_ed25519: CryptoCase,
     }
 
+    // Tests our code against the official crypto test vector
     #[test]
     fn official_crypto_kat() {
         let mut f = std::fs::File::open("test_vectors/crypto.bin").unwrap();
@@ -137,22 +146,67 @@ mod test {
         let test_vec = CryptoTestVectors::deserialize(&mut deserializer).unwrap();
 
         let case1 = test_vec.case_x25519_ed25519;
+        // Make a full group state from the test group state
         let group_state = group_from_test_group(case1.group_state);
+        // prk  = derive_sercret_salt
         let prk =
             ring::hmac::SigningKey::new(group_state.cs.hash_alg, &test_vec.derive_secret_salt);
 
+        // Test Derive-Secret against known answer.
+        // derive_secret_out == Derive-Secret(prk=derive_secret_salt, info=derive_secret_label)
         let derive_secret_out = group_state.derive_secret(&prk, &test_vec.derive_secret_label);
         assert_eq!(&derive_secret_out, &case1.derive_secret_out);
 
-        let (public_key, secret_key)  =
-            X25519_SHA256_AES128GCM.derive_key_pair(&test_vec.derive_key_pair_seed).unwrap();
-        let public_key_bytes =
-            X25519_SHA256_AES128GCM.dh_impl.point_as_bytes(public_key);
-        let expected_public_key_bytes =
-            X25519_SHA256_AES128GCM.dh_impl.point_as_bytes(case1.derive_key_pair_pub);
-        assert_eq!(public_key_bytes, expected_public_key_bytes);
+        // Test Derive-Key-Pair(derive_key_pair_seed) against known answer
+        let (recip_public_key, recip_secret_key) = X25519_SHA256_AES128GCM
+            .derive_key_pair(&test_vec.derive_key_pair_seed)
+            .unwrap();
+        let expected_recip_public_key = case1.derive_key_pair_pub;
+        // Just compare the public keys
+        assert_eq!(
+            serialize_to_bytes(&recip_public_key).unwrap(),
+            serialize_to_bytes(&expected_recip_public_key).unwrap()
+        );
 
-        let derived_plaintext = ecies_decrypt(&X25519_SHA256_AES128GCM, &secret_key, case1.ecies_out).expect("could not decrypt ecies ciphertext");
-        assert_eq!(&derived_plaintext, &test_vec.ecies_plaintext);
+        // Make sure the decryption of the ECIES ciphertext is indeed the given plaintext
+        let derived_plaintext = ecies_decrypt(
+            &X25519_SHA256_AES128GCM,
+            &recip_secret_key,
+            case1.ecies_out.clone(),
+        )
+        .unwrap();
+        let expected_plaintext = test_vec.ecies_plaintext.clone();
+        assert_eq!(&derived_plaintext, &expected_plaintext);
+
+        // Now make sure that we get the same ECIES ciphertext if we use the same ephemeral private
+        // key as the test creator.
+        // key_pair = Derive-Key-Pair(recip_public_key.as_bytes() || plaintext)
+        let (_, sender_secret_key) = {
+            // key_material = pkR || plaintext where pkR is the serialization of recip_public_key
+            let key_material = [
+                X25519_SHA256_AES128GCM
+                    .dh_impl
+                    .point_as_bytes(recip_public_key.clone()),
+                test_vec.ecies_plaintext.clone(),
+            ]
+            .concat();
+            // key_pair = Derive-Key-Pair(key_material)
+            X25519_SHA256_AES128GCM
+                .derive_key_pair(&key_material)
+                .unwrap()
+        };
+        // ciphertext = Ecies-Encrypt_(sender_secret_key,recip_public_key)(plaintext)
+        let derived_ciphertext = ecies_encrypt_with_scalar(
+            &X25519_SHA256_AES128GCM,
+            &recip_public_key,
+            test_vec.ecies_plaintext,
+            sender_secret_key,
+        )
+        .unwrap();
+        // Now serialize both ciphertexts and make sure they agree
+        assert_eq!(
+            serialize_to_bytes(&derived_ciphertext).unwrap(),
+            serialize_to_bytes(&case1.ecies_out).unwrap()
+        );
     }
 }

@@ -38,7 +38,7 @@ impl core::fmt::Debug for DhScalar {
 /// Because these are untagged during serialization and deserialization, we can only represent
 /// curve points as bytes, without any variant tag (such as X25519Scalar). So we use this type for
 /// all DH stuff. I know, this sucks.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "DhPoint__bound_u16")]
 pub(crate) struct DhPoint(Vec<u8>);
 

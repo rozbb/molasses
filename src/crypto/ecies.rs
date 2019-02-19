@@ -25,7 +25,7 @@ impl EciesLabel {
 }
 
 /// A short ciphertext encrypted with the enclosed ephemeral DH key
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
     ephemeral_public_key: DhPoint,
@@ -37,20 +37,35 @@ pub(crate) struct EciesCiphertext {
 
 /// Performs an ECIES encryption of a given plaintext under a given DH public key.
 ///
-/// Returns: `Ok(ciphertext)` on success. If there is an issue with random nonce generation or
+/// Returns: `Ok(ciphertext)` on success. If there is an issue with random scalar generation or
 /// sealing the plaintext, an `Error` is returned.
 fn ecies_encrypt(
     cs: &CipherSuite,
     others_public_key: &DhPoint,
-    mut plaintext: Vec<u8>,
+    plaintext: Vec<u8>,
     csprng: &mut dyn CryptoRng,
+) -> Result<EciesCiphertext, Error> {
+    // Genarate a random secret and pass to a deterministic version of this function
+    let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
+    ecies_encrypt_with_scalar(cs, others_public_key, plaintext, my_ephemeral_secret)
+}
+
+/// Performs an ECIES encryption of a given plaintext under a given DH public key and a fixed
+/// scalar value. This is the deterministic function underlying `ecies_encrypt`, and is important
+/// for testing purposes.
+///
+/// Returns: `Ok(ciphertext)` on success. If there is an issue with sealing the plaintext, an
+/// `Error::EncryptionError` is returned.
+pub(crate) fn ecies_encrypt_with_scalar(
+    cs: &CipherSuite,
+    others_public_key: &DhPoint,
+    mut plaintext: Vec<u8>,
+    my_ephemeral_secret: DhScalar,
 ) -> Result<EciesCiphertext, Error> {
     // Make room for the tag
     plaintext.extend(std::iter::repeat(0u8).take(cs.aead_impl.tag_size()));
 
-    // Denote this by `a`
-    let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
-    // Denote this by `aP`
+    // If my_ephermeral_secret is `a`, let this be `aP`
     let my_ephemeral_public_key = cs.dh_impl.multiply_basepoint(&my_ephemeral_secret);
 
     // This is `abP` where `bP` is the other person's public key is `bP`
