@@ -77,7 +77,7 @@ fn ecies_encrypt(
 ///
 /// Returns: `Ok(plaintext)` on success. Returns an `Error::EncryptionError` if something goes
 /// wrong.
-fn ecies_decrypt(
+pub(crate) fn ecies_decrypt(
     cs: &CipherSuite,
     my_secret_key: &DhScalar,
     EciesCiphertext {

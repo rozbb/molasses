@@ -43,7 +43,7 @@ pub(crate) struct CipherSuite {
 impl CipherSuite {
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
     /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
-    fn derive_key_pair(&self, bytes: &[u8]) -> Result<(DhPoint, DhScalar), Error> {
+    pub(crate) fn derive_key_pair(&self, bytes: &[u8]) -> Result<(DhPoint, DhScalar), Error> {
         let digest = ring::digest::digest(self.hash_alg, bytes);
         let scalar_bytes = digest.as_ref();
 

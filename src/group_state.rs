@@ -47,7 +47,6 @@ pub(crate) struct GroupState {
     //
     // These are a bunch of secrets derived via HKDF-Expand
     //
-
     /// The initial secret used to derive all the rest
     #[serde(skip)]
     pub(crate) init_secret: Vec<u8>,
@@ -107,16 +106,13 @@ impl GroupState {
 
     /// This is the `Derive-Secret` function defined in section 5.9 of the spec. It's used as a
     /// helper function for `derive_new_secrets`
-    pub(crate) fn derive_secret(
-        state: &GroupState,
-        prk: &ring::hmac::SigningKey,
-        label_info: &[u8],
-    ) -> Vec<u8> {
+    pub(crate) fn derive_secret(&self, prk: &ring::hmac::SigningKey, label_info: &[u8]) -> Vec<u8> {
         // This struct is only used for `derive_secret` calculations
         #[derive(Serialize)]
         struct HkdfLabel<'a> {
             length: u16,
             // opaque label<6..255> = "mls10 " + Label;
+            #[serde(rename = "label__bound_u8")]
             label: Vec<u8>,
             state: &'a GroupState,
         }
@@ -131,7 +127,7 @@ impl GroupState {
             length: out_buf.len() as u16,
             // Recall the def: opaque label<6..255> = "mls10 " + Label;
             label: [b"mls10 ", label_info].concat(),
-            state: state,
+            state: self,
         };
         // Serialize the label
         let serialized_label =
@@ -149,14 +145,14 @@ impl GroupState {
         let epoch_secret: ring::hmac::SigningKey = ring::hkdf::extract(&salt, &update_secret);
 
         // application_secret = Derive-Secret(epoch_secret, "app", GroupState_[n])
-        let application_secret = GroupState::derive_secret(self, &epoch_secret, b"app");
+        let application_secret = self.derive_secret(&epoch_secret, b"app");
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
         let confirmation_key = {
-            let key_bytes = GroupState::derive_secret(self, &epoch_secret, b"confirm");
+            let key_bytes = self.derive_secret(&epoch_secret, b"confirm");
             ring::hmac::SigningKey::new(self.cs.hash_alg, &key_bytes)
         };
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
-        let init_secret = GroupState::derive_secret(self, &epoch_secret, b"init");
+        let init_secret = self.derive_secret(&epoch_secret, b"init");
 
         self.application_secret = application_secret;
         self.confirmation_key = confirmation_key;

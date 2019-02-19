@@ -12,7 +12,7 @@ mod test {
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
             dh::DhPoint,
-            ecies::EciesCiphertext
+            ecies::{ecies_decrypt, EciesCiphertext},
         },
         group_state::GroupState,
         ratchet_tree::RatchetTree,
@@ -40,11 +40,11 @@ mod test {
         GroupState {
             cs: cs,
             identity_key: cs.sig_impl.secret_key_from_bytes(&[0u8; 32]).unwrap(),
-            group_id: Vec::new(),
-            epoch: 0,
-            roster: Vec::new(),
-            tree: RatchetTree { nodes: Vec::new() },
-            transcript_hash: Vec::new(),
+            group_id: tgs.group_id,
+            epoch: tgs.epoch,
+            roster: tgs.roster,
+            tree: tgs.tree,
+            transcript_hash: tgs.transcript_hash,
             my_position_in_roster: 0,
             init_secret: Vec::new(),
             application_secret: Vec::new(),
@@ -135,6 +135,24 @@ mod test {
         let mut f = std::fs::File::open("test_vectors/crypto.bin").unwrap();
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = CryptoTestVectors::deserialize(&mut deserializer).unwrap();
-        println!("test_vec == {:x?}", test_vec);
+
+        let case1 = test_vec.case_x25519_ed25519;
+        let group_state = group_from_test_group(case1.group_state);
+        let prk =
+            ring::hmac::SigningKey::new(group_state.cs.hash_alg, &test_vec.derive_secret_salt);
+
+        let derive_secret_out = group_state.derive_secret(&prk, &test_vec.derive_secret_label);
+        assert_eq!(&derive_secret_out, &case1.derive_secret_out);
+
+        let (public_key, secret_key)  =
+            X25519_SHA256_AES128GCM.derive_key_pair(&test_vec.derive_key_pair_seed).unwrap();
+        let public_key_bytes =
+            X25519_SHA256_AES128GCM.dh_impl.point_as_bytes(public_key);
+        let expected_public_key_bytes =
+            X25519_SHA256_AES128GCM.dh_impl.point_as_bytes(case1.derive_key_pair_pub);
+        assert_eq!(public_key_bytes, expected_public_key_bytes);
+
+        let derived_plaintext = ecies_decrypt(&X25519_SHA256_AES128GCM, &secret_key, case1.ecies_out).expect("could not decrypt ecies ciphertext");
+        assert_eq!(&derived_plaintext, &test_vec.ecies_plaintext);
     }
 }
