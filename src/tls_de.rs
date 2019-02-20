@@ -8,6 +8,7 @@ use serde::de::{Deserializer, IntoDeserializer, Visitor};
 // TODO: Make this parser more conservative in what it accepts. Currently, it will happily return
 // incomplete vectors (i.e., it'll read a length, get to the end of a buffer that's too short, and
 // then return what it has instead of blocking or erroring).
+// TODO: Consider the blocking behavior of this deserializer. Can we provide non-blocking options?
 
 fn make_custom_error<T: core::fmt::Display>(msg: T) -> Error {
     <Error as serde::de::Error>::custom(msg)

@@ -55,7 +55,7 @@ pub(crate) struct GroupState {
     pub(crate) application_secret: Vec<u8>,
 
     #[serde(skip)]
-    pub(crate) confirmation_key: ring::hmac::SigningKey,
+    pub(crate) confirmation_key: Vec<u8>,
 }
 
 // TODO: Write the method to create a one-man group from scratch. The spec says that
@@ -85,9 +85,6 @@ impl GroupState {
             pos as u32
         };
 
-        // This will get populated on the next call to `derive_new_secrets`
-        let empty_confirmation_key = ring::hmac::SigningKey::new(cs.hash_alg, &[]);
-
         GroupState {
             cs: cs,
             identity_key: my_identity_key,
@@ -99,7 +96,7 @@ impl GroupState {
             init_secret: w.init_secret,
             // All these fields will be populated on the next call to `derive_new_secrets`
             application_secret: Vec::new(),
-            confirmation_key: empty_confirmation_key,
+            confirmation_key: Vec::new(),
             my_position_in_roster: my_position_in_roster,
         }
     }
@@ -139,7 +136,7 @@ impl GroupState {
     }
 
     /// Derives the next generation of Group secrets as per section 5.9 in the spec
-    fn derive_new_secrets(&mut self, update_secret: &[u8]) {
+    pub(crate) fn derive_new_secrets(&mut self, update_secret: &[u8]) {
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
         let salt = ring::hmac::SigningKey::new(self.cs.hash_alg, &self.init_secret);
         let epoch_secret: ring::hmac::SigningKey = ring::hkdf::extract(&salt, &update_secret);
@@ -147,10 +144,7 @@ impl GroupState {
         // application_secret = Derive-Secret(epoch_secret, "app", GroupState_[n])
         let application_secret = self.derive_secret(&epoch_secret, b"app");
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
-        let confirmation_key = {
-            let key_bytes = self.derive_secret(&epoch_secret, b"confirm");
-            ring::hmac::SigningKey::new(self.cs.hash_alg, &key_bytes)
-        };
+        let confirmation_key = self.derive_secret(&epoch_secret, b"confirm");
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
         let init_secret = self.derive_secret(&epoch_secret, b"init");
 
@@ -186,4 +180,116 @@ struct WelcomeInfo {
     /// The initial secret used to derive all the rest
     #[serde(rename = "init_secret__bound_u8")]
     init_secret: Vec<u8>,
+}
+
+#[cfg(test)]
+mod test {
+    use crate::{
+        credential::Credential,
+        ratchet_tree::RatchetTree,
+        tls_de::TlsDeserializer,
+        utils::{group_from_test_group, TestGroupState},
+    };
+
+    use serde::de::Deserialize;
+
+    // The following test vector is from
+    // https://github.com/mlswg/mls-implementations/tree/master/test_vectors
+    //
+    // File key_schedule.bin
+    //
+    // struct {
+    //   opaque update_secret<0..255>;
+    //   opaque epoch_secret<0..255>;
+    //   opaque application_secret<0..255>;
+    //   opaque confirmation_key<0..255>;
+    //   opaque init_secret<0..255>;
+    // } KeyScheduleEpoch;
+    //
+    // struct {
+    //   CipherSuite suite;
+    //   Epoch epochs<0..2^16-1>;
+    // } KeyScheduleCase;
+    //
+    // struct {
+    //   uint32_t n_epochs;
+    //   uint32_t garbage;
+    //   GroupState base_group_state;
+    //
+    //   KeyScheduleCase case_p256;
+    //   KeyScheduleCase case_x25519;
+    // } KeyScheduleTestVectors;
+    //
+    // For each ciphersuite, the `KeyScheduleTestVectors` struct provides a `KeyScheduleCase` that
+    // describes the outputs of the MLS key schedule over the course of several epochs.
+    //
+    // * The init_secret input to the first stage of the key schedule is the all-zero vector of
+    //   length Hash.length for the hash indicated by the ciphersuite.
+    // * For future epochs, the init_secret is the value output at the previous stage of the key
+    //   schedule.
+    // * The initial GroupState object input to the key schedule should be deserialized from the
+    //   base_group_state object.
+    // * incremented after being provided to the key schedule. This is to say, the key schedule is
+    //   run on the base_group_state object before its epoch is incremented for the first time.
+    //
+    // For each epoch, given inputs as described above, your implementation should replacate the
+    // epoch_secret, application_secret, confirmation_key, and init_secret outputs of the key
+    // schedule.
+
+    #[derive(Debug, Deserialize)]
+    struct KeyScheduleEpoch {
+        #[serde(rename = "update_secret__bound_u8")]
+        update_secret: Vec<u8>,
+        #[serde(rename = "epoch_secret__bound_u8")]
+        epoch_secret: Vec<u8>,
+        #[serde(rename = "application_secret__bound_u8")]
+        application_secret: Vec<u8>,
+        #[serde(rename = "confirmation_key__bound_u8")]
+        confirmation_key: Vec<u8>,
+        #[serde(rename = "init_secret__bound_u8")]
+        init_secret: Vec<u8>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct KeyScheduleCase {
+        // TODO: Make this a proper &'static CipherSuite once P-256 is implemented
+        ciphersuite_id: u16,
+        #[serde(rename = "epoch__bound_u16")]
+        epochs: Vec<KeyScheduleEpoch>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    struct KeyScheduleTestVectors {
+        n_epochs: u32,
+        _garbage: u32,
+        base_group_state: TestGroupState,
+        case_p256: KeyScheduleCase,
+        case_x25519: KeyScheduleCase,
+    }
+
+    // Tests our code against the official key schedule test vector
+    #[test]
+    fn official_key_schedule_kat() {
+        let mut f = std::fs::File::open("test_vectors/key_schedule.bin").unwrap();
+        let mut deserializer = TlsDeserializer::from_reader(&mut f);
+        let test_vec = KeyScheduleTestVectors::deserialize(&mut deserializer).unwrap();
+        let case1 = test_vec.case_x25519;
+        let mut group_state = group_from_test_group(test_vec.base_group_state);
+
+        // Keep deriving new secrets with respect to the given update secret. Check all the
+        // resulting keys against the test vector.
+        for epoch in case1.epochs.into_iter() {
+            group_state.derive_new_secrets(&epoch.update_secret);
+
+            // We don't save the derived epoch_secret anywhere, since it's just an intermediate
+            // value. We do test all the things derived from it, though.
+            assert_eq!(&group_state.application_secret, &epoch.application_secret);
+            assert_eq!(&group_state.confirmation_key, &epoch.confirmation_key);
+            assert_eq!(&group_state.init_secret, &epoch.init_secret);
+
+            // Increment the state epoch every time we do a key derivation. This is what happens in
+            // the actual protocol.
+            group_state.epoch += 1;
+        }
+    }
 }

@@ -120,14 +120,18 @@ impl Handshake {
             .sig_impl
             .sign(&state.identity_key, &state.transcript_hash);
 
-        // confirmation_data = GroupState.transcript_hash || Handshake.signature
-        let confirmation_data = [
-            state.transcript_hash.as_slice(),
-            cs.sig_impl.signature_to_bytes(&signature).as_slice(),
-        ]
-        .concat();
         // confirmation = HMAC(confirmation_key, confirmation_data)
-        let confirmation = ring::hmac::sign(&state.confirmation_key, &confirmation_data);
+        // where confirmation_data = GroupState.transcript_hash || Handshake.signature
+        let confirmation = {
+            let confirmation_key = ring::hmac::SigningKey::new(cs.hash_alg, &state.confirmation_key);
+            let signature_bytes = cs.sig_impl.signature_to_bytes(&signature);
+
+            let mut ctx = ring::hmac::SigningContext::with_key(&confirmation_key);
+            ctx.update(&state.transcript_hash);
+            ctx.update(&signature_bytes);
+
+            ctx.sign()
+        };
 
         Handshake {
             prior_epoch: state.epoch,
