@@ -9,22 +9,12 @@ pub(crate) const X25519_IMPL: X25519 = X25519;
 const X25519_POINT_SIZE: usize = 32;
 const X25519_SCALAR_SIZE: usize = 32;
 
-// We do not use the x25519_dalek DH API because the EphemeralSecret does not expose its internals.
-// The MLS spec requires that we be able to create secrets from arbitrary bytestrings, and we can
-// only do that if we can touch the buffer inside EphemeralSecret. So, we re-implement a small
-// portion of the API here, without doing any actual crypto.
-//
-// NOTE: Although X25519Scalar can be initialized with arbitrary bytestrings, all scalars are
-// clamped by x25519_dalek::x25519() before they are used. This is the only way in which scalars
-// are used, and the structs do not implement Eq, so there's no fear of accidentally assuming
-// unique representation of scalars.
-
 /// An enum of possible types for a private DH value, depending on the underlying algorithm. In EC
 /// terminology, this is a point on the curve. In finite-field terminology, this is an element of
 /// the field.
 pub(crate) enum DhScalar {
     /// A scalar value in Curve25519
-    X25519Scalar([u8; X25519_SCALAR_SIZE]),
+    X25519Scalar(x25519_dalek::StaticSecret),
 }
 
 impl core::fmt::Debug for DhScalar {
@@ -61,7 +51,7 @@ pub(crate) trait DiffieHellman {
     // methods.
     fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhScalar, Error>;
 
-    fn multiply_basepoint(&self, scalar: &DhScalar) -> DhPoint;
+    fn derive_public_key(&self, scalar: &DhScalar) -> DhPoint;
 
     fn diffie_hellman(&self, privkey: &DhScalar, pubkey: &DhPoint) -> DhPoint;
 }
@@ -95,11 +85,11 @@ impl DiffieHellman for X25519 {
     /// `Error::DhError`.
     fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhScalar, Error> {
         if bytes.len() != X25519_SCALAR_SIZE {
-            return Err(Error::DhError("Wrong key size"));
+            return Err(Error::DhError("Wrong scalar size"));
         } else {
             let mut buf = [0u8; X25519_SCALAR_SIZE];
             buf.copy_from_slice(bytes);
-            Ok(DhScalar::X25519Scalar(buf))
+            Ok(DhScalar::X25519Scalar(buf.into()))
         }
     }
 
@@ -108,34 +98,30 @@ impl DiffieHellman for X25519 {
     /// Returns: `Ok(scalar)` on success. Otherwise, if something goes wrong with the RNG, it
     /// returns `Error::OutOfEntropy`.
     fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhScalar, Error> {
-        let mut buf = [0u8; X25519_SCALAR_SIZE];
-        csprng
-            .try_fill_bytes(&mut buf)
-            .map_err(|_| Error::OutOfEntropy)?;
-        Ok(DhScalar::X25519Scalar(buf))
+        let mut box_rng = Box::new(csprng);
+        Ok(DhScalar::X25519Scalar(x25519_dalek::StaticSecret::new(&mut box_rng)))
     }
 
     /// Calculates `scalar * P`, where `P` is the standard X25519 basepoint. This function is used
     /// for creating public keys for DHE.
-    fn multiply_basepoint(&self, scalar: &DhScalar) -> DhPoint {
+    fn derive_public_key(&self, scalar: &DhScalar) -> DhPoint {
         let scalar = enum_variant!(scalar, DhScalar::X25519Scalar);
-
-        let point_bytes = x25519(*scalar, X25519_BASEPOINT_BYTES);
-        self.point_from_bytes(point_bytes.to_vec())
+        let public_key: x25519_dalek::PublicKey = scalar.into();
+        DhPoint(public_key.as_bytes().to_vec())
     }
 
     /// Computes `privkey * Pubkey` where `privkey` is your local secret (a scalar) and `Pubkey` is
     /// someone's public key (a curve point)
     fn diffie_hellman(&self, privkey: &DhScalar, pubkey: &DhPoint) -> DhPoint {
         let privkey = enum_variant!(privkey, DhScalar::X25519Scalar);
-        let pubkey = {
+        let pubkey: x25519_dalek::PublicKey = {
             let mut buf = [0u8; X25519_POINT_SIZE];
             buf.copy_from_slice(&pubkey.0);
-            buf
+            buf.into()
         };
 
-        let shared_secret = x25519(*privkey, pubkey);
-        DhPoint(shared_secret.to_vec())
+        let shared_secret = privkey.diffie_hellman(&pubkey);
+        DhPoint(shared_secret.as_bytes().to_vec())
     }
 }
 
@@ -165,8 +151,8 @@ mod test {
         };
 
         // Compute aP and bP where a is Alice's scalar, and b is Bob's
-        let alice_pubkey = X25519_IMPL.multiply_basepoint(&alice_scalar);
-        let bob_pubkey = X25519_IMPL.multiply_basepoint(&bob_scalar);
+        let alice_pubkey = X25519_IMPL.derive_public_key(&alice_scalar);
+        let bob_pubkey = X25519_IMPL.derive_public_key(&bob_scalar);
 
         // Compute b(aP) and a(bP) and make sure they are the same
         let shared_secret_a = {
@@ -214,8 +200,8 @@ mod test {
         };
 
         let (point1, point2) = (
-            X25519_IMPL.multiply_basepoint(&scalar1),
-            X25519_IMPL.multiply_basepoint(&scalar2),
+            X25519_IMPL.derive_public_key(&scalar1),
+            X25519_IMPL.derive_public_key(&scalar2),
         );
         let (shared1, shared2) = (
             X25519_IMPL.diffie_hellman(&scalar1, &point2),
@@ -240,7 +226,7 @@ mod test {
                 .expect("couldn't make scalar from bytes")
         };
 
-        let pubkey = X25519_IMPL.multiply_basepoint(&scalar);
+        let pubkey = X25519_IMPL.derive_public_key(&scalar);
 
         assert_eq!(
             hex::encode(&X25519_IMPL.point_as_bytes(pubkey)),

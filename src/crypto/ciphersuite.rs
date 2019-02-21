@@ -48,7 +48,7 @@ impl CipherSuite {
         let scalar_bytes = digest.as_ref();
 
         let privkey = self.dh_impl.scalar_from_bytes(scalar_bytes)?;
-        let pubkey = self.dh_impl.multiply_basepoint(&privkey);
+        let pubkey = self.dh_impl.derive_public_key(&privkey);
 
         Ok((pubkey, privkey))
     }

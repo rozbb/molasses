@@ -66,7 +66,7 @@ pub(crate) fn ecies_encrypt_with_scalar(
     plaintext.extend(std::iter::repeat(0u8).take(cs.aead_impl.tag_size()));
 
     // If my_ephermeral_secret is `a`, let this be `aP`
-    let my_ephemeral_public_key = cs.dh_impl.multiply_basepoint(&my_ephemeral_secret);
+    let my_ephemeral_public_key = cs.dh_impl.derive_public_key(&my_ephemeral_secret);
 
     // This is `abP` where `bP` is the other person's public key is `bP`
     let shared_secret = cs
@@ -183,7 +183,7 @@ mod test {
         for cs in CIPHERSUITES {
             // First make an identity we'll encrypt to
             let alice_scalar = cs.dh_impl.scalar_from_random(&mut rng).unwrap();
-            let alice_point = cs.dh_impl.multiply_basepoint(&alice_scalar);
+            let alice_point = cs.dh_impl.derive_public_key(&alice_scalar);
 
             // Now encrypt to Alice
             let ecies_ciphertext: EciesCiphertext =
