@@ -83,14 +83,11 @@ macro_rules! make_enum_u8_discriminant {
 #[cfg(test)]
 pub(crate) use test_utils::*;
 
-
 #[cfg(test)]
 mod test_utils {
     use crate::{
-        group_state::GroupState,
-        credential::Credential,
-        crypto::ciphersuite::X25519_SHA256_AES128GCM,
-        ratchet_tree::RatchetTree,
+        credential::Credential, crypto::ciphersuite::X25519_SHA256_AES128GCM,
+        group_state::GroupState, ratchet_tree::RatchetTree,
     };
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
