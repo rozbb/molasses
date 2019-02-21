@@ -155,7 +155,7 @@ impl GroupState {
 }
 
 /// Contains everything a new user needs to know to join a Group
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct WelcomeInfo {
     // opaque group_id<0..255>;
     /// An application-defined identifier for the group
@@ -186,6 +186,7 @@ pub(crate) struct WelcomeInfo {
 mod test {
     use crate::{
         credential::Credential,
+        crypto::ciphersuite::CipherSuite,
         ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
         utils::{group_from_test_group, TestGroupState},
@@ -252,8 +253,7 @@ mod test {
 
     #[derive(Debug, Deserialize)]
     struct KeyScheduleCase {
-        // TODO: Make this a proper &'static CipherSuite once P-256 is implemented
-        ciphersuite_id: u16,
+        ciphersuite: &'static CipherSuite,
         #[serde(rename = "epoch__bound_u16")]
         epochs: Vec<KeyScheduleEpoch>,
     }

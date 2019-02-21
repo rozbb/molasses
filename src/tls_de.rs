@@ -176,7 +176,10 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
             visitor.visit_enum(s)
         } else {
             Err(make_custom_error(
-                "don't know how to deserialize non-__enum_u8 enums",
+                format_args!(
+                    "don't know how to deserialize non-__enum_u8 enums: {}",
+                    name
+                )
             ))
         }
     }

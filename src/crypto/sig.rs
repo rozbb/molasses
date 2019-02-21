@@ -28,7 +28,7 @@ impl core::fmt::Debug for SigSecretKey {
 /// Because these are untagged during serialization and deserialization, we can only represent
 /// signatures as bytes, without any variant tag (such as Ed25519Signature). So we use this type
 /// for all signature stuff. I know, this sucks.
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "Signature__bound_u16")]
 pub(crate) struct Signature(Vec<u8>);
 

@@ -15,11 +15,12 @@ pub(crate) struct Identity(pub(crate) Vec<u8>);
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct BasicCredential {
     pub(crate) identity: Identity,
-    pub(crate) signature_scheme: &'static SignatureScheme,
-    pub(crate) public_key: SigPublicKey,
+    //pub(crate) signature_scheme: &'static SignatureScheme,
+    //pub(crate) public_key: SigPublicKey,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename = "Credential__enum_u8")]
 pub(crate) enum Credential {
     Basic(BasicCredential),
     X509(X509CertData),

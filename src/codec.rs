@@ -8,10 +8,18 @@ use serde::{
     ser::{Serialize, SerializeStruct, Serializer},
 };
 
-const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)] =
-    &[(&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001)];
-const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16)] =
-    &[(&ED25519_IMPL, "ED25519", 0x0807)];
+// TODO: These always return the 25519 impl, because I don't have P-256, and I need deserialization
+// to function correctly for testing. Doing what I'm doing here may significantly impact security.
+// This should be made correct ASAP
+
+const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)] = &[
+    (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0000), // FAKE
+    (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
+];
+const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16)] = &[
+    (&ED25519_IMPL, "ed25519", 0x0403), // FAKE
+    (&ED25519_IMPL, "ed25519", 0x0807),
+];
 
 // Implement Serialize for our CipherSuites and SignatureSchemes. This just serializes their ID
 

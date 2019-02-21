@@ -53,3 +53,10 @@ impl CipherSuite {
         Ok((pubkey, privkey))
     }
 }
+
+impl core::fmt::Debug for CipherSuite {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        // Ensure that the secret value isn't accidentally logged
+        f.write_str(self.name)
+    }
+}
