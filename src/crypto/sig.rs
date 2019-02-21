@@ -24,11 +24,13 @@ impl core::fmt::Debug for SigSecretKey {
     }
 }
 
-/// An enum of possible types for a signature scheme's signature, depending on the underlying
-/// algorithm
-pub(crate) enum Signature {
-    Ed25519Signature(ed25519_dalek::Signature),
-}
+// In UserInitKey: opaque signature<0..2^16-1>
+/// Because these are untagged during serialization and deserialization, we can only represent
+/// signatures as bytes, without any variant tag (such as Ed25519Signature). So we use this type
+/// for all signature stuff. I know, this sucks.
+#[derive(Deserialize, Serialize)]
+#[serde(rename = "Signature__bound_u16")]
+pub(crate) struct Signature(Vec<u8>);
 
 /// Represents the contents of an MLS signature scheme. Currently, this only implements Ed25519.
 #[derive(Debug)]
@@ -78,8 +80,7 @@ impl SignatureScheme {
 
     /// Returns the byte representation of this signature
     pub(crate) fn signature_to_bytes(&self, signature: &Signature) -> Vec<u8> {
-        let signature = enum_variant!(signature, Signature::Ed25519Signature);
-        signature.to_bytes().to_vec()
+        signature.0.clone()
     }
 
     /// Computes a signature of the given message under the given secret key
@@ -91,7 +92,7 @@ impl SignatureScheme {
         let public_key: ed25519_dalek::PublicKey = secret.into();
         let expanded_secret: ed25519_dalek::ExpandedSecretKey = secret.into();
 
-        Signature::Ed25519Signature(expanded_secret.sign(&msg, &public_key))
+        Signature(expanded_secret.sign(&msg, &public_key).to_bytes().to_vec())
     }
 
     /// Verifies the signature of the given message under the given public key
@@ -100,15 +101,18 @@ impl SignatureScheme {
     /// `Err(Error::SignatureError)` which is a lot of "Error"s, so you know it's bad.
     #[must_use]
     fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
-        let sig = enum_variant!(sig, Signature::Ed25519Signature);
-
         // Convert the public key bytes into the ed25519_dalek representation
         let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key.0)
             .map_err(|_| Error::SignatureError("Invalid public key"))?;
 
+        let sig = ed25519_dalek::Signature::from_bytes(&sig.0)
+            .map_err(|_| Error::SignatureError("Invalid signature representation"))?;
+
+        // Don't worry, it's okay to say "bad signature" for signature schemes, since this
+        // function does not depend on any private information, there is nothing to leak.
         public_key
-            .verify(msg, sig)
-            .map_err(|_| Error::SignatureError("Invalid signature"))
+            .verify(msg, &sig)
+            .map_err(|_| Error::SignatureError("Bad signature"))
     }
 }
 
@@ -158,13 +162,10 @@ mod test {
             // Make sure the expected public key and the public key we derived are the same
             assert_eq!(expected_public.0, derived_public.0);
 
-            let derived_sig = {
-                let sig = ED25519_IMPL.sign(&secret, &msg);
-                enum_variant!(sig, Signature::Ed25519Signature)
-            };
+            let derived_sig = ED25519_IMPL.sign(&secret, &msg);
             let expected_sig = hex::decode(sig_hex).unwrap();
 
-            assert_eq!(expected_sig, derived_sig.to_bytes().to_vec());
+            assert_eq!(expected_sig, derived_sig.0);
         }
     }
 

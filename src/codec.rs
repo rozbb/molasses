@@ -111,17 +111,3 @@ impl<'de> Deserialize<'de> for &'static SignatureScheme {
         deserializer.deserialize_u16(Visitor)
     }
 }
-
-impl Serialize for Signature {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Signature::Ed25519Signature(sig) => {
-                let bytes = sig.to_bytes();
-                (&bytes).serialize(serializer)
-            }
-        }
-    }
-}

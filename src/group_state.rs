@@ -155,8 +155,8 @@ impl GroupState {
 }
 
 /// Contains everything a new user needs to know to join a Group
-#[derive(Serialize)]
-struct WelcomeInfo {
+#[derive(Deserialize, Serialize)]
+pub(crate) struct WelcomeInfo {
     // opaque group_id<0..255>;
     /// An application-defined identifier for the group
     #[serde(rename = "group_id__bound_u8")]

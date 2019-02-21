@@ -108,6 +108,9 @@ mod test {
 
     use serde::Deserialize;
 
+    // The following test vector is from
+    // https://github.com/mlswg/mls-implementations/tree/master/test_vectors
+    //
     // File: resolution.bin
     //
     // uint8_t Resolution<0..255>;
