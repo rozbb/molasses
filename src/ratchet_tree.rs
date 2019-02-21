@@ -13,16 +13,9 @@ use crate::tree_math;
 pub(crate) enum RatchetTreeNode {
     Blank,
     Filled {
-        // To explain this notation a bit: CS::DH is the associated DH type of the given
-        // ciphersuite. This is a concrete type. However, we know that DH: DiffieHellman, and we
-        // need to know that the Point type is, so we choose the DiffieHellman trait
-        // representation, and pick the associated type there. Note that this explicit choice is
-        // necessary, since if, hypothetically it were the case that DH: Foo + Bar and both Foo and
-        // Bar had the associated type Baz, then DH::Baz would be ambiguous. Instead, you'd write
-        // <DH as Foo>::Baz or <DH as Bar>::Baz.
-        pubkey: DhPoint,
+        public_key: DhPoint,
         #[serde(skip)]
-        privkey: Option<DhScalar>,
+        private_key: Option<DhScalar>,
         #[serde(skip)]
         secret: Option<Vec<u8>>,
     },
@@ -66,135 +59,148 @@ impl RatchetTree {
         }
     }
 
-    /// Returns the resolution of a given node: this an ordered list of non-blank nodes that
-    /// collectively cover all non-blank descendants of the given node.
-    fn resolution(&self, idx: usize) -> Vec<&RatchetTreeNode> {
-        fn helper<'a>(
-            i: usize,
-            nodes: &'a Vec<RatchetTreeNode>,
-            acc: &mut Vec<&'a RatchetTreeNode>,
-        ) {
-            let num_leaves = tree_math::num_leaves_in_tree(nodes.len());
-            match &nodes[i] {
-                f @ RatchetTreeNode::Filled { .. } => {
-                    acc.push(f);
-                    return;
-                }
-                _ => (),
-            }
-            if tree_math::node_level(i) == 0 {
-                return;
-            }
-
-            helper(tree_math::node_left_child(i), nodes, acc);
-            helper(tree_math::node_right_child(i, num_leaves), nodes, acc);
-        }
-
-        let mut acc = Vec::new();
-        helper(idx, &self.nodes, &mut acc);
-        acc
-    }
-
-    // This has the same functionality as RatchetTreeIter, so one of them's got to go
-    /// Turns a list of node indices into an iterator of tree nodes
-    fn make_node_iter(&self, indices: Vec<usize>) -> impl Iterator<Item = &RatchetTreeNode> {
-        indices
+    /// Returns the resolution of a given node: this an ordered sequence of minimal set of
+    /// non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
+    /// non-blank descendants of the given node. The ordering is the node index.
+    fn resolution(&self, idx: usize) -> impl Iterator<Item = &RatchetTreeNode> {
+        resolution_indices(self, idx)
             .into_iter()
-            .map(move |i| self.nodes.get(i).expect("invalid index encountered"))
+            .map(move |idx| self.nodes.get(idx).expect("resolution index out of range"))
     }
 }
 
-// This has the same functionality as make_node_iter, so one of them's got to go
-/// An iterator that holds a queue of indices into a RatchetTree, and returns references to the
-/// corresponding nodes in the tree.
-struct RatchetTreeIter<'a> {
-    underlying_tree: &'a RatchetTree,
-    index_iter: std::vec::IntoIter<usize>,
-}
-
-impl<'a> RatchetTreeIter<'a> {
-    fn new(underlying_tree: &'a RatchetTree, indices: Vec<usize>) -> RatchetTreeIter<'a> {
-        let index_iter = indices.into_iter();
-
-        RatchetTreeIter {
-            underlying_tree,
-            index_iter,
+/// Returns the indices of the resolution of a given node: this an ordered sequence of minimal set
+/// of non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
+/// non-blank descendants of the given node. The ordering is the node index.
+fn resolution_indices(tree: &RatchetTree, idx: usize) -> Vec<usize> {
+    // Helper function that accumulates the resolution recursively
+    fn helper(tree: &RatchetTree, i: usize, acc: &mut Vec<usize>) {
+        if let RatchetTreeNode::Blank = tree.nodes[i] {
+            if tree_math::node_level(i) == 0 {
+                // The resolution of a blank leaf node is the empty list
+                return;
+            } else {
+                // The resolution of a blank intermediate node is the result of concatinating the
+                // resolution of its left child with the resolution of its right child, in that
+                // order
+                let num_leaves = tree_math::num_leaves_in_tree(tree.nodes.len());
+                helper(tree, tree_math::node_left_child(i), acc);
+                helper(tree, tree_math::node_right_child(i, num_leaves), acc);
+            }
+        } else {
+            // The resolution of a non-blank node is a one element list containing the node itself
+            acc.push(i);
         }
     }
+
+    let mut ret = Vec::new();
+    helper(tree, idx, &mut ret);
+    ret
 }
 
-impl<'a> Iterator for RatchetTreeIter<'a> {
-    type Item = &'a RatchetTreeNode;
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{
+        crypto::dh::{DhPoint, DiffieHellman},
+        tls_de::TlsDeserializer,
+    };
 
-    fn next(&mut self) -> Option<&'a RatchetTreeNode> {
-        self.index_iter.next().map(|idx| {
-            self.underlying_tree
-                .nodes
-                .get(idx)
-                .expect("RatchetTreeIter got a bad node index")
-        })
+    use serde::Deserialize;
+
+    // File: resolution.bin
+    //
+    // uint8_t Resolution<0..255>;
+    // Resolution ResolutionCase<0..2^16-1>;
+    //
+    // struct {
+    //   uint32_t n_leaves;
+    //   ResolutionCase cases<0..2^32-1>;
+    // } ResolutionTestVectors;
+    //
+    // These vectors represent the output of the resolution algorithm on all configurations of a
+    // tree with n_leaves leaves.
+    //
+    // * The cases vector should have 2^(2*n_leaves - 1) entries
+    //   * The entry at index t represents the set of resolutions for the tree with a blank /
+    //     filled pattern matching the bit pattern of the integer t.
+    //   * If (t >> n) == 1, then node n in the tree is filled; otherwise it is blank.
+    // * Each ResolutionCase vector contains the resolutions of every node in the tree, in order
+    // * Thus cases[t][i] contains the resolution of node i in tree t
+    //
+    // Your implementation should be able to reproduce these values.
+    // Parses the bits of a u32 from right to left, interpreting a 0 as a Blank node and 1 as a
+    // Filled node (unimportant what the pubkey is)
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename = "Resolution__bound_u8")]
+    struct Resolution(Vec<u8>);
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename = "ResolutionCase__bound_u16")]
+    struct ResolutionCase(Vec<Resolution>);
+
+    #[derive(Debug, Deserialize)]
+    struct ResolutionTestVectors {
+        num_leaves: u32,
+        #[serde(rename = "cases__bound_u32")]
+        cases: Vec<ResolutionCase>,
     }
-}
 
-/// An iterator that holds a queue of indices into a RatchetTree, and returns references to the
-/// corresponding nodes in the tree.
-struct RatchetTreeIterMut<'a> {
-    underlying_tree: &'a mut RatchetTree,
-    index_iter: std::vec::IntoIter<usize>,
-}
+    fn make_tree_from_int(t: usize, num_nodes: usize) -> RatchetTree {
+        let mut nodes: Vec<RatchetTreeNode> = Vec::new();
+        let mut bit_mask = 0x01;
 
-impl<'a> RatchetTreeIterMut<'a> {
-    fn new(
-        underlying_tree: &'a mut RatchetTree,
-        mut indices: Vec<usize>,
-    ) -> RatchetTreeIterMut<'a> {
-        // We can't return a &mut to the same node twice, since that would violate aliasing
-        // guarantees, i.e., we'd have two mutable references to the same data, which is Bad. So
-        // dedup the vector beforehand. Remember that an index uniquely identifies a node, so we're
-        // in the clear.
-        indices.dedup();
-        let index_iter = indices.into_iter();
-
-        RatchetTreeIterMut {
-            underlying_tree,
-            index_iter,
+        for _ in 0..num_nodes {
+            if t & bit_mask == 0 {
+                nodes.push(RatchetTreeNode::Blank);
+            } else {
+                // TODO: Make a better way to put dummy values in the tree than invalid DH pubkeys
+                nodes.push(RatchetTreeNode::Filled {
+                    public_key: DhPoint(Vec::new()),
+                    private_key: None,
+                    secret: None,
+                });
+            }
+            bit_mask <<= 1;
         }
+        eprintln!("made tree of {} nodes", nodes.len());
+
+        RatchetTree { nodes }
     }
-}
 
-// This needs unsafe code in order to exist. I might delete this if there's little use for it.
-impl<'a> Iterator for RatchetTreeIterMut<'a> {
-    type Item = &'a mut RatchetTreeNode;
+    fn resolution_vec(tree: &RatchetTree, idx: usize) -> Vec<u8> {
+        resolution_indices(tree, idx)
+            .into_iter()
+            .map(|i| {
+                // These had better be small indices
+                if i > core::u8::MAX as usize {
+                    panic!("resolution node indices are too big to fit into a u8");
+                } else {
+                    i as u8
+                }
+            })
+            .collect()
+    }
 
-    fn next(&mut self) -> Option<&'a mut RatchetTreeNode> {
-        self.index_iter.next().map(|idx| {
-            let mut_ref = self
-                .underlying_tree
-                .nodes
-                .get_mut(idx)
-                .expect("RatchetTreeIterMut got a bad node index");
+    // Tests against the official tree math test vector. See above comment for explanation.
+    #[test]
+    fn official_resolution_kat() {
+        let mut f = std::fs::File::open("test_vectors/resolution.bin").unwrap();
+        let mut deserializer = TlsDeserializer::from_reader(&mut f);
+        let test_vec = ResolutionTestVectors::deserialize(&mut deserializer).unwrap();
+        let num_nodes = tree_math::num_nodes_in_tree(test_vec.num_leaves as usize);
 
-            // Okay I can explain this. It's not currently possible to have an iterator that
-            // returns mutable references to the thing it's iterating over. Niko Matsakis talks
-            // about it here:
-            // http://smallcultfollowing.com/babysteps/blog/2013/10/24/iterators-yielding-mutable-references/
-            //
-            // The reason I can't just return mut_ref is because its lifetime 'a outlives the
-            // lifetime of &mut self. The compiler can ensure that mut_ref is a unique mutable
-            // reference for the duration of this function call, but cannot guarantee uniqueness
-            // after it returns. And indeed it might not be unique. Consider the following code and
-            // assume that `tree` is a mut RatchetTree<CS> for some CS:
-            //     let mut iter = RatchetTreeIterMut::new(&mut tree, vec![0]);
-            //     let first_mut_ref = iter.next();
-            //     let another_first_mut_ref = iter.underlying_tree.get_mut(0);
-            //  Since I'm able to reach back into the iterator for another mutable reference, I can
-            //  force first_mut_ref and another_first_mut_ref to alias.
-            //
-            //  Now our job is to make sure that you cannot access `iter.underlying_tree`, and also
-            //  that the iterator itself does not return the same node multiple times. We do the
-            //  former by making `underlying_tree` a private member and "being careful" in this
-            //  module. We do the latter by deduping the vectors of indices upon initialization.
-            unsafe { std::mem::transmute(mut_ref) }
-        })
+        // encoded_tree is the index into the case; this can be decoded into a RatchetTree by
+        // parsing the u32 bit by bit
+        for (encoded_tree, case) in test_vec.cases.into_iter().enumerate() {
+            let tree = make_tree_from_int(encoded_tree, num_nodes);
+
+            // We compute the resolution of every node in the tree
+            for (idx, expected_resolution) in case.0.into_iter().enumerate() {
+                let derived_resolution = resolution_vec(&tree, idx);
+                assert_eq!(derived_resolution, expected_resolution.0);
+            }
+        }
     }
 }

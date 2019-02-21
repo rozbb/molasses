@@ -40,7 +40,7 @@ impl core::fmt::Debug for DhScalar {
 /// all DH stuff. I know, this sucks.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "DhPoint__bound_u16")]
-pub(crate) struct DhPoint(Vec<u8>);
+pub(crate) struct DhPoint(pub(crate) Vec<u8>);
 
 /// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,

@@ -22,7 +22,7 @@ pub(crate) fn node_level(idx: usize) -> usize {
 /// Computes the number of nodes needed to represent a tree with `num_leaves` many leaves
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES`
-fn num_nodes_in_tree(num_leaves: usize) -> usize {
+pub(crate) fn num_nodes_in_tree(num_leaves: usize) -> usize {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     2 * (num_leaves - 1) + 1
 }
@@ -173,7 +173,7 @@ fn node_sibling(idx: usize, num_leaves: usize) -> usize {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
-fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iterator<Item=usize> {
+fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iterator<Item = usize> {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(start_idx < num_nodes_in_tree(num_leaves));
 
@@ -213,7 +213,7 @@ impl Iterator for DirectPathIter {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
-fn node_copath(start_idx: usize, num_leaves: usize) -> impl Iterator<Item=usize> {
+fn node_copath(start_idx: usize, num_leaves: usize) -> impl Iterator<Item = usize> {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(start_idx < num_nodes_in_tree(num_leaves));
 
@@ -378,7 +378,6 @@ mod test {
         }
     }
 
-
     // We'll use this tree for known-answer tests
     //               7
     //         _____/ \
@@ -537,7 +536,7 @@ mod test {
 
     // Tests against the official tree math test vector. See above comment for explanation.
     #[test]
-    fn official_tree_kat() {
+    fn official_tree_math_kat() {
         let mut f = std::fs::File::open("test_vectors/tree_math.bin").unwrap();
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = TreeMathTestVectors::deserialize(&mut deserializer).unwrap();
