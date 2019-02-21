@@ -168,55 +168,57 @@ fn node_sibling(idx: usize, num_leaves: usize) -> usize {
     }
 }
 
-// TODO: Consider making direct_path and copath into iterators so that we don't have to allocate
-
-/// Returns the direct path of a given node in the form `[i_1, i_2, ..., i_n]` where
+/// Returns an iterator for direct path of a given node in the order `i_1, i_2, ..., i_n` where
 /// `i_1` is the parent of the given node and `i_n` is a child of the root node.
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
-fn node_direct_path(start_idx: usize, num_leaves: usize) -> Vec<usize> {
+fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iterator<Item=usize> {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(start_idx < num_nodes_in_tree(num_leaves));
 
-    let mut path = Vec::new();
-    let root = root_idx(num_leaves);
-    let mut p = node_parent(start_idx, num_leaves);
-
-    // Start on the parent of the given node. Recall that the parent of the root is itself, so if
-    // we're at the root, we return the empty vector. Similarly, if we're the child of the root, we
-    // still return the empty vector.
-    while p != root {
-        path.push(p);
-        p = node_parent(p, num_leaves);
+    // Start the direct path on the the given node. Since we loop inside DirectPathIter until
+    // parent == root, this will be an empty iterator if we're the root node (since the parent of
+    // the root is the root)
+    DirectPathIter {
+        num_leaves: num_leaves,
+        successive_parent: start_idx,
     }
-
-    path
 }
 
-/// Returns the copath path of a given node in the form `[i_1, i_2, ..., i_n]` where
+/// Returns a direct path from a starting node, given the number of leaves and the starting index
+struct DirectPathIter {
+    num_leaves: usize,
+    successive_parent: usize,
+}
+
+impl Iterator for DirectPathIter {
+    type Item = usize;
+
+    fn next(&mut self) -> Option<usize> {
+        // If we're not at the root, return where we are, then move up one level
+        if self.successive_parent != root_idx(self.num_leaves) {
+            let ret = self.successive_parent;
+            self.successive_parent = node_parent(self.successive_parent, self.num_leaves);
+
+            Some(ret)
+        } else {
+            None
+        }
+    }
+}
+
+/// Returns an iterator for the copath path of a given node in the order `i_1, i_2, ..., i_n` where
 /// `i_1` is the sibling of the given node and `i_n` is a child of the root node.
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
-fn node_copath(start_idx: usize, num_leaves: usize) -> Vec<usize> {
+fn node_copath(start_idx: usize, num_leaves: usize) -> impl Iterator<Item=usize> {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(start_idx < num_nodes_in_tree(num_leaves));
 
-    let mut copath = Vec::new();
-    let root = root_idx(num_leaves);
-    let mut p = start_idx;
-
-    // Iterate up the direct path starting at the given node, taking siblings along the way.
-    while p != root {
-        // Recall that p has no siblings iff it is the root node, so it's guaranteed that
-        // sibling != p here.
-        let sibling = node_sibling(p, num_leaves);
-        copath.push(sibling);
-        p = node_parent(p, num_leaves);
-    }
-
-    copath
+    // The copath is just all the siblings along the direct path
+    node_direct_path(start_idx, num_leaves).map(move |idx| node_sibling(idx, num_leaves))
 }
 
 /// Returns a list of root node indices for maximal subtrees of a tree of a given size
@@ -289,31 +291,6 @@ mod test {
         );
     }
 
-    // We'll use this tree for known-answer tests
-    //               7
-    //         _____/ \
-    //        /        |
-    //       3         |
-    //     /   \       |
-    //    /     \      |
-    //   1       5     |
-    //  / \     / \    |
-    // 0   2   4   6   8
-
-    // See above tree for a diagram
-    #[test]
-    fn node_level_simple_kat() {
-        assert_eq!(node_level(0), 0);
-        assert_eq!(node_level(1), 1);
-        assert_eq!(node_level(2), 0);
-        assert_eq!(node_level(3), 2);
-        assert_eq!(node_level(4), 0);
-        assert_eq!(node_level(5), 1);
-        assert_eq!(node_level(6), 0);
-        assert_eq!(node_level(7), 3);
-        assert_eq!(node_level(8), 0);
-    }
-
     #[test]
     fn num_nodes_in_tree_kat() {
         assert_eq!(num_nodes_in_tree(1), 1);
@@ -344,58 +321,6 @@ mod test {
 
         let n = num_nodes_in_tree(num_leaves_in_tree(num_nodes));
         TestResult::from_bool(n == num_nodes)
-    }
-
-    // See above tree for a diagram
-    #[test]
-    fn tree_relations_kat() {
-        let num_leaves = 5;
-
-        // Test parent relations
-        assert_eq!(node_parent(0, num_leaves), 1);
-        assert_eq!(node_parent(2, num_leaves), 1);
-        assert_eq!(node_parent(4, num_leaves), 5);
-        assert_eq!(node_parent(6, num_leaves), 5);
-        assert_eq!(node_parent(1, num_leaves), 3);
-        assert_eq!(node_parent(5, num_leaves), 3);
-        assert_eq!(node_parent(3, num_leaves), 7);
-        assert_eq!(node_parent(8, num_leaves), 7);
-        assert_eq!(node_parent(7, num_leaves), 7);
-
-        // Test leaf child relations
-        assert_eq!(node_left_child(0), 0);
-        assert_eq!(node_right_child(0, num_leaves), 0);
-        assert_eq!(node_left_child(2), 2);
-        assert_eq!(node_right_child(2, num_leaves), 2);
-        assert_eq!(node_left_child(4), 4);
-        assert_eq!(node_right_child(4, num_leaves), 4);
-        assert_eq!(node_left_child(6), 6);
-        assert_eq!(node_right_child(6, num_leaves), 6);
-        assert_eq!(node_left_child(8), 8);
-        assert_eq!(node_right_child(8, num_leaves), 8);
-
-        // Test the non-leaf left relations
-        assert_eq!(node_left_child(7), 3);
-        assert_eq!(node_left_child(3), 1);
-        assert_eq!(node_left_child(1), 0);
-        assert_eq!(node_left_child(5), 4);
-
-        // Test the non-leaf right relations
-        assert_eq!(node_right_child(7, num_leaves), 8);
-        assert_eq!(node_right_child(3, num_leaves), 5);
-        assert_eq!(node_right_child(1, num_leaves), 2);
-        assert_eq!(node_right_child(5, num_leaves), 6);
-
-        // Test sibling relations
-        assert_eq!(node_sibling(0, num_leaves), 2);
-        assert_eq!(node_sibling(2, num_leaves), 0);
-        assert_eq!(node_sibling(4, num_leaves), 6);
-        assert_eq!(node_sibling(6, num_leaves), 4);
-        assert_eq!(node_sibling(1, num_leaves), 5);
-        assert_eq!(node_sibling(5, num_leaves), 1);
-        assert_eq!(node_sibling(8, num_leaves), 3);
-        assert_eq!(node_sibling(3, num_leaves), 8);
-        assert_eq!(node_sibling(7, num_leaves), 7);
     }
 
     // Checks correctness of relationships in the tree (e.g., the parent of my child is me)
@@ -451,6 +376,124 @@ mod test {
             assert_eq!(node_parent(my_left_child, num_leaves), me);
             assert_eq!(node_parent(my_right_child, num_leaves), me);
         }
+    }
+
+
+    // We'll use this tree for known-answer tests
+    //               7
+    //         _____/ \
+    //        /        |
+    //       3         |
+    //     /   \       |
+    //    /     \      |
+    //   1       5     |
+    //  / \     / \    |
+    // 0   2   4   6   8
+
+    // See above tree for a diagram
+    #[test]
+    fn node_level_simple_kat() {
+        assert_eq!(node_level(0), 0);
+        assert_eq!(node_level(1), 1);
+        assert_eq!(node_level(2), 0);
+        assert_eq!(node_level(3), 2);
+        assert_eq!(node_level(4), 0);
+        assert_eq!(node_level(5), 1);
+        assert_eq!(node_level(6), 0);
+        assert_eq!(node_level(7), 3);
+        assert_eq!(node_level(8), 0);
+    }
+
+    // See above tree for a diagram
+    #[test]
+    fn direct_path_kat() {
+        // Convenience function
+        fn direct_path_vec(start_idx: usize) -> Vec<usize> {
+            let num_leaves = 5;
+            node_direct_path(start_idx, num_leaves).collect::<Vec<usize>>()
+        }
+
+        assert_eq!(direct_path_vec(0), vec![0, 1, 3]);
+        assert_eq!(direct_path_vec(1), vec![1, 3]);
+        assert_eq!(direct_path_vec(2), vec![2, 1, 3]);
+        assert_eq!(direct_path_vec(3), vec![3]);
+        assert_eq!(direct_path_vec(4), vec![4, 5, 3]);
+        assert_eq!(direct_path_vec(5), vec![5, 3]);
+        assert_eq!(direct_path_vec(6), vec![6, 5, 3]);
+        assert_eq!(direct_path_vec(7), vec![]);
+        assert_eq!(direct_path_vec(8), vec![8]);
+    }
+
+    // See above tree for a diagram
+    #[test]
+    fn copath_path_kat() {
+        // Convenience function
+        fn copath_vec(start_idx: usize) -> Vec<usize> {
+            let num_leaves = 5;
+            node_copath(start_idx, num_leaves).collect::<Vec<usize>>()
+        }
+
+        assert_eq!(copath_vec(0), vec![2, 5, 8]);
+        assert_eq!(copath_vec(1), vec![5, 8]);
+        assert_eq!(copath_vec(2), vec![0, 5, 8]);
+        assert_eq!(copath_vec(3), vec![8]);
+        assert_eq!(copath_vec(4), vec![6, 1, 8]);
+        assert_eq!(copath_vec(5), vec![1, 8]);
+        assert_eq!(copath_vec(6), vec![4, 1, 8]);
+        assert_eq!(copath_vec(7), vec![]);
+        assert_eq!(copath_vec(8), vec![3]);
+    }
+
+    // See above tree for a diagram
+    #[test]
+    fn tree_relations_kat() {
+        let num_leaves = 5;
+
+        // Test parent relations
+        assert_eq!(node_parent(0, num_leaves), 1);
+        assert_eq!(node_parent(2, num_leaves), 1);
+        assert_eq!(node_parent(4, num_leaves), 5);
+        assert_eq!(node_parent(6, num_leaves), 5);
+        assert_eq!(node_parent(1, num_leaves), 3);
+        assert_eq!(node_parent(5, num_leaves), 3);
+        assert_eq!(node_parent(3, num_leaves), 7);
+        assert_eq!(node_parent(8, num_leaves), 7);
+        assert_eq!(node_parent(7, num_leaves), 7);
+
+        // Test leaf child relations
+        assert_eq!(node_left_child(0), 0);
+        assert_eq!(node_right_child(0, num_leaves), 0);
+        assert_eq!(node_left_child(2), 2);
+        assert_eq!(node_right_child(2, num_leaves), 2);
+        assert_eq!(node_left_child(4), 4);
+        assert_eq!(node_right_child(4, num_leaves), 4);
+        assert_eq!(node_left_child(6), 6);
+        assert_eq!(node_right_child(6, num_leaves), 6);
+        assert_eq!(node_left_child(8), 8);
+        assert_eq!(node_right_child(8, num_leaves), 8);
+
+        // Test the non-leaf left relations
+        assert_eq!(node_left_child(7), 3);
+        assert_eq!(node_left_child(3), 1);
+        assert_eq!(node_left_child(1), 0);
+        assert_eq!(node_left_child(5), 4);
+
+        // Test the non-leaf right relations
+        assert_eq!(node_right_child(7, num_leaves), 8);
+        assert_eq!(node_right_child(3, num_leaves), 5);
+        assert_eq!(node_right_child(1, num_leaves), 2);
+        assert_eq!(node_right_child(5, num_leaves), 6);
+
+        // Test sibling relations
+        assert_eq!(node_sibling(0, num_leaves), 2);
+        assert_eq!(node_sibling(2, num_leaves), 0);
+        assert_eq!(node_sibling(4, num_leaves), 6);
+        assert_eq!(node_sibling(6, num_leaves), 4);
+        assert_eq!(node_sibling(1, num_leaves), 5);
+        assert_eq!(node_sibling(5, num_leaves), 1);
+        assert_eq!(node_sibling(8, num_leaves), 3);
+        assert_eq!(node_sibling(3, num_leaves), 8);
+        assert_eq!(node_sibling(7, num_leaves), 7);
     }
 
     // TODO: Add Panic tests
