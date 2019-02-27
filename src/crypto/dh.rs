@@ -49,7 +49,7 @@ pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 /// An enum of possible types for a public DH value, depending on the underlying algorithm. In EC
 /// terminology, this is a point on the curve. In finite-field terminology, this is a field
 /// element. The `Raw` variant only gets instantiated at the serialization/deserialization
-/// boundary, and should never be dealt with directly. The `CipherSuiteUpcast` trait should take
+/// boundary, and should never be dealt with directly. The `CryptoUpcast` trait should take
 /// care of this.
 pub(crate) enum DhPublicKey {
     /// A curve point in Curve25519

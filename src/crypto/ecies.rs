@@ -28,7 +28,7 @@ impl EciesLabel {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
-    ephemeral_public_key: DhPublicKey,
+    pub(crate) ephemeral_public_key: DhPublicKey,
     /// The payload
     // opaque ciphertext<0..2^24-1>;
     #[serde(rename = "ciphertext__bound_u24")]

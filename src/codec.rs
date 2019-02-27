@@ -122,7 +122,7 @@ impl Serialize for DhPublicKey {
 
 impl<'de> Deserialize<'de> for DhPublicKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
+        // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
         DhPublicKeyRaw::deserialize(deserializer).map(|raw| DhPublicKey::Raw(raw))
     }
 }
@@ -139,7 +139,7 @@ impl Serialize for SigPublicKey {
 
 impl<'de> Deserialize<'de> for SigPublicKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
+        // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
         SigPublicKeyRaw::deserialize(deserializer).map(|raw| SigPublicKey::Raw(raw))
     }
 }
@@ -156,7 +156,7 @@ impl Serialize for Signature {
 
 impl<'de> Deserialize<'de> for Signature {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
+        // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
         SignatureRaw::deserialize(deserializer).map(|raw| Signature::Raw(raw))
     }
 }

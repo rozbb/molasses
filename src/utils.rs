@@ -87,7 +87,7 @@ pub(crate) use test_utils::*;
 mod test_utils {
     use crate::{
         credential::Credential, crypto::ciphersuite::X25519_SHA256_AES128GCM,
-        group_state::GroupState, ratchet_tree::RatchetTree,
+        group_state::GroupState, ratchet_tree::RatchetTree, upcast::CryptoUpcast,
     };
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
@@ -105,6 +105,13 @@ mod test_utils {
         tree: RatchetTree,
         #[serde(rename = "transcript_hash__bound_u8")]
         pub(crate) transcript_hash: Vec<u8>,
+    }
+
+
+    impl crate::upcast::CryptoUpcast for TestGroupState {
+        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) {
+            self.roster.upcast_crypto_values(ctx);
+        }
     }
 
     // Makes a mostly empty GroupState from a recently-deserialized TestGroupState
