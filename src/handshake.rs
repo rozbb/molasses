@@ -246,6 +246,7 @@ mod test {
         #[serde(rename = "random__bound_u8")]
         random: Vec<u8>,
         uik_all_scheme: &'static SignatureScheme,
+        _user_init_key_all_len: u32,
         user_init_key_all: UserInitKey,
         //case_p256_p256: MessagesCase,
         //case_x25519_ed25519: MessagesCase,

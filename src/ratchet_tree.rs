@@ -167,7 +167,6 @@ mod test {
             }
             bit_mask <<= 1;
         }
-        eprintln!("made tree of {} nodes", nodes.len());
 
         RatchetTree { nodes }
     }
