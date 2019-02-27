@@ -15,7 +15,7 @@ pub(crate) struct Identity(pub(crate) Vec<u8>);
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct BasicCredential {
     pub(crate) identity: Identity,
-    pub(crate) signature_scheme: &'static SignatureScheme,
+    pub(crate) signature_scheme: &'static dyn SignatureScheme,
     pub(crate) public_key: SigPublicKey,
 }
 

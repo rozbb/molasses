@@ -26,7 +26,7 @@ pub(crate) struct CipherSuite {
     /// The trait object that implements our authenticated encryption functionality
     pub(crate) aead_impl: &'static dyn AuthenticatedEncryption,
     /// The object that implements our signature scheme
-    pub(crate) sig_impl: &'static SignatureScheme,
+    pub(crate) sig_impl: &'static dyn SignatureScheme,
     /// The `ring::digest::Algorithm` that implements our hashing functionality
     // We're gonna have to break the mold here. Originally this was Hash: digest::Digest. But to
     // define HKDF and HMAC over a generic Digest, one needs the following constraints:

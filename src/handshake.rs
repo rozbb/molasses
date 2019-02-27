@@ -124,11 +124,10 @@ impl Handshake {
         let confirmation = {
             let confirmation_key =
                 ring::hmac::SigningKey::new(cs.hash_alg, &state.confirmation_key);
-            let signature_bytes = cs.sig_impl.signature_to_bytes(&signature);
 
             let mut ctx = ring::hmac::SigningContext::with_key(&confirmation_key);
             ctx.update(&state.transcript_hash);
-            ctx.update(&signature_bytes);
+            ctx.update(&signature.to_bytes());
 
             ctx.sign()
         };

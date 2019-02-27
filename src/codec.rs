@@ -1,7 +1,7 @@
 use crate::crypto::{
     ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
     dh::{DhPublicKey, DhPublicKeyRaw},
-    sig::{Signature, SignatureScheme, ED25519_IMPL},
+    sig::{SigPublicKey, SigPublicKeyRaw, Signature, SignatureRaw, SignatureScheme, ED25519_IMPL},
 };
 
 use serde::{
@@ -17,7 +17,7 @@ const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)]
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0000), // FAKE
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
-const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16)] = &[
+const SIGSCHEME_NAME_IDS: &'static [(&'static dyn SignatureScheme, &'static str, u16)] = &[
     (&ED25519_IMPL, "ed25519", 0x0403), // FAKE
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];
@@ -69,8 +69,9 @@ impl<'de> Deserialize<'de> for &'static CipherSuite {
 
 impl Serialize for SignatureScheme {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let my_name = self.name();
         for (_, name, id) in SIGSCHEME_NAME_IDS {
-            if &self.name == name {
+            if name == &my_name {
                 return serializer.serialize_u16(*id);
             }
         }
@@ -83,19 +84,19 @@ impl<'de> Deserialize<'de> for &'static SignatureScheme {
         struct Visitor;
 
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = &'static SignatureScheme;
+            type Value = &'static dyn SignatureScheme;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a u16 representing a signature scheme")
             }
 
-            fn visit_u16<E>(self, value: u16) -> Result<&'static SignatureScheme, E>
+            fn visit_u16<E>(self, value: u16) -> Result<&'static dyn SignatureScheme, E>
             where
                 E: serde::de::Error,
             {
                 for (ss, _, id) in SIGSCHEME_NAME_IDS {
                     if value == *id {
-                        return Ok(ss);
+                        return Ok(*ss);
                     }
                 }
                 Err(E::custom(format_args!(
@@ -123,5 +124,39 @@ impl<'de> Deserialize<'de> for DhPublicKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
         DhPublicKeyRaw::deserialize(deserializer).map(|raw| DhPublicKey::Raw(raw))
+    }
+}
+
+impl Serialize for SigPublicKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // If it's not already, convert it to a Raw public key, then serialize that
+        match self {
+            SigPublicKey::Raw(p) => p.serialize(serializer),
+            p => SigPublicKeyRaw(p.as_bytes().to_vec()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for SigPublicKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
+        SigPublicKeyRaw::deserialize(deserializer).map(|raw| SigPublicKey::Raw(raw))
+    }
+}
+
+impl Serialize for Signature {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // If it's not already, convert it to a Raw signature, then serialize that
+        match self {
+            Signature::Raw(p) => p.serialize(serializer),
+            p => SignatureRaw(p.to_bytes().to_vec()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Signature {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
+        SignatureRaw::deserialize(deserializer).map(|raw| Signature::Raw(raw))
     }
 }

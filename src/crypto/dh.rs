@@ -40,12 +40,12 @@ impl DhSharedSecret {
     }
 }
 
+// opaque DHPublicKey<1..2^16-1>
 /// This is the form that all `DhPublicKey`s take when being sent or received over the wire
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename = "DhPublicKeyRaw__bound_u16")]
 pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 
-// opaque DHPublicKey<1..2^16-1>
 /// An enum of possible types for a public DH value, depending on the underlying algorithm. In EC
 /// terminology, this is a point on the curve. In finite-field terminology, this is a field
 /// element. The `Raw` variant only gets instantiated at the serialization/deserialization

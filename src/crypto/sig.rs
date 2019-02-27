@@ -1,15 +1,30 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
-pub(crate) const ED25519_IMPL: SignatureScheme = SignatureScheme { name: "ED25519" };
+pub(crate) const ED25519_IMPL: Ed25519 = Ed25519;
 
 // opaque SignaturePublicKey<1..2^16-1>
-/// Because these are untagged during serialization and deserialization, we can only represent
-/// signature scheme public keys as bytes, without any variant tag (such as Ed25519PublicKey). So
-/// we use this type for all signature stuff. I know, this sucks.
+/// This is the form that all `SigPublicKeyRaw`s take when being sent or received over the wire
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename = "SigPublicKey__bound_u16")]
-pub(crate) struct SigPublicKey(Vec<u8>);
+#[serde(rename = "SigPublicKeyRaw__bound_u16")]
+pub(crate) struct SigPublicKeyRaw(pub(crate) Vec<u8>);
+
+/// An enum of possible types for a signature scheme's public key, depending on the underlying
+/// algorithm
+#[derive(Debug)]
+pub(crate) enum SigPublicKey {
+    Ed25519PublicKey(ed25519_dalek::PublicKey),
+    Raw(SigPublicKeyRaw),
+}
+
+impl SigPublicKey {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        match self {
+            SigPublicKey::Ed25519PublicKey(p) => p.as_bytes(),
+            SigPublicKey::Raw(p) => p.0.as_slice(),
+        }
+    }
+}
 
 /// An enum of possible types for a signature scheme's secret key, depending on the underlying
 /// algorithm
@@ -24,23 +39,62 @@ impl core::fmt::Debug for SigSecretKey {
     }
 }
 
-// In UserInitKey: opaque signature<0..2^16-1>
-/// Because these are untagged during serialization and deserialization, we can only represent
-/// signatures as bytes, without any variant tag (such as Ed25519Signature). So we use this type
-/// for all signature stuff. I know, this sucks.
+// opaque UserInitKey::signature<0..2^16-1>
 #[derive(Debug, Deserialize, Serialize)]
-#[serde(rename = "Signature__bound_u16")]
-pub(crate) struct Signature(Vec<u8>);
+#[serde(rename = "SignatureRaw__bound_u16")]
+pub(crate) struct SignatureRaw(pub(crate) Vec<u8>);
 
-/// Represents the contents of an MLS signature scheme. Currently, this only implements Ed25519.
+/// An enum of possible types for a signature scheme's signature, depending on the underlying
+/// algorithm
 #[derive(Debug)]
-pub(crate) struct SignatureScheme {
-    pub(crate) name: &'static str,
+pub(crate) enum Signature {
+    Ed25519Signature(ed25519_dalek::Signature),
+    Raw(SignatureRaw),
 }
+
+impl Signature {
+    // TODO: make this not allocate
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+        match self {
+            Signature::Ed25519Signature(s) => s.to_bytes().to_vec(),
+            Signature::Raw(s) => s.0.clone(),
+        }
+    }
+}
+
+/// A trait representing any signature scheme
+pub(crate) trait SignatureScheme {
+    fn name(&self) -> &'static str;
+
+    #[cfg(test)]
+    fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey;
+
+    fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error>;
+
+    fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error>;
+
+    fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature;
+
+    fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error>;
+}
+
+impl core::fmt::Debug for SignatureScheme {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+/// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
+pub(crate) struct Ed25519;
 
 // This implementation is for Ed25519 only, currently. In the future, we should wrap Ed25519 with
 // a trait, and use the same trait for other signature implementations
-impl SignatureScheme {
+impl SignatureScheme for Ed25519 {
+    /// Returns the signature scheme's name, as per the MLS spec. Here, it is `ed25519`
+    fn name(&self) -> &'static str {
+        "ed25519"
+    }
+
     /// This is just for testing purposes. This should be the `SigPublicKey` form of whatever we do
     /// in the `sign` function to derive a public key from a secret key.
     #[cfg(test)]
@@ -48,16 +102,11 @@ impl SignatureScheme {
         let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
 
         let public_key: ed25519_dalek::PublicKey = secret.into();
-        SigPublicKey(public_key.as_bytes().to_vec())
-    }
-
-    /// Creates a public key from the provided bytes
-    fn public_key_from_bytes(&self, bytes: Vec<u8>) -> SigPublicKey {
-        SigPublicKey(bytes)
+        SigPublicKey::Ed25519PublicKey(public_key)
     }
 
     /// Creates a key pair from the provided secret key bytes. This expects 32 bytes.
-    pub(crate) fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
+    fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
         match ed25519_dalek::SecretKey::from_bytes(bytes) {
             Ok(secret) => Ok(SigSecretKey::Ed25519SecretKey(secret)),
             Err(_) => Err(Error::SignatureError("Invalid secret key")),
@@ -78,13 +127,8 @@ impl SignatureScheme {
         Ok(SigSecretKey::Ed25519SecretKey(key))
     }
 
-    /// Returns the byte representation of this signature
-    pub(crate) fn signature_to_bytes(&self, signature: &Signature) -> Vec<u8> {
-        signature.0.clone()
-    }
-
     /// Computes a signature of the given message under the given secret key
-    pub(crate) fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
+    fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
         let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
 
         // For simplicity, we add the overhead of recomputing the public key on every signature
@@ -92,7 +136,7 @@ impl SignatureScheme {
         let public_key: ed25519_dalek::PublicKey = secret.into();
         let expanded_secret: ed25519_dalek::ExpandedSecretKey = secret.into();
 
-        Signature(expanded_secret.sign(&msg, &public_key).to_bytes().to_vec())
+        Signature::Ed25519Signature(expanded_secret.sign(&msg, &public_key))
     }
 
     /// Verifies the signature of the given message under the given public key
@@ -102,11 +146,8 @@ impl SignatureScheme {
     #[must_use]
     fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
         // Convert the public key bytes into the ed25519_dalek representation
-        let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key.0)
-            .map_err(|_| Error::SignatureError("Invalid public key"))?;
-
-        let sig = ed25519_dalek::Signature::from_bytes(&sig.0)
-            .map_err(|_| Error::SignatureError("Invalid signature representation"))?;
+        let public_key = enum_variant!(public_key, SigPublicKey::Ed25519PublicKey);
+        let sig = enum_variant!(sig, Signature::Ed25519Signature);
 
         // Don't worry, it's okay to say "bad signature" for signature schemes, since this
         // function does not depend on any private information, there is nothing to leak.
@@ -119,9 +160,11 @@ impl SignatureScheme {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::tls_de::TlsDeserializer;
 
     use quickcheck_macros::quickcheck;
     use rand_core::{RngCore, SeedableRng};
+    use serde::de::Deserialize;
 
     // Test vectors are from
     // https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libgcrypt.git;a=blob;f=tests/t-ed25519.inp;h=e13566f826321eece65e02c593bc7d885b3dbe23;hb=refs/heads/master%3E
@@ -154,18 +197,27 @@ mod test {
                 ED25519_IMPL.secret_key_from_bytes(&bytes).unwrap()
             };
             let expected_public = {
-                let bytes = hex::decode(public_hex).unwrap();
-                ED25519_IMPL.public_key_from_bytes(bytes)
+                // The deserializer expects an 0x0020 at the beginning to indicate that the
+                // public keys are 32 bytes long
+                let mut bytes = hex::decode(public_hex).unwrap();
+                bytes.insert(0, 0x20);
+                bytes.insert(0, 0x00);
+
+                let mut cursor = bytes.as_slice();
+                let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
+                SigPublicKey::deserialize(&mut deserializer).unwrap()
             };
             let derived_public = ED25519_IMPL.public_key_from_secret_key(&secret);
 
             // Make sure the expected public key and the public key we derived are the same
-            assert_eq!(expected_public.0, derived_public.0);
+            eprintln!("expected_public.len() == {}", expected_public.as_bytes().len());
+            eprintln!("derived_public.len() == {}", derived_public.as_bytes().len());
+            assert_eq!(expected_public.as_bytes(), derived_public.as_bytes());
 
             let derived_sig = ED25519_IMPL.sign(&secret, &msg);
             let expected_sig = hex::decode(sig_hex).unwrap();
 
-            assert_eq!(expected_sig, derived_sig.0);
+            assert_eq!(&expected_sig, &derived_sig.to_bytes());
         }
     }
 
