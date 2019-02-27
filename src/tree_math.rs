@@ -1,3 +1,6 @@
+//! This module defines all the tree operations we'll need to use when working with left-balanced
+//! binary trees. For more info, see section 5.1 of the MLS spec.
+
 // Suppose usize is u64. If there are k := 2^(63)+1 leaves, then there are a total of 2(k-1) + 1 =
 // 2(2^(63))+1 = 2^(64)+1 nodes in the tree, which is outside the representable range. So our upper
 // bound is 2^(63) leaves, which gives a tree with 2^(64)-1 nodes.

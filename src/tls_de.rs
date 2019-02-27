@@ -10,6 +10,7 @@ use serde::de::{Deserializer, IntoDeserializer, Visitor};
 // then return what it has instead of blocking or erroring).
 // TODO: Consider the blocking behavior of this deserializer. Can we provide non-blocking options?
 
+/// Makes an `error::Error::SerdeError(std::io::Error)` given some formattable input
 fn make_custom_error<T: core::fmt::Display>(msg: T) -> Error {
     <Error as serde::de::Error>::custom(msg)
 }
@@ -56,7 +57,7 @@ where
     Ok(res)
 }
 
-/// This implements some subset of the Tls wire format. I still don't have a good source on the
+/// This implements some subset of the TLS wire format. I still don't have a good source on the
 /// format, but it seems as though the idea is "concat everything, and specify length in the
 /// prefix".
 pub(crate) struct TlsDeserializer<'a, R: std::io::Read> {

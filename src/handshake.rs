@@ -91,6 +91,7 @@ enum GroupOperation {
     Remove(GroupRemove),
 }
 
+/// A `Handshake` message, as defined in section 7 of the MLS spec
 struct Handshake {
     /// This is equal to the epoch of the current `GroupState`
     prior_epoch: u32,

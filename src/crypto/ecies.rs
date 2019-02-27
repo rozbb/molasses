@@ -120,16 +120,18 @@ pub(crate) fn ecies_decrypt(
     Ok(plaintext)
 }
 
-// From the spec:
-//     key = HKDF-Expand(Secret, ECIESLabel("key"), Length)
-//     nonce = HKDF-Expand(Secret, ECIESLabel("nonce"), Length)
-//
-//     Where ECIESLabel is specified as:
-//
-//     struct {
-//       uint16 length = Length;
-//       opaque label<12..255> = "mls10 ecies " + Label;
-//     } ECIESLabel;
+/// From the spec:
+/// ```ignore
+/// key = HKDF-Expand(Secret, ECIESLabel("key"), Length)
+/// nonce = HKDF-Expand(Secret, ECIESLabel("nonce"), Length)
+///
+/// Where ECIESLabel is specified as:
+///
+/// struct {
+///   uint16 length = Length;
+///   opaque label<12..255> = "mls10 ecies " + Label;
+/// } ECIESLabel;
+/// ```
 // I think that the Length specified above is supposed to be different for keys and nonces, since
 // it wouldn't make sense otherwise, so I've done that and hope I'm right.
 fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (AeadKey, AeadNonce) {

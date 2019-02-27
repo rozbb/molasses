@@ -1,5 +1,8 @@
 use serde::de::Deserialize;
 
+/// Unwraps an enum into an expected variant. Panics if the supplied value is not of the expected
+/// variant. This macro is used to succinctly ensure that ciphersuite values are kept consistent
+/// throughout the library.
 #[macro_export]
 macro_rules! enum_variant {
     ($val:expr, $variant:path) => {

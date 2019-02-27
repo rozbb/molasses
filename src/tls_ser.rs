@@ -144,6 +144,8 @@ pub(crate) fn serialize_with_bound_u24<'a, T: Serialize + ?Sized>(
     Ok(())
 }
 
+/// Tries to match the suffix fo the given field with a `__bound_u*` and calls the appropriate
+/// deserialization function. If no such suffix is found, this just calls `deserialize`.
 pub(crate) fn serialize_with_optional_bound<'a, T>(
     field: &'static str,
     value: &T,
@@ -167,7 +169,7 @@ where
     }
 }
 
-/// This implements some subset of the Tls wire format. I still don't have a good source on the
+/// This implements some subset of the TLS wire format. I still don't have a good source on the
 /// format, but it seems as though the idea is "concat everything, and specify length in the
 /// prefix". The output of this is verified against known serializations.
 pub(crate) struct TlsSerializer {

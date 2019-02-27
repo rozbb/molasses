@@ -1,10 +1,12 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
+/// The canonical instantiation of the `Ed25519` unit struct. Things that use this algorithm should
+/// use `&'static` references to this.
 pub(crate) const ED25519_IMPL: Ed25519 = Ed25519;
 
 // opaque SignaturePublicKey<1..2^16-1>
-/// This is the form that all `SigPublicKeyRaw`s take when being sent or received over the wire
+/// This is the form that all `SigPublicKey`s take when being sent or received over the wire
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "SigPublicKeyRaw__bound_u16")]
 pub(crate) struct SigPublicKeyRaw(pub(crate) Vec<u8>);
@@ -40,6 +42,7 @@ impl core::fmt::Debug for SigSecretKey {
 }
 
 // opaque UserInitKey::signature<0..2^16-1>
+/// This is the form that all `Signature`s take when being sent or received over the wire
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "SignatureRaw__bound_u16")]
 pub(crate) struct SignatureRaw(pub(crate) Vec<u8>);
