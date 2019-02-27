@@ -1,5 +1,6 @@
 use crate::crypto::{
     ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+    dh::{DhPublicKey, DhPublicKeyRaw},
     sig::{Signature, SignatureScheme, ED25519_IMPL},
 };
 
@@ -24,10 +25,7 @@ const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16
 // Implement Serialize for our CipherSuites and SignatureSchemes. This just serializes their ID
 
 impl Serialize for CipherSuite {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         for (_, name, id) in CIPHERSUITE_NAME_IDS {
             if &self.name == name {
                 return serializer.serialize_u16(*id);
@@ -38,10 +36,7 @@ impl Serialize for CipherSuite {
 }
 
 impl<'de> Deserialize<'de> for &'static CipherSuite {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Make a visitor type that just deserializes from u8 to an enum variant
         struct Visitor;
 
@@ -73,10 +68,7 @@ impl<'de> Deserialize<'de> for &'static CipherSuite {
 }
 
 impl Serialize for SignatureScheme {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         for (_, name, id) in SIGSCHEME_NAME_IDS {
             if &self.name == name {
                 return serializer.serialize_u16(*id);
@@ -87,10 +79,7 @@ impl Serialize for SignatureScheme {
 }
 
 impl<'de> Deserialize<'de> for &'static SignatureScheme {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct Visitor;
 
         impl<'de> serde::de::Visitor<'de> for Visitor {
@@ -117,5 +106,22 @@ impl<'de> Deserialize<'de> for &'static SignatureScheme {
         }
 
         deserializer.deserialize_u16(Visitor)
+    }
+}
+
+impl Serialize for DhPublicKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // If it's not already, convert it to a Raw public key, then serialize that
+        match self {
+            DhPublicKey::Raw(p) => p.serialize(serializer),
+            p => DhPublicKeyRaw(p.as_bytes().to_vec()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DhPublicKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize everything as a raw vec. We deal with variants in CipherSuiteUpcast
+        DhPublicKeyRaw::deserialize(deserializer).map(|raw| DhPublicKey::Raw(raw))
     }
 }

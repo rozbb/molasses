@@ -1,7 +1,7 @@
 use crate::crypto::{
     aead::{AeadKey, AeadNonce},
     ciphersuite::CipherSuite,
-    dh::{DhPoint, DhScalar},
+    dh::{DhPublicKey, DhPrivateKey},
     rng::CryptoRng,
 };
 use crate::error::Error;
@@ -28,7 +28,7 @@ impl EciesLabel {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
-    ephemeral_public_key: DhPoint,
+    ephemeral_public_key: DhPublicKey,
     /// The payload
     // opaque ciphertext<0..2^24-1>;
     #[serde(rename = "ciphertext__bound_u24")]
@@ -41,7 +41,7 @@ pub(crate) struct EciesCiphertext {
 /// sealing the plaintext, an `Error` is returned.
 fn ecies_encrypt(
     cs: &CipherSuite,
-    others_public_key: &DhPoint,
+    others_public_key: &DhPublicKey,
     plaintext: Vec<u8>,
     csprng: &mut dyn CryptoRng,
 ) -> Result<EciesCiphertext, Error> {
@@ -58,9 +58,9 @@ fn ecies_encrypt(
 /// `Error::EncryptionError` is returned.
 pub(crate) fn ecies_encrypt_with_scalar(
     cs: &CipherSuite,
-    others_public_key: &DhPoint,
+    others_public_key: &DhPublicKey,
     mut plaintext: Vec<u8>,
-    my_ephemeral_secret: DhScalar,
+    my_ephemeral_secret: DhPrivateKey,
 ) -> Result<EciesCiphertext, Error> {
     // Make room for the tag
     plaintext.extend(std::iter::repeat(0u8).take(cs.aead_impl.tag_size()));
@@ -72,9 +72,8 @@ pub(crate) fn ecies_encrypt_with_scalar(
     let shared_secret = cs
         .dh_impl
         .diffie_hellman(&my_ephemeral_secret, &others_public_key);
-    let shared_secret_bytes = cs.dh_impl.point_as_bytes(shared_secret);
 
-    let (key, nonce) = derive_ecies_key_nonce(cs, &shared_secret_bytes);
+    let (key, nonce) = derive_ecies_key_nonce(cs, shared_secret.as_bytes());
 
     cs.aead_impl.seal(&key, nonce, plaintext.as_mut_slice())?;
     // Rename for clarity
@@ -94,7 +93,7 @@ pub(crate) fn ecies_encrypt_with_scalar(
 /// wrong.
 pub(crate) fn ecies_decrypt(
     cs: &CipherSuite,
-    my_secret_key: &DhScalar,
+    my_secret_key: &DhPrivateKey,
     EciesCiphertext {
         ephemeral_public_key,
         mut ciphertext,
@@ -104,12 +103,11 @@ pub(crate) fn ecies_decrypt(
     let shared_secret = cs
         .dh_impl
         .diffie_hellman(&my_secret_key, &ephemeral_public_key);
-    let shared_secret_bytes = cs.dh_impl.point_as_bytes(shared_secret);
 
     // Derive the key and nonce, then open the ciphertext. The length of the subslice it gives is
     // the length we'll truncate the plaintext to. Recall this happens because there was a MAC at
     // the end of the ciphertext.
-    let (key, nonce) = derive_ecies_key_nonce(cs, &shared_secret_bytes);
+    let (key, nonce) = derive_ecies_key_nonce(cs, shared_secret.as_bytes());
     let plaintext_len = cs
         .aead_impl
         .open(&key, nonce, ciphertext.as_mut_slice())?

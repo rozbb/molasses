@@ -1,10 +1,10 @@
-use crate::crypto::dh::{DhPoint, DhScalar};
+use crate::crypto::dh::{DhPublicKey, DhPrivateKey};
 use crate::tree_math;
 
-// Ratchet trees are serialized in DirectPath messages as optional<PublicKey> tree<1..2^32-1>
-// So we encode RatchetTree as a Vec<RatchetTreeNode> with length bound u32, and we encode
-// RatchetTreeNode as enum { Blank, Filled { DhPoint } }, which is encoded in the same way as an
-// Option<DhPoint> would be.
+// Ratchet trees are serialized in DirectPath messages as optional<PublicKey> tree<1..2^32-1> So we
+// encode RatchetTree as a Vec<RatchetTreeNode> with length bound u32, and we encode
+// RatchetTreeNode as enum { Blank, Filled { DhPublicKey } }, which is encoded in the same way as
+// an Option<DhPublicKey> would be.
 
 /// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
 /// corresponding private key and a secret octet string.
@@ -13,9 +13,9 @@ use crate::tree_math;
 pub(crate) enum RatchetTreeNode {
     Blank,
     Filled {
-        public_key: DhPoint,
+        public_key: DhPublicKey,
         #[serde(skip)]
-        private_key: Option<DhScalar>,
+        private_key: Option<DhPrivateKey>,
         #[serde(skip)]
         secret: Option<Vec<u8>>,
     },
@@ -102,7 +102,7 @@ fn resolution_indices(tree: &RatchetTree, idx: usize) -> Vec<usize> {
 mod test {
     use super::*;
     use crate::{
-        crypto::dh::{DhPoint, DiffieHellman},
+        crypto::dh::{DhPublicKey, DhPublicKeyRaw, DiffieHellman},
         tls_de::TlsDeserializer,
     };
 
@@ -160,7 +160,7 @@ mod test {
             } else {
                 // TODO: Make a better way to put dummy values in the tree than invalid DH pubkeys
                 nodes.push(RatchetTreeNode::Filled {
-                    public_key: DhPoint(Vec::new()),
+                    public_key: DhPublicKey::Raw(DhPublicKeyRaw(Vec::new())),
                     private_key: None,
                     secret: None,
                 });

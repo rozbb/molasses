@@ -11,7 +11,7 @@ mod test {
         credential::Credential,
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
-            dh::DhPoint,
+            dh::DhPublicKey,
             ecies::{ecies_decrypt, ecies_encrypt_with_scalar, EciesCiphertext},
         },
         group_state::GroupState,
@@ -78,7 +78,7 @@ mod test {
         group_state: TestGroupState,
         #[serde(rename = "derive_secret_out__bound_u8")]
         derive_secret_out: Vec<u8>,
-        derive_key_pair_pub: DhPoint,
+        derive_key_pair_pub: DhPublicKey,
         ecies_out: EciesCiphertext,
     }
 
@@ -148,10 +148,8 @@ mod test {
         let (_, sender_secret_key) = {
             // key_material = pkR || plaintext where pkR is the serialization of recip_public_key
             let key_material = [
-                X25519_SHA256_AES128GCM
-                    .dh_impl
-                    .point_as_bytes(recip_public_key.clone()),
-                test_vec.ecies_plaintext.clone(),
+                recip_public_key.as_bytes(),
+                test_vec.ecies_plaintext.as_slice(),
             ]
             .concat();
             // key_pair = Derive-Key-Pair(key_material)

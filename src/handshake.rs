@@ -1,6 +1,6 @@
 use crate::{
     credential::Credential,
-    crypto::{ciphersuite::CipherSuite, dh::DhPoint, ecies::EciesCiphertext, sig::Signature},
+    crypto::{ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, sig::Signature},
     group_state::GroupState,
 };
 
@@ -18,7 +18,7 @@ struct Welcome {
 /// node's resolution
 #[derive(Debug, Deserialize, Serialize)]
 struct DirectPathNodeMessage {
-    public_key: DhPoint,
+    public_key: DhPublicKey,
     // ECIESCiphertext node_secrets<0..2^16-1>;
     node_secrets: Vec<EciesCiphertext>,
 }
@@ -50,7 +50,7 @@ struct UserInitKey {
     /// The DH public keys owned by this client. Each public key corresponds uniquely to a cipher
     /// suite in `cipher_suites`. As such, this MUST have the same length as `cipher_suites`.
     #[serde(rename = "init_keys__bound_u16")]
-    init_keys: Vec<DhPoint>,
+    init_keys: Vec<DhPublicKey>,
     /// The identity information of this user
     credential: Credential,
     /// Contains the signature of all the other fields of this struct, under the identity key of

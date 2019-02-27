@@ -10,50 +10,110 @@ const X25519_POINT_SIZE: usize = 32;
 const X25519_SCALAR_SIZE: usize = 32;
 
 /// An enum of possible types for a private DH value, depending on the underlying algorithm. In EC
-/// terminology, this is a point on the curve. In finite-field terminology, this is an element of
-/// the field.
-pub(crate) enum DhScalar {
+/// terminology, this is a scalar in the base field. In finite-field terminology, this is an
+/// exponent.
+pub(crate) enum DhPrivateKey {
     /// A scalar value in Curve25519
-    X25519Scalar(x25519_dalek::StaticSecret),
+    X25519PrivateKey(x25519_dalek::StaticSecret),
 }
 
-impl core::fmt::Debug for DhScalar {
+impl core::fmt::Debug for DhPrivateKey {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        // Ensure that the secret value isn't accidentally logged
-        f.write_str("DhScalar: CONTENTS OMITTED")
+        f.write_str("DhPrivateKey: CONTENTS OMITTED")
     }
 }
 
+/// An enum of possible types for a DH shared secret, depending on the underlying algorithm. This
+/// is mathematically the same as a point, but it is a secret value, not a public key, so we make
+/// the same distinction that `dalek` makes
+pub(crate) enum DhSharedSecret {
+    /// A Curve25519 shared secret
+    X25519SharedSecret(x25519_dalek::SharedSecret),
+}
+
+impl DhSharedSecret {
+    /// Outputs the internal byte representation of a shared secret
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        match self {
+            DhSharedSecret::X25519SharedSecret(p) => p.as_bytes(),
+        }
+    }
+}
+
+/// This is the form that all `DhPublicKey`s take when being sent or received over the wire
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename = "DhPublicKeyRaw__bound_u16")]
+pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
+
 // opaque DHPublicKey<1..2^16-1>
-/// Because these are untagged during serialization and deserialization, we can only represent
-/// curve points as bytes, without any variant tag (such as X25519Scalar). So we use this type for
-/// all DH stuff. I know, this sucks.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename = "DhPoint__bound_u16")]
-pub(crate) struct DhPoint(pub(crate) Vec<u8>);
+/// An enum of possible types for a public DH value, depending on the underlying algorithm. In EC
+/// terminology, this is a point on the curve. In finite-field terminology, this is a field
+/// element. The `Raw` variant only gets instantiated at the serialization/deserialization
+/// boundary, and should never be dealt with directly. The `CipherSuiteUpcast` trait should take
+/// care of this.
+pub(crate) enum DhPublicKey {
+    /// A curve point in Curve25519
+    X25519PublicKey(x25519_dalek::PublicKey),
+    Raw(DhPublicKeyRaw),
+}
+
+impl DhPublicKey {
+    // You may ask why this function isn't implemented as part of a serialization function for
+    // DhPublicKey. That's because the byte representation of this here point is independent of the
+    // wire format we choose. This representation is used in the calculation of ECIES ciphertexts,
+    // which are computed independently of wire format.
+    /// Outputs the internal byte representation of a given point
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        match self {
+            DhPublicKey::X25519PublicKey(p) => p.as_bytes(),
+            DhPublicKey::Raw(p) => p.0.as_slice(),
+        }
+    }
+}
+
+// TODO: Kill these once Clone and Debug are implemented for x25519_dalek::PublicKey
+
+impl core::fmt::Debug for DhPublicKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let bytes = self.as_bytes();
+        f.write_str("DhPublicKey(")?;
+        if f.alternate() {
+            f.write_str("\n")?;
+        }
+        bytes.fmt(f)?;
+        if f.alternate() {
+            f.write_str("\n")?;
+        }
+        f.write_str(")")
+    }
+}
+
+impl Clone for DhPublicKey {
+    fn clone(&self) -> DhPublicKey {
+        match self {
+            DhPublicKey::X25519PublicKey(p) => X25519_IMPL.point_from_bytes(p.as_bytes()),
+            DhPublicKey::Raw(r) => DhPublicKey::Raw(r.clone()),
+        }
+    }
+}
 
 /// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
 /// etc.
 pub(crate) trait DiffieHellman {
-    // You may ask why this function isn't implemented as part of a serialization function for
-    // DhPoint. That's because the byte representation of this here point is independent of the
-    // wire format we choose. This representation is used in the calculation of ECIES ciphertexts,
-    // which are computed independently of wire format.
-    fn point_as_bytes(&self, point: DhPoint) -> Vec<u8>;
 
-    fn point_from_bytes(&self, bytes: Vec<u8>) -> DhPoint;
+    fn point_from_bytes(&self, bytes: &[u8]) -> DhPublicKey;
 
-    fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhScalar, Error>;
+    fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error>;
 
     // This has to take a dyn CryptoRng because DiffieHellman is itself a trait object inside a
     // CipherSuite. Trait objects can't have associated types, associated constants, or generic
     // methods.
-    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhScalar, Error>;
+    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error>;
 
-    fn derive_public_key(&self, scalar: &DhScalar) -> DhPoint;
+    fn derive_public_key(&self, scalar: &DhPrivateKey) -> DhPublicKey;
 
-    fn diffie_hellman(&self, privkey: &DhScalar, pubkey: &DhPoint) -> DhPoint;
+    fn diffie_hellman(&self, privkey: &DhPrivateKey, pubkey: &DhPublicKey) -> DhSharedSecret;
 }
 
 /// This represents the X25519 Diffie-Hellman key agreement protocol. Notably, it implements
@@ -61,20 +121,22 @@ pub(crate) trait DiffieHellman {
 pub(crate) struct X25519;
 
 // TODO: Urgent: Do the zero checks that the specification requires
+// TODO: Change "point" to "public key" and "scalar" to "private key"
 
 impl DiffieHellman for X25519 {
-    /// Outputs the internal byte representation of a given point
-    fn point_as_bytes(&self, point: DhPoint) -> Vec<u8> {
-        point.0
-    }
-
-    /// Makes a `DhPoint` from the given bytes
+    /// Makes a `DhPublicKey` from the given bytes
     ///
     /// Requires: `bytes.len() == X25519_POINT_SIZE == 32`
-    fn point_from_bytes(&self, bytes: Vec<u8>) -> DhPoint {
+    fn point_from_bytes(&self, bytes: &[u8]) -> DhPublicKey {
         // This has to be the right length
         assert_eq!(bytes.len(), X25519_POINT_SIZE);
-        DhPoint(bytes)
+
+        let public_key = {
+            let mut buf = [0u8; X25519_POINT_SIZE];
+            buf.copy_from_slice(bytes);
+            buf.into()
+        };
+        DhPublicKey::X25519PublicKey(public_key)
     }
 
     /// Uses the given bytes as a scalar in GF(2^(255) - 19)
@@ -83,13 +145,13 @@ impl DiffieHellman for X25519 {
     ///
     /// Returns: `Ok(scalar)` on success. Otherwise, if `bytes.len() != 32`, returns
     /// `Error::DhError`.
-    fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhScalar, Error> {
+    fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
         if bytes.len() != X25519_SCALAR_SIZE {
             return Err(Error::DhError("Wrong scalar size"));
         } else {
             let mut buf = [0u8; X25519_SCALAR_SIZE];
             buf.copy_from_slice(bytes);
-            Ok(DhScalar::X25519Scalar(buf.into()))
+            Ok(DhPrivateKey::X25519PrivateKey(buf.into()))
         }
     }
 
@@ -97,31 +159,27 @@ impl DiffieHellman for X25519 {
     ///
     /// Returns: `Ok(scalar)` on success. Otherwise, if something goes wrong with the RNG, it
     /// returns `Error::OutOfEntropy`.
-    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhScalar, Error> {
+    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
         let mut box_rng = Box::new(csprng);
-        Ok(DhScalar::X25519Scalar(x25519_dalek::StaticSecret::new(&mut box_rng)))
+        Ok(DhPrivateKey::X25519PrivateKey(x25519_dalek::StaticSecret::new(&mut box_rng)))
     }
 
     /// Calculates `scalar * P`, where `P` is the standard X25519 basepoint. This function is used
     /// for creating public keys for DHE.
-    fn derive_public_key(&self, scalar: &DhScalar) -> DhPoint {
-        let scalar = enum_variant!(scalar, DhScalar::X25519Scalar);
+    fn derive_public_key(&self, scalar: &DhPrivateKey) -> DhPublicKey {
+        let scalar = enum_variant!(scalar, DhPrivateKey::X25519PrivateKey);
         let public_key: x25519_dalek::PublicKey = scalar.into();
-        DhPoint(public_key.as_bytes().to_vec())
+        DhPublicKey::X25519PublicKey(public_key)
     }
 
     /// Computes `privkey * Pubkey` where `privkey` is your local secret (a scalar) and `Pubkey` is
     /// someone's public key (a curve point)
-    fn diffie_hellman(&self, privkey: &DhScalar, pubkey: &DhPoint) -> DhPoint {
-        let privkey = enum_variant!(privkey, DhScalar::X25519Scalar);
-        let pubkey: x25519_dalek::PublicKey = {
-            let mut buf = [0u8; X25519_POINT_SIZE];
-            buf.copy_from_slice(&pubkey.0);
-            buf.into()
-        };
+    fn diffie_hellman(&self, privkey: &DhPrivateKey, pubkey: &DhPublicKey) -> DhSharedSecret {
+        let privkey = enum_variant!(privkey, DhPrivateKey::X25519PrivateKey);
+        let pubkey = enum_variant!(pubkey, DhPublicKey::X25519PublicKey);
 
-        let shared_secret = privkey.diffie_hellman(&pubkey);
-        DhPoint(shared_secret.as_bytes().to_vec())
+        let ss = privkey.diffie_hellman(&pubkey);
+        DhSharedSecret::X25519SharedSecret(ss)
     }
 }
 
@@ -155,30 +213,24 @@ mod test {
         let bob_pubkey = X25519_IMPL.derive_public_key(&bob_scalar);
 
         // Compute b(aP) and a(bP) and make sure they are the same
-        let shared_secret_a = {
-            let point = X25519_IMPL.diffie_hellman(&alice_scalar, &bob_pubkey);
-            X25519_IMPL.point_as_bytes(point)
-        };
-        let shared_secret_b = {
-            let point = X25519_IMPL.diffie_hellman(&bob_scalar, &alice_pubkey);
-            X25519_IMPL.point_as_bytes(point)
-        };
+        let shared_secret_a = X25519_IMPL.diffie_hellman(&alice_scalar, &bob_pubkey);
+        let shared_secret_b = X25519_IMPL.diffie_hellman(&bob_scalar, &alice_pubkey);
 
         // Known-answer for aP
         assert_eq!(
-            hex::encode(&X25519_IMPL.point_as_bytes(alice_pubkey)),
+            hex::encode(alice_pubkey.as_bytes()),
             "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"
         );
         // Known-answer for bP
         assert_eq!(
-            hex::encode(&X25519_IMPL.point_as_bytes(bob_pubkey)),
+            hex::encode(bob_pubkey.as_bytes()),
             "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f"
         );
         // Test b(aP) == a(bP)
-        assert_eq!(shared_secret_a, shared_secret_b);
+        assert_eq!(shared_secret_a.as_bytes(), shared_secret_b.as_bytes());
         // Known-answer for abP
         assert_eq!(
-            hex::encode(&shared_secret_a),
+            hex::encode(shared_secret_a.as_bytes()),
             "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
         );
     }
@@ -208,10 +260,7 @@ mod test {
             X25519_IMPL.diffie_hellman(&scalar2, &point1),
         );
 
-        assert_eq!(
-            X25519_IMPL.point_as_bytes(shared1),
-            X25519_IMPL.point_as_bytes(shared2)
-        );
+        assert_eq!(shared1.as_bytes(), shared2.as_bytes());
     }
 
     // This comes from
@@ -229,7 +278,7 @@ mod test {
         let pubkey = X25519_IMPL.derive_public_key(&scalar);
 
         assert_eq!(
-            hex::encode(&X25519_IMPL.point_as_bytes(pubkey)),
+            hex::encode(pubkey.as_bytes()),
             "6667b1715a0ad45b0510e850322a8d471d4485ebcbfcc0f3bcce7bcae7b44f7f"
         );
     }
