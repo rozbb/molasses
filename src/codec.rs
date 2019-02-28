@@ -57,7 +57,7 @@ impl<'de> Deserialize<'de> for &'static CipherSuite {
                     }
                 }
                 Err(E::custom(format_args!(
-                    "could not deserialize {:x} into cipher suite",
+                    "could not deserialize 0x{:04x} into cipher suite",
                     value
                 )))
             }
@@ -100,7 +100,7 @@ impl<'de> Deserialize<'de> for &'static SignatureScheme {
                     }
                 }
                 Err(E::custom(format_args!(
-                    "could not deserialize {:x} into signature scheme",
+                    "could not deserialize 0x{:04x} into signature scheme",
                     value
                 )))
             }

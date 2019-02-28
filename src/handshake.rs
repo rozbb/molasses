@@ -20,6 +20,7 @@ struct Welcome {
 struct DirectPathNodeMessage {
     public_key: DhPublicKey,
     // ECIESCiphertext node_secrets<0..2^16-1>;
+    #[serde(rename = "node_secrets__bound_u16")]
     node_secrets: Vec<EciesCiphertext>,
 }
 
@@ -28,6 +29,7 @@ struct DirectPathNodeMessage {
 #[derive(Debug, Deserialize, Serialize)]
 struct DirectPathMessage {
     // DirectPathNodeMessage nodes<0..2^16-1>;
+    #[serde(rename = "node_messages__bound_u16")]
     node_messages: Vec<DirectPathNodeMessage>,
 }
 
@@ -82,7 +84,7 @@ struct GroupRemove {
 }
 
 /// Enum of possible group operations
-#[derive(Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename = "GroupOperation__enum_u8")]
 enum GroupOperation {
     Init(GroupInit),
@@ -92,6 +94,7 @@ enum GroupOperation {
 }
 
 /// A `Handshake` message, as defined in section 7 of the MLS spec
+#[derive(Debug, Deserialize, Serialize)]
 struct Handshake {
     /// This is equal to the epoch of the current `GroupState`
     prior_epoch: u32,
@@ -102,10 +105,12 @@ struct Handshake {
     /// Signature over the `Group`'s history:
     /// `Handshake.signature = Sign(identity_key, GroupState.transcript_hash)`
     signature: Signature,
+    // opaque confirmation<1..255>;
     /// HMAC over the group state and `Handshake` signature
     /// `confirmation_data = GroupState.transcript_hash || Handshake.signature`
     /// `Handshake.confirmation = HMAC(confirmation_key, confirmation_data)`
-    confirmation: ring::hmac::Signature,
+    #[serde(rename = "confirmation__bound_u8")]
+    confirmation: Vec<u8>,
 }
 
 impl Handshake {
@@ -138,7 +143,7 @@ impl Handshake {
             operation: op,
             signer_index: state.my_position_in_roster,
             signature: signature,
-            confirmation: confirmation,
+            confirmation: confirmation.as_ref().to_vec(),
         }
     }
 }
@@ -221,11 +226,11 @@ mod test {
         _welcome_len: u32,
         welcome: Welcome,
         _add_len: u32,
-        add: GroupAdd,
+        add: Handshake,
         _update_len: u32,
-        update: GroupUpdate,
+        update: Handshake,
         _remove_len: u32,
-        remove: GroupRemove,
+        remove: Handshake,
     }
 
     #[derive(Debug, Deserialize)]
@@ -248,8 +253,8 @@ mod test {
         uik_all_scheme: &'static SignatureScheme,
         _user_init_key_all_len: u32,
         user_init_key_all: UserInitKey,
-        //case_p256_p256: MessagesCase,
-        //case_x25519_ed25519: MessagesCase,
+        case_p256_p256: MessagesCase,
+        case_x25519_ed25519: MessagesCase,
     }
 
     // Tests our code against the official key schedule test vector
@@ -258,6 +263,5 @@ mod test {
         let mut f = std::fs::File::open("test_vectors/messages.bin").unwrap();
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
-        println!("test_vec == {:#x?}", test_vec);
     }
 }
