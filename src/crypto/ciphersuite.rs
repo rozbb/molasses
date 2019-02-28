@@ -47,7 +47,7 @@ impl CipherSuite {
         let digest = ring::digest::digest(self.hash_alg, bytes);
         let scalar_bytes = digest.as_ref();
 
-        let privkey = self.dh_impl.scalar_from_bytes(scalar_bytes)?;
+        let privkey = self.dh_impl.private_key_from_bytes(scalar_bytes)?;
         let pubkey = self.dh_impl.derive_public_key(&privkey);
 
         Ok((pubkey, privkey))

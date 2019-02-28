@@ -8,14 +8,12 @@ pub(crate) mod sig;
 #[cfg(test)]
 mod test {
     use crate::{
-        credential::Credential,
         crypto::{
-            ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+            ciphersuite::X25519_SHA256_AES128GCM,
             dh::DhPublicKey,
             ecies::{ecies_decrypt, ecies_encrypt_with_scalar, EciesCiphertext},
         },
-        group_state::GroupState,
-        ratchet_tree::RatchetTree,
+        error::Error,
         tls_de::TlsDeserializer,
         tls_ser::serialize_to_bytes,
         upcast::CryptoUpcast,
@@ -84,10 +82,11 @@ mod test {
     }
 
     impl CryptoUpcast for CryptoCase {
-        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) {
-            self.group_state.upcast_crypto_values(ctx);
-            self.derive_key_pair_pub.upcast_crypto_values(ctx);
-            self.ecies_out.upcast_crypto_values(ctx);
+        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
+            self.group_state.upcast_crypto_values(ctx)?;
+            self.derive_key_pair_pub.upcast_crypto_values(ctx)?;
+            self.ecies_out.upcast_crypto_values(ctx)?;
+            Ok(())
         }
     }
 
@@ -121,7 +120,7 @@ mod test {
         let case1 = {
             let mut raw_case = test_vec.case_x25519_ed25519;
             let ctx = crate::upcast::CryptoCtx::new_from_cipher_suite(&X25519_SHA256_AES128GCM);
-            raw_case.upcast_crypto_values(&ctx);
+            raw_case.upcast_crypto_values(&ctx).unwrap();
             raw_case
         };
         // Make a full group state from the test group state

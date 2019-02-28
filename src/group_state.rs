@@ -185,9 +185,7 @@ pub(crate) struct WelcomeInfo {
 #[cfg(test)]
 mod test {
     use crate::{
-        credential::Credential,
         crypto::ciphersuite::CipherSuite,
-        ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
         utils::{group_from_test_group, TestGroupState},
     };

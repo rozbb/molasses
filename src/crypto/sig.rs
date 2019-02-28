@@ -69,6 +69,8 @@ impl Signature {
 pub(crate) trait SignatureScheme {
     fn name(&self) -> &'static str;
 
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error>;
+
     #[cfg(test)]
     fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey;
 
@@ -96,6 +98,14 @@ impl SignatureScheme for Ed25519 {
     /// Returns the signature scheme's name, as per the MLS spec. Here, it is `ed25519`
     fn name(&self) -> &'static str {
         "ed25519"
+    }
+
+    /// Creates a public key from the provided bytes
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error> {
+        match ed25519_dalek::PublicKey::from_bytes(bytes) {
+            Ok(public_key) => Ok(SigPublicKey::Ed25519PublicKey(public_key)),
+            Err(_) => Err(Error::SignatureError("Invalid public key")),
+        }
     }
 
     /// This is just for testing purposes. This should be the `SigPublicKey` form of whatever we do
@@ -163,11 +173,9 @@ impl SignatureScheme for Ed25519 {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::tls_de::TlsDeserializer;
 
     use quickcheck_macros::quickcheck;
     use rand_core::{RngCore, SeedableRng};
-    use serde::de::Deserialize;
 
     // Test vectors are from
     // https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libgcrypt.git;a=blob;f=tests/t-ed25519.inp;h=e13566f826321eece65e02c593bc7d885b3dbe23;hb=refs/heads/master%3E
@@ -200,21 +208,12 @@ mod test {
                 ED25519_IMPL.secret_key_from_bytes(&bytes).unwrap()
             };
             let expected_public = {
-                // The deserializer expects an 0x0020 at the beginning to indicate that the
-                // public keys are 32 bytes long
-                let mut bytes = hex::decode(public_hex).unwrap();
-                bytes.insert(0, 0x20);
-                bytes.insert(0, 0x00);
-
-                let mut cursor = bytes.as_slice();
-                let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
-                SigPublicKey::deserialize(&mut deserializer).unwrap()
+                let bytes = hex::decode(public_hex).unwrap();
+                ED25519_IMPL.public_key_from_bytes(&bytes).unwrap()
             };
             let derived_public = ED25519_IMPL.public_key_from_secret_key(&secret);
 
             // Make sure the expected public key and the public key we derived are the same
-            eprintln!("expected_public.len() == {}", expected_public.as_bytes().len());
-            eprintln!("derived_public.len() == {}", derived_public.as_bytes().len());
             assert_eq!(expected_public.as_bytes(), derived_public.as_bytes());
 
             let derived_sig = ED25519_IMPL.sign(&secret, &msg);

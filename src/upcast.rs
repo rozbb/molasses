@@ -13,12 +13,14 @@
 //! little bit of custom logic, so we opt to implement this manually for all the types that need
 //! it.
 
-use crate::credential::Credential;
-use crate::crypto::{
-    ciphersuite::CipherSuite,
-    dh::DhPublicKey,
-    ecies::EciesCiphertext,
-    sig::SignatureScheme,
+use crate::{
+    credential::Credential,
+    crypto::{
+        ciphersuite::CipherSuite,
+        dh::DhPublicKey,
+        sig::{SignatureScheme, SigPublicKey},
+    },
+    error::Error,
 };
 
 /// The context necessary for a `CryptoUpcast`. This specifies the ambient ciphersuite and
@@ -44,56 +46,77 @@ impl CryptoCtx {
 /// This trait describes how an object's "raw" parts are to be interpreted given the context of the
 /// ambient cipher suite and signature scheme. See module documentation for more.
 pub(crate) trait CryptoUpcast {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx);
+    #[must_use]
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error>;
 }
 
 impl<T: CryptoUpcast> CryptoUpcast for Option<T> {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
         match self {
             Some(inner) => inner.upcast_crypto_values(ctx),
-            None => (),
+            None => Ok(()),
         }
     }
 }
 
 impl<T: CryptoUpcast> CryptoUpcast for Vec<T> {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
         for item in self.iter_mut() {
-            item.upcast_crypto_values(ctx);
+            item.upcast_crypto_values(ctx)?;
         }
+        Ok(())
     }
 }
 
 impl CryptoUpcast for DhPublicKey {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
         let raw = enum_variant!(self, DhPublicKey::Raw);
         match ctx.cs {
-            Some(cs) => *self = cs.dh_impl.point_from_bytes(raw.0.as_slice()),
-            None => panic!("need a CipherSuite to upcast a DhPublicKey"),
+            Some(cs) => {
+                *self = cs.dh_impl.public_key_from_bytes(raw.0.as_slice())?;
+                Ok(())
+            },
+            None => Err(Error::DhError("Need a CipherSuite to upcast a DhPublicKey")),
+        }
+    }
+}
+
+impl CryptoUpcast for SigPublicKey {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        let raw = enum_variant!(self, SigPublicKey::Raw);
+        match ctx.ss {
+            Some(ss) => {
+                *self = ss.public_key_from_bytes(&raw.0)?;
+                Ok(())
+            },
+            None => Err(Error::SignatureError("Need a SignatureScheme to upcast a SigPublicKey")),
         }
     }
 }
 
 impl CryptoUpcast for crate::crypto::ecies::EciesCiphertext {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) {
-        self.ephemeral_public_key.upcast_crypto_values(ctx);
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.ephemeral_public_key.upcast_crypto_values(ctx)
     }
 }
 
 impl CryptoUpcast for crate::credential::BasicCredential {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        let mut new_ctx = *ctx;
+        new_ctx.ss = Some(self.signature_scheme);
+        self.public_key.upcast_crypto_values(&new_ctx)
     }
 }
 
 impl CryptoUpcast for Credential {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
         match self {
             Credential::Basic(b) => {
                 let mut new_ctx = *ctx;
                 new_ctx.ss = Some(b.signature_scheme);
-                b.upcast_crypto_values(&new_ctx);
+                b.upcast_crypto_values(&new_ctx)
             },
-            _ => ()
+            _ => Ok(())
         }
     }
 }

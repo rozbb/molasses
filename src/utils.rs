@@ -1,5 +1,3 @@
-use serde::de::Deserialize;
-
 /// Unwraps an enum into an expected variant. Panics if the supplied value is not of the expected
 /// variant. This macro is used to succinctly ensure that ciphersuite values are kept consistent
 /// throughout the library.
@@ -89,7 +87,7 @@ pub(crate) use test_utils::*;
 #[cfg(test)]
 mod test_utils {
     use crate::{
-        credential::Credential, crypto::ciphersuite::X25519_SHA256_AES128GCM,
+        credential::Credential, crypto::ciphersuite::X25519_SHA256_AES128GCM, error::Error,
         group_state::GroupState, ratchet_tree::RatchetTree, upcast::CryptoUpcast,
     };
 
@@ -112,8 +110,8 @@ mod test_utils {
 
 
     impl crate::upcast::CryptoUpcast for TestGroupState {
-        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) {
-            self.roster.upcast_crypto_values(ctx);
+        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
+            self.roster.upcast_crypto_values(ctx)
         }
     }
 

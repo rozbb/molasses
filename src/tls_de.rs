@@ -166,7 +166,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     fn deserialize_enum<V>(
         self,
         name: &'static str,
-        variants: &'static [&'static str],
+        _variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
@@ -522,7 +522,7 @@ where
 mod test {
     use super::*;
     // Use the test vectors from the serialization code
-    use crate::tls_ser::test::{biff_bytes, make_biff, Biff};
+    use crate::tls_ser::test::{make_biff, Biff, BIFF_BYTES};
 
     use serde::de::Deserialize;
 
@@ -530,7 +530,7 @@ mod test {
     // we expect. This uses some stupidly named structs.
     #[test]
     fn deserialization_kat() {
-        let mut buf = biff_bytes;
+        let mut buf = BIFF_BYTES;
         let mut deserializer = TlsDeserializer::from_reader(&mut buf);
         let expected_biff = make_biff();
         let deserialized_biff = Biff::deserialize(&mut deserializer).unwrap();

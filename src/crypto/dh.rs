@@ -1,8 +1,6 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
-use x25519_dalek::{x25519, X25519_BASEPOINT_BYTES};
-
 /// A singleton object representing the X25519 DH scheme
 pub(crate) const X25519_IMPL: X25519 = X25519;
 
@@ -91,7 +89,9 @@ impl core::fmt::Debug for DhPublicKey {
 impl Clone for DhPublicKey {
     fn clone(&self) -> DhPublicKey {
         match self {
-            DhPublicKey::X25519PublicKey(p) => X25519_IMPL.point_from_bytes(p.as_bytes()),
+            DhPublicKey::X25519PublicKey(p) => X25519_IMPL
+                .public_key_from_bytes(p.as_bytes())
+                .expect("DhPublicKey clone error"),
             DhPublicKey::Raw(r) => DhPublicKey::Raw(r.clone()),
         }
     }
@@ -102,9 +102,9 @@ impl Clone for DhPublicKey {
 /// etc.
 pub(crate) trait DiffieHellman {
 
-    fn point_from_bytes(&self, bytes: &[u8]) -> DhPublicKey;
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPublicKey, Error>;
 
-    fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error>;
+    fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error>;
 
     // This has to take a dyn CryptoRng because DiffieHellman is itself a trait object inside a
     // CipherSuite. Trait objects can't have associated types, associated constants, or generic
@@ -127,27 +127,32 @@ impl DiffieHellman for X25519 {
     /// Makes a `DhPublicKey` from the given bytes
     ///
     /// Requires: `bytes.len() == X25519_POINT_SIZE == 32`
-    fn point_from_bytes(&self, bytes: &[u8]) -> DhPublicKey {
+    ///
+    /// Returns: `Ok(public_key)` on success. Otherwise, if `bytes.len() != 32`, returns
+    /// `Error::DhError`.
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPublicKey, Error> {
         // This has to be the right length
-        assert_eq!(bytes.len(), X25519_POINT_SIZE);
-
-        let public_key = {
-            let mut buf = [0u8; X25519_POINT_SIZE];
-            buf.copy_from_slice(bytes);
-            buf.into()
-        };
-        DhPublicKey::X25519PublicKey(public_key)
+        if bytes.len() != X25519_POINT_SIZE {
+            Err(Error::DhError("Wrong public key size"))
+        } else {
+            let public_key = {
+                let mut buf = [0u8; X25519_POINT_SIZE];
+                buf.copy_from_slice(bytes);
+                buf.into()
+            };
+            Ok(DhPublicKey::X25519PublicKey(public_key))
+        }
     }
 
-    /// Uses the given bytes as a scalar in GF(2^(255) - 19)
+    /// Uses the given bytes as a scalar in GF(2^255 - 19)
     ///
     /// Requires: `bytes.len() == 32`
     ///
     /// Returns: `Ok(scalar)` on success. Otherwise, if `bytes.len() != 32`, returns
     /// `Error::DhError`.
-    fn scalar_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
+    fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
         if bytes.len() != X25519_SCALAR_SIZE {
-            return Err(Error::DhError("Wrong scalar size"));
+            Err(Error::DhError("Wrong scalar size"))
         } else {
             let mut buf = [0u8; X25519_SCALAR_SIZE];
             buf.copy_from_slice(bytes);
@@ -197,14 +202,14 @@ mod test {
             let hex_str = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
             let bytes = hex::decode(hex_str).unwrap();
             X25519_IMPL
-                .scalar_from_bytes(&bytes)
+                .private_key_from_bytes(&bytes)
                 .expect("couldn't make scalar from bytes")
         };
         let bob_scalar = {
             let hex_str = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb";
             let bytes = hex::decode(hex_str).unwrap();
             X25519_IMPL
-                .scalar_from_bytes(&bytes)
+                .private_key_from_bytes(&bytes)
                 .expect("couldn't make scalar from bytes")
         };
 
@@ -246,8 +251,8 @@ mod test {
             rng.fill_bytes(&mut buf1);
             rng.fill_bytes(&mut buf2);
             (
-                X25519_IMPL.scalar_from_bytes(&buf1).unwrap(),
-                X25519_IMPL.scalar_from_bytes(&buf2).unwrap(),
+                X25519_IMPL.private_key_from_bytes(&buf1).unwrap(),
+                X25519_IMPL.private_key_from_bytes(&buf2).unwrap(),
             )
         };
 
@@ -271,7 +276,7 @@ mod test {
             let hex_str = "e029fbe9de859e7bd6aea95ac258ae743a9eabccde9358420d8c975365938714";
             let bytes = hex::decode(hex_str).unwrap();
             X25519_IMPL
-                .scalar_from_bytes(&bytes)
+                .private_key_from_bytes(&bytes)
                 .expect("couldn't make scalar from bytes")
         };
 

@@ -6,7 +6,7 @@ use crate::crypto::{
 
 use serde::{
     de::{Deserialize, Deserializer},
-    ser::{Serialize, SerializeStruct, Serializer},
+    ser::{Serialize, Serializer},
 };
 
 // TODO: These always return the 25519 impl, because I don't have P-256, and I need deserialization

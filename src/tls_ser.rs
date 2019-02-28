@@ -563,7 +563,7 @@ pub(crate) mod test {
 
     // This represents the known Biff data structure that's returned by make_biff()
     #[rustfmt::skip]
-    pub(crate) const biff_bytes: &'static [u8] = &[
+    pub(crate) const BIFF_BYTES: &'static [u8] = &[
         0x01, 0x00, 0x00, 0x00,          // u32
         0x00, 0x00, 0x00, 0x01,          // u32
         0xff,                            // u8
@@ -590,7 +590,7 @@ pub(crate) mod test {
             0x55, 0x66, 0x77, 0x88,      //   u32
     ];
 
-    // This is the Biff whose serialization is biff_bytes
+    // This is the Biff whose serialization is BIFF_BYTES
     pub(crate) fn make_biff() -> Biff {
         Biff {
             a: 0x01000000,
@@ -625,7 +625,7 @@ pub(crate) mod test {
     fn serialization_kat() {
         let biff = make_biff();
         let serialized = serialize_to_bytes(&biff).unwrap();
-        let expected_bytes = biff_bytes;
+        let expected_bytes = BIFF_BYTES;
 
         assert_eq!(serialized.as_slice(), expected_bytes);
     }

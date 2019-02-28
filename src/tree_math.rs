@@ -551,17 +551,17 @@ mod test {
         let num_parent_ops = test_vec.parent.len();
         let num_sibling_ops = test_vec.sibling.len();
 
-        let mut root: Vec<u32> = (1..=num_root_ops).map(|i| root_idx(i) as u32).collect();
-        let mut left: Vec<u32> = (0..num_left_ops)
+        let root: Vec<u32> = (1..=num_root_ops).map(|i| root_idx(i) as u32).collect();
+        let left: Vec<u32> = (0..num_left_ops)
             .map(|i| node_left_child(i) as u32)
             .collect();
-        let mut right: Vec<u32> = (0..num_right_ops)
+        let right: Vec<u32> = (0..num_right_ops)
             .map(|i| node_right_child(i, size) as u32)
             .collect();
-        let mut parent: Vec<u32> = (0..num_parent_ops)
+        let parent: Vec<u32> = (0..num_parent_ops)
             .map(|i| node_parent(i, size) as u32)
             .collect();
-        let mut sibling: Vec<u32> = (0..num_sibling_ops)
+        let sibling: Vec<u32> = (0..num_sibling_ops)
             .map(|i| node_sibling(i, size) as u32)
             .collect();
 
