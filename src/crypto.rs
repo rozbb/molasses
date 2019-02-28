@@ -119,7 +119,7 @@ mod test {
 
         let case1 = {
             let mut raw_case = test_vec.case_x25519_ed25519;
-            let ctx = crate::upcast::CryptoCtx::new_from_cipher_suite(&X25519_SHA256_AES128GCM);
+            let ctx = crate::upcast::CryptoCtx::new().set_cipher_suite(&X25519_SHA256_AES128GCM);
             raw_case.upcast_crypto_values(&ctx).unwrap();
             raw_case
         };

@@ -9,6 +9,8 @@ pub enum Error {
     SignatureError(&'static str),
     /// For errors encountered during (de)serialization
     SerdeError(std::io::Error),
+    /// For errors encountered during upcasting
+    UpcastError(&'static str),
     /// For when we need randomness and there's none left
     OutOfEntropy,
 }
@@ -28,6 +30,7 @@ impl std::error::Error for Error {
             Error::DhError(e) => e,
             Error::SignatureError(e) => e,
             Error::SerdeError(e) => e.description(),
+            Error::UpcastError(e) => e,
             Error::OutOfEntropy => "Out of Entropy",
         }
     }

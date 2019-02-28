@@ -167,7 +167,7 @@ pub(crate) struct WelcomeInfo {
     /// Contains credentials for the occupied slots in the tree, including the identity and
     /// signature public key for the holder of the slot
     #[serde(rename = "roster__bound_u32")]
-    roster: Vec<Option<Credential>>,
+    pub(crate) roster: Vec<Option<Credential>>,
     // optional<PublicKey> tree<1..2^32-1>;
     /// The tree field contains the public keys corresponding to the nodes of the ratchet tree for
     /// this group. The number of leaves in this tree MUST be equal to the length of `roster`

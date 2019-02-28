@@ -31,15 +31,28 @@ pub(crate) struct CryptoCtx {
     ss: Option<&'static dyn SignatureScheme>,
 }
 
+// TODO: Figure out when to check for coherence in ciphersuites
+
 impl CryptoCtx {
-    /// Makes a new `CryptoCtx` with the given ciphersuite and an empty signature scheme
-    pub(crate) fn new_from_cipher_suite(cs: &'static CipherSuite) -> CryptoCtx {
-        CryptoCtx { cs: Some(cs), ss: None }
+    /// Returns a new `CryptoCtx` object with the specified cipher suite
+    pub(crate) fn set_cipher_suite(&self, cs: &'static CipherSuite) -> CryptoCtx {
+        let mut new_ctx = *self;
+        new_ctx.cs = Some(cs);
+        new_ctx
     }
 
-    /// Makes a new `CryptoCtx` with the given signature scheme and an empty ciphersuite
-    pub(crate) fn new_from_signature_scheme(ss: &'static SignatureScheme) -> CryptoCtx {
-        CryptoCtx { cs: None, ss: Some(ss) }
+    /// Returns a new `CryptoCtx` object with the specified signature scheme
+    pub(crate) fn set_signature_scheme(&self, ss: &'static SignatureScheme) -> CryptoCtx {
+        let mut new_ctx = *self;
+        new_ctx.ss = Some(ss);
+        new_ctx
+    }
+}
+
+impl CryptoCtx {
+    /// Makes a new empty `CryptoCtx`
+    pub(crate) fn new() -> CryptoCtx {
+        CryptoCtx { cs: None, ss: None }
     }
 }
 
@@ -76,7 +89,7 @@ impl CryptoUpcast for DhPublicKey {
                 *self = cs.dh_impl.public_key_from_bytes(raw.0.as_slice())?;
                 Ok(())
             },
-            None => Err(Error::DhError("Need a CipherSuite to upcast a DhPublicKey")),
+            None => Err(Error::UpcastError("Need a CipherSuite to upcast a DhPublicKey")),
         }
     }
 }
@@ -89,20 +102,23 @@ impl CryptoUpcast for SigPublicKey {
                 *self = ss.public_key_from_bytes(&raw.0)?;
                 Ok(())
             },
-            None => Err(Error::SignatureError("Need a SignatureScheme to upcast a SigPublicKey")),
+            None => Err(Error::UpcastError("Need a SignatureScheme to upcast a SigPublicKey")),
         }
     }
 }
 
 impl CryptoUpcast for Signature {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
-        let raw = enum_variant!(self, Signature::Raw);
+        let raw = match self {
+            Signature::Raw(r) => r,
+            _ => return Err(Error::UpcastError("Cannot upcast a non-raw Signature")),
+        };
         match ctx.ss {
             Some(ss) => {
                 *self = ss.signature_from_bytes(&raw.0)?;
                 Ok(())
             },
-            None => Err(Error::SignatureError("Need a SignatureScheme to upcast a Signature")),
+            None => Err(Error::UpcastError("Need a SignatureScheme to upcast a Signature")),
         }
     }
 }
@@ -131,5 +147,101 @@ impl CryptoUpcast for Credential {
             },
             _ => Ok(())
         }
+    }
+}
+
+impl CryptoUpcast for crate::group_state::WelcomeInfo {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        for cred_opt in self.roster.iter_mut() {
+            if let Some(cred) = cred_opt.as_mut() {
+                cred.upcast_crypto_values(ctx)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+
+impl CryptoUpcast for crate::handshake::UserInitKey {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        for (cs, pk) in self.cipher_suites.iter().zip(self.init_keys.iter_mut()) {
+            let new_ctx = ctx.set_cipher_suite(cs);
+            pk.upcast_crypto_values(&new_ctx)?;
+        }
+        self.credential.upcast_crypto_values(ctx)?;
+        self.signature.upcast_crypto_values(ctx)?;
+
+        Ok(())
+    }
+}
+
+impl CryptoUpcast for crate::handshake::Welcome {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        let new_ctx = ctx.set_cipher_suite(self.cipher_suite);
+        self.encrypted_welcome_info.upcast_crypto_values(&new_ctx)
+    }
+}
+
+impl CryptoUpcast for crate::handshake::DirectPathNodeMessage {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.public_key.upcast_crypto_values(ctx)?;
+        for ct in self.node_secrets.iter_mut() {
+            ct.upcast_crypto_values(ctx)?;
+        }
+        Ok(())
+    }
+}
+
+impl CryptoUpcast for crate::handshake::DirectPathMessage {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        for node_msg in self.node_messages.iter_mut() {
+            node_msg.upcast_crypto_values(ctx)?;
+        }
+        Ok(())
+    }
+}
+
+impl CryptoUpcast for crate::handshake::GroupInit {
+    // GroupInit is empty; this is a no-op
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+impl CryptoUpcast for crate::handshake::GroupAdd {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.init_key.upcast_crypto_values(ctx)
+    }
+}
+
+impl CryptoUpcast for crate::handshake::GroupUpdate {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.path.upcast_crypto_values(ctx)
+    }
+}
+
+impl CryptoUpcast for crate::handshake::GroupRemove {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.path.upcast_crypto_values(ctx)
+    }
+}
+
+impl CryptoUpcast for crate::handshake::GroupOperation {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        use crate::handshake::GroupOperation::*;
+        match self {
+            Init(init) => init.upcast_crypto_values(ctx),
+            Add(add) => add.upcast_crypto_values(ctx),
+            Update(update) => update.upcast_crypto_values(ctx),
+            Remove(remove) => remove.upcast_crypto_values(ctx),
+        }
+    }
+}
+
+impl CryptoUpcast for crate::handshake::Handshake {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.operation.upcast_crypto_values(ctx)?;
+        self.signature.upcast_crypto_values(ctx)?;
+        Ok(())
     }
 }
