@@ -5,6 +5,8 @@ use crate::error::Error;
 /// use `&'static` references to this.
 pub(crate) const ED25519_IMPL: Ed25519 = Ed25519;
 
+pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
+
 // opaque SignaturePublicKey<1..2^16-1>
 /// This is the form that all `SigPublicKey`s take when being sent or received over the wire
 #[derive(Debug, Deserialize, Serialize)]
@@ -69,6 +71,8 @@ impl Signature {
 pub(crate) trait SignatureScheme {
     fn name(&self) -> &'static str;
 
+    fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error>;
+
     fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error>;
 
     #[cfg(test)]
@@ -100,11 +104,25 @@ impl SignatureScheme for Ed25519 {
         "ed25519"
     }
 
+    /// Creates a signature from the provided bytes
+    ///
+    /// Returns: `Ok(signature)` on success. If anything goes wrong, returns an
+    /// `Error::SignatureError`.
+    fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error> {
+        match ed25519_dalek::Signature::from_bytes(bytes) {
+            Ok(sig) => Ok(Signature::Ed25519Signature(sig)),
+            Err(_) => Err(Error::SignatureError("Invalid signature bytes")),
+        }
+    }
+
     /// Creates a public key from the provided bytes
+    ///
+    /// Returns: `Ok(public_key)` on success. If anything goes wrong, returns an
+    /// `Error::SignatureError`.
     fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error> {
         match ed25519_dalek::PublicKey::from_bytes(bytes) {
             Ok(public_key) => Ok(SigPublicKey::Ed25519PublicKey(public_key)),
-            Err(_) => Err(Error::SignatureError("Invalid public key")),
+            Err(_) => Err(Error::SignatureError("Invalid public key bytes")),
         }
     }
 
@@ -167,6 +185,53 @@ impl SignatureScheme for Ed25519 {
         public_key
             .verify(msg, &sig)
             .map_err(|_| Error::SignatureError("Bad signature"))
+    }
+}
+
+pub(crate) struct DummyEcdsaP256;
+
+impl SignatureScheme for DummyEcdsaP256 {
+    fn name(&self) -> &'static str {
+        "dummy_ecdsa_p256"
+    }
+
+    fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error> {
+        if bytes.len() != 64 {
+            Err(Error::SignatureError("P256 ECDSA signature isn't 64 bytes long"))
+        } else {
+            let raw = SignatureRaw(bytes.to_vec());
+            Ok(Signature::Raw(raw))
+        }
+    }
+
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error> {
+        if bytes.len() != 65 {
+            Err(Error::SignatureError("P256 ECDSA public ky isn't 65 bytes long"))
+        } else {
+            let raw = SigPublicKeyRaw(bytes.to_vec());
+            Ok(SigPublicKey::Raw(raw))
+        }
+    }
+
+    #[cfg(test)]
+    fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey {
+        unimplemented!()
+    }
+
+    fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
+        unimplemented!()
+    }
+
+    fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error> {
+        unimplemented!()
+    }
+
+    fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
+        unimplemented!()
+    }
+
+    fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
+        unimplemented!()
     }
 }
 

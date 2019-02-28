@@ -1,8 +1,8 @@
 use crate::{
     crypto::{
         aead::{AuthenticatedEncryption, AES128GCM_IMPL},
-        dh::{DhPublicKey, DhPrivateKey, DiffieHellman, X25519_IMPL},
-        sig::{SignatureScheme, ED25519_IMPL},
+        dh::{DhPublicKey, DhPrivateKey, DiffieHellman, X25519_IMPL, P256_IMPL},
+        sig::{SignatureScheme, ECDSA_P256_IMPL, ED25519_IMPL},
     },
     error::Error,
 };
@@ -13,6 +13,14 @@ pub(crate) const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
     sig_impl: &ED25519_IMPL,
+    hash_alg: &ring::digest::SHA256,
+};
+
+pub(crate) const P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
+    name: "P256_SHA256_AES128GCM",
+    dh_impl: &P256_IMPL,
+    aead_impl: &AES128GCM_IMPL,
+    sig_impl: &ECDSA_P256_IMPL,
     hash_alg: &ring::digest::SHA256,
 };
 

@@ -4,6 +4,8 @@ use crate::error::Error;
 /// A singleton object representing the X25519 DH scheme
 pub(crate) const X25519_IMPL: X25519 = X25519;
 
+pub(crate) const P256_IMPL: DummyP256 = DummyP256;
+
 const X25519_POINT_SIZE: usize = 32;
 const X25519_SCALAR_SIZE: usize = 32;
 
@@ -185,6 +187,38 @@ impl DiffieHellman for X25519 {
 
         let ss = privkey.diffie_hellman(&pubkey);
         DhSharedSecret::X25519SharedSecret(ss)
+    }
+}
+
+pub(crate) struct DummyP256;
+
+impl DiffieHellman for DummyP256 {
+    fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPublicKey, Error> {
+        if bytes.len() != 65 {
+            Err(Error::DhError("P256 DH public key isn't 65 bytes long"))
+        } else {
+            let raw = DhPublicKeyRaw(bytes.to_vec());
+            Ok(DhPublicKey::Raw(raw))
+        }
+    }
+
+    fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
+        unimplemented!()
+    }
+
+    // This has to take a dyn CryptoRng because DiffieHellman is itself a trait object inside a
+    // CipherSuite. Trait objects can't have associated types, associated constants, or generic
+    // methods.
+    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
+        unimplemented!()
+    }
+
+    fn derive_public_key(&self, scalar: &DhPrivateKey) -> DhPublicKey {
+        unimplemented!()
+    }
+
+    fn diffie_hellman(&self, privkey: &DhPrivateKey, pubkey: &DhPublicKey) -> DhSharedSecret {
+        unimplemented!()
     }
 }
 

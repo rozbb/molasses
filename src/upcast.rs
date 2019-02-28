@@ -18,7 +18,7 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::DhPublicKey,
-        sig::{SignatureScheme, SigPublicKey},
+        sig::{Signature, SignatureScheme, SigPublicKey},
     },
     error::Error,
 };
@@ -90,6 +90,19 @@ impl CryptoUpcast for SigPublicKey {
                 Ok(())
             },
             None => Err(Error::SignatureError("Need a SignatureScheme to upcast a SigPublicKey")),
+        }
+    }
+}
+
+impl CryptoUpcast for Signature {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        let raw = enum_variant!(self, Signature::Raw);
+        match ctx.ss {
+            Some(ss) => {
+                *self = ss.signature_from_bytes(&raw.0)?;
+                Ok(())
+            },
+            None => Err(Error::SignatureError("Need a SignatureScheme to upcast a Signature")),
         }
     }
 }

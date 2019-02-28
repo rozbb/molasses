@@ -1,7 +1,7 @@
 use crate::crypto::{
-    ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+    ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM, P256_SHA256_AES128GCM},
     dh::{DhPublicKey, DhPublicKeyRaw},
-    sig::{SigPublicKey, SigPublicKeyRaw, Signature, SignatureRaw, SignatureScheme, ED25519_IMPL},
+    sig::{SigPublicKey, SigPublicKeyRaw, Signature, SignatureRaw, SignatureScheme, ECDSA_P256_IMPL, ED25519_IMPL},
 };
 
 use serde::{
@@ -14,11 +14,11 @@ use serde::{
 // This should be made correct ASAP
 
 const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)] = &[
-    (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0000), // FAKE
+    (&P256_SHA256_AES128GCM, "P256_SHA256_AES128GCM", 0x0000),
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
 const SIGSCHEME_NAME_IDS: &'static [(&'static dyn SignatureScheme, &'static str, u16)] = &[
-    (&ED25519_IMPL, "ed25519", 0x0403), // FAKE
+    (&ECDSA_P256_IMPL, "ecdsa_secp256r1_sha256", 0x0403), // FAKE
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];
 
