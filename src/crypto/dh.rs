@@ -42,7 +42,7 @@ impl DhSharedSecret {
 
 // opaque DHPublicKey<1..2^16-1>
 /// This is the form that all `DhPublicKey`s take when being sent or received over the wire
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "DhPublicKeyRaw__bound_u16")]
 pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 
@@ -51,6 +51,7 @@ pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 /// element. The `Raw` variant only gets instantiated at the serialization/deserialization
 /// boundary, and should never be dealt with directly. The `CryptoUpcast` trait should take
 /// care of this.
+#[derive(Clone, Debug)]
 pub(crate) enum DhPublicKey {
     /// A curve point in Curve25519
     X25519PublicKey(x25519_dalek::PublicKey),
@@ -67,34 +68,6 @@ impl DhPublicKey {
         match self {
             DhPublicKey::X25519PublicKey(p) => p.as_bytes(),
             DhPublicKey::Raw(p) => p.0.as_slice(),
-        }
-    }
-}
-
-// TODO: Kill these once Clone and Debug are implemented for x25519_dalek::PublicKey
-
-impl core::fmt::Debug for DhPublicKey {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        let bytes = self.as_bytes();
-        f.write_str("DhPublicKey(")?;
-        if f.alternate() {
-            f.write_str("\n")?;
-        }
-        bytes.fmt(f)?;
-        if f.alternate() {
-            f.write_str("\n")?;
-        }
-        f.write_str(")")
-    }
-}
-
-impl Clone for DhPublicKey {
-    fn clone(&self) -> DhPublicKey {
-        match self {
-            DhPublicKey::X25519PublicKey(p) => X25519_IMPL
-                .public_key_from_bytes(p.as_bytes())
-                .expect("DhPublicKey clone error"),
-            DhPublicKey::Raw(r) => DhPublicKey::Raw(r.clone()),
         }
     }
 }
