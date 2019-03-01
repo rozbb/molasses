@@ -109,6 +109,8 @@ impl SignatureScheme for Ed25519 {
     /// Returns: `Ok(signature)` on success. If anything goes wrong, returns an
     /// `Error::SignatureError`.
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error> {
+        println!("got {} many signature bytes", bytes.len());
+        println!("signature is {:x?}", bytes);
         match ed25519_dalek::Signature::from_bytes(bytes) {
             Ok(sig) => Ok(Signature::Ed25519Signature(sig)),
             Err(_) => Err(Error::SignatureError("Invalid signature bytes")),
@@ -192,7 +194,7 @@ pub(crate) struct DummyEcdsaP256;
 
 impl SignatureScheme for DummyEcdsaP256 {
     fn name(&self) -> &'static str {
-        "dummy_ecdsa_p256"
+        "dummy_ecdsa_secp256r1_sha256"
     }
 
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error> {

@@ -165,6 +165,7 @@ mod test {
     };
 
     use serde::Deserialize;
+    use std::io::Read;
 
     // File: messages.bin
     //
@@ -221,7 +222,7 @@ mod test {
     // * The test cases for any supported ciphersuites should parse successfully
     // * All of the above parsed values should survive a marshal / unmarshal round-trip
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     struct MessagesCase {
         cipher_suite: &'static CipherSuite,
         signature_scheme: &'static SignatureScheme,
@@ -254,7 +255,7 @@ mod test {
         }
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Serialize)]
     struct MessagesTestVectors {
         epoch: u32,
         signer_index: u32,
@@ -293,13 +294,30 @@ mod test {
         }
     }
 
-    // Tests our code against the official key schedule test vector
+    // Tests our code against the official key schedule test vector. All this has to do is make
+    // sure that the given test vector parses without error, and that the bytes are the same after
+    // being reserialized
     #[test]
     fn official_message_parsing_kat() {
+        // Read in the input
+        let mut original_bytes = Vec::new();
         let mut f = std::fs::File::open("test_vectors/messages.bin").unwrap();
-        let mut deserializer = TlsDeserializer::from_reader(&mut f);
-        let mut test_vec = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
-        test_vec.upcast_crypto_values(&CryptoCtx::new());
-        println!("test_vec == {:#x?}", test_vec);
+        f.read_to_end(&mut original_bytes);
+
+        // Deserialize the input
+        let mut cursor = original_bytes.as_slice();
+        let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
+        let test_vec = {
+            let mut raw = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
+            // We can't do the upcasting here. The documentation lied when it said that
+            // UserInitKeys are validly signed. They are [0xd6; 32], which is not a valid Ed25519
+            // signature. So skip this step and call it a mission success.
+            //raw.upcast_crypto_values(&CryptoCtx::new()).unwrap();
+            raw
+        };
+
+        // Reserialized the deserialized input and make sure it's the same as the original
+        let reserialized_bytes = crate::tls_ser::serialize_to_bytes(&test_vec).unwrap();
+        assert_eq!(reserialized_bytes, original_bytes);
     }
 }

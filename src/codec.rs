@@ -1,3 +1,5 @@
+//! This module defines specialized serialization and deserialization routines for various types
+
 use crate::crypto::{
     ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM, P256_SHA256_AES128GCM},
     dh::{DhPublicKey, DhPublicKeyRaw},
@@ -18,7 +20,7 @@ const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)]
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
 const SIGSCHEME_NAME_IDS: &'static [(&'static dyn SignatureScheme, &'static str, u16)] = &[
-    (&ECDSA_P256_IMPL, "ecdsa_secp256r1_sha256", 0x0403), // FAKE
+    (&ECDSA_P256_IMPL, "dummy_ecdsa_secp256r1_sha256", 0x0403), // FAKE
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];
 
@@ -26,12 +28,13 @@ const SIGSCHEME_NAME_IDS: &'static [(&'static dyn SignatureScheme, &'static str,
 
 impl Serialize for CipherSuite {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let my_name = self.name;
         for (_, name, id) in CIPHERSUITE_NAME_IDS {
-            if &self.name == name {
+            if name == &my_name {
                 return serializer.serialize_u16(*id);
             }
         }
-        panic!("tried to serialize unknown ciphersuite");
+        panic!("tried to serialize unknown ciphersuite: {}", self.name);
     }
 }
 
@@ -75,7 +78,7 @@ impl Serialize for SignatureScheme {
                 return serializer.serialize_u16(*id);
             }
         }
-        panic!("tried to serialize unknown signature scheme");
+        panic!("tried to serialize unknown signature scheme: {}", my_name);
     }
 }
 

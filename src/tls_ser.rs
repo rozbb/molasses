@@ -230,6 +230,24 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         Ok(())
     }
 
+    // From the spec:
+    // struct {
+    //   uint8 present;
+    //   switch (present) {
+    //     case 0: struct{};
+    //     case 1: T value;
+    //   }
+    // } optional<T>;
+
+    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+        self.serialize_u8(0)
+    }
+
+    fn serialize_some<T: ?Sized + Serialize>(self, value: &T) -> Result<Self::Ok, Self::Error> {
+        self.serialize_u8(1)?;
+        value.serialize(self)
+    }
+
     /// Serializes a newtype struct. This is a bit of a hack: if the name of the struct ends with
     /// `__bound_uX` where X = 8, 16, 24, 32, or 64, then we prefix the serialized inner type with
     /// its length in bytes. This length tag will be the width of the specified X.
@@ -347,12 +365,6 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         unimplemented!()
     }
     fn serialize_str(self, _v: &str) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_some<T: ?Sized + Serialize>(self, _v: &T) -> Result<Self::Ok, Self::Error> {
         unimplemented!()
     }
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
