@@ -1,6 +1,6 @@
 use crate::{
     credential::{Credential, Identity},
-    crypto::{ciphersuite::CipherSuite, sig::SigSecretKey},
+    crypto::{ciphersuite::CipherSuite, hkdf, sig::SigSecretKey},
     ratchet_tree::RatchetTree,
 };
 
