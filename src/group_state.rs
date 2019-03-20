@@ -101,52 +101,21 @@ impl GroupState {
         }
     }
 
-    /// This is the `Derive-Secret` function defined in section 5.9 of the spec. It's used as a
-    /// helper function for `derive_new_secrets`
-    pub(crate) fn derive_secret(&self, prk: &ring::hmac::SigningKey, label_info: &[u8]) -> Vec<u8> {
-        // This struct is only used for `derive_secret` calculations
-        #[derive(Serialize)]
-        struct HkdfLabel<'a> {
-            length: u16,
-            // opaque label<6..255> = "mls10 " + Label;
-            #[serde(rename = "label__bound_u8")]
-            label: Vec<u8>,
-            state: &'a GroupState,
-        }
-
-        // The output is suppose to be the size of the hash algorithm's digest size
-        let mut out_buf = vec![0u8; prk.digest_algorithm().output_len];
-        // The output length is also supposed to be representable by a u16
-        assert!(out_buf.len() <= std::u16::MAX as usize);
-
-        // We're gonna used the serialized label as the `info` parameter to HKDF-Expand
-        let label = HkdfLabel {
-            length: out_buf.len() as u16,
-            // Recall the def: opaque label<6..255> = "mls10 " + Label;
-            label: [b"mls10 ", label_info].concat(),
-            state: self,
-        };
-        // Serialize the label
-        let serialized_label =
-            crate::tls_ser::serialize_to_bytes(&label).expect("couldn't serialize HKDF label");
-
-        // Finally, do the HKDF-Expand operation
-        ring::hkdf::expand(prk, &serialized_label, out_buf.as_mut_slice());
-        out_buf
-    }
-
     /// Derives the next generation of Group secrets as per section 5.9 in the spec
-    pub(crate) fn derive_new_secrets(&mut self, update_secret: &[u8]) {
+    pub(crate) fn update_epoch_secrets(&mut self, update_secret: &[u8]) {
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
-        let salt = ring::hmac::SigningKey::new(self.cs.hash_alg, &self.init_secret);
-        let epoch_secret: ring::hmac::SigningKey = ring::hkdf::extract(&salt, &update_secret);
+        let salt = hkdf::prk_from_bytes(self.cs.hash_alg, &self.init_secret);
+        let epoch_secret: ring::hmac::SigningKey = hkdf::hkdf_extract(&salt, &update_secret);
+
+        let serialized_self =
+            crate::tls_ser::serialize_to_bytes(self).expect("couldn't serialize self");
 
         // application_secret = Derive-Secret(epoch_secret, "app", GroupState_[n])
-        let application_secret = self.derive_secret(&epoch_secret, b"app");
+        let application_secret = hkdf::derive_secret(&epoch_secret, b"app", &serialized_self);
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
-        let confirmation_key = self.derive_secret(&epoch_secret, b"confirm");
+        let confirmation_key = hkdf::derive_secret(&epoch_secret, b"confirm", &serialized_self);
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
-        let init_secret = self.derive_secret(&epoch_secret, b"init");
+        let init_secret = hkdf::derive_secret(&epoch_secret, b"init", &serialized_self);
 
         self.application_secret = application_secret;
         self.confirmation_key = confirmation_key;
@@ -277,7 +246,7 @@ mod test {
         // Keep deriving new secrets with respect to the given update secret. Check all the
         // resulting keys against the test vector.
         for epoch in case1.epochs.into_iter() {
-            group_state.derive_new_secrets(&epoch.update_secret);
+            group_state.update_epoch_secrets(&epoch.update_secret);
 
             // We don't save the derived epoch_secret anywhere, since it's just an intermediate
             // value. We do test all the things derived from it, though.

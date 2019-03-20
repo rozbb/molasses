@@ -2,6 +2,7 @@ mod aead;
 pub(crate) mod ciphersuite;
 pub(crate) mod dh;
 pub(crate) mod ecies;
+pub(crate) mod hkdf;
 mod rng;
 pub(crate) mod sig;
 
@@ -12,6 +13,7 @@ mod test {
             ciphersuite::X25519_SHA256_AES128GCM,
             dh::DhPublicKey,
             ecies::{ecies_decrypt, ecies_encrypt_with_scalar, EciesCiphertext},
+            hkdf,
         },
         error::Error,
         tls_de::TlsDeserializer,
@@ -40,7 +42,7 @@ mod test {
     //   opaque hkdf_extract_ikm<0..255>;
     //   opaque derive_secret_salt<0..255>;
     //   opaque derive_secret_label<0..255>;
-    //   uint32 derive_secret_length;
+    //   opaque derive_secret_context<0..255>;
     //   opaque derive_key_pair_seed<0..255>;
     //   opaque ecies_plaintext<0..255>;
     //
@@ -74,7 +76,6 @@ mod test {
     struct CryptoCase {
         #[serde(rename = "hkdf_extract_out__bound_u8")]
         hkdf_extract_out: Vec<u8>,
-        group_state: TestGroupState,
         #[serde(rename = "derive_secret_out__bound_u8")]
         derive_secret_out: Vec<u8>,
         derive_key_pair_pub: DhPublicKey,
@@ -83,7 +84,6 @@ mod test {
 
     impl CryptoUpcast for CryptoCase {
         fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
-            self.group_state.upcast_crypto_values(ctx)?;
             self.derive_key_pair_pub.upcast_crypto_values(ctx)?;
             self.ecies_out.upcast_crypto_values(ctx)?;
             Ok(())
@@ -100,7 +100,8 @@ mod test {
         derive_secret_salt: Vec<u8>,
         #[serde(rename = "derive_secret_label__bound_u8")]
         derive_secret_label: Vec<u8>,
-        derive_secret_length: u32,
+        #[serde(rename = "derive_secret_context__bound_u8")]
+        derive_secret_context: Vec<u8>,
         #[serde(rename = "derive_key_pair_seed__bound_u8")]
         derive_key_pair_seed: Vec<u8>,
         #[serde(rename = "ecies_plaintext__bound_u8")]
@@ -123,15 +124,21 @@ mod test {
             raw_case.upcast_crypto_values(&ctx).unwrap();
             raw_case
         };
-        // Make a full group state from the test group state
-        let group_state = group_from_test_group(case1.group_state);
+
         // prk  = derive_sercret_salt
-        let prk =
-            ring::hmac::SigningKey::new(group_state.cs.hash_alg, &test_vec.derive_secret_salt);
+        let prk = hkdf::prk_from_bytes(&ring::digest::SHA256, &test_vec.derive_secret_salt);
 
         // Test Derive-Secret against known answer.
-        // derive_secret_out == Derive-Secret(prk=derive_secret_salt, info=derive_secret_label)
-        let derive_secret_out = group_state.derive_secret(&prk, &test_vec.derive_secret_label);
+        // derive_secret_out == Derive-Secret(
+        //     prk=derive_secret_salt,
+        //     info=derive_secret_label,
+        //     context=derive_secret_context
+        //  )
+        let derive_secret_out = hkdf::derive_secret(
+            &prk,
+            &test_vec.derive_secret_label,
+            &test_vec.derive_secret_context,
+        );
         assert_eq!(&derive_secret_out, &case1.derive_secret_out);
 
         // Test Derive-Key-Pair(derive_key_pair_seed) against known answer

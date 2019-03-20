@@ -7,6 +7,8 @@ pub enum Error {
     DhError(&'static str),
     /// For errors that occur in signature algorithms
     SignatureError(&'static str),
+    /// For errors that occur in KDF operations
+    KdfError(&'static str),
     /// For errors encountered during (de)serialization
     SerdeError(std::io::Error),
     /// For errors encountered during upcasting
@@ -29,6 +31,7 @@ impl std::error::Error for Error {
             Error::EncryptionError(e) => e,
             Error::DhError(e) => e,
             Error::SignatureError(e) => e,
+            Error::KdfError(e) => e,
             Error::SerdeError(e) => e.description(),
             Error::UpcastError(e) => e,
             Error::OutOfEntropy => "Out of Entropy",

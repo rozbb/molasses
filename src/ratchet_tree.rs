@@ -59,20 +59,10 @@ impl RatchetTree {
         }
     }
 
-    /// Returns the resolution of a given node: this an ordered sequence of minimal set of
-    /// non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
-    /// non-blank descendants of the given node. The ordering is the node index.
-    fn resolution(&self, idx: usize) -> impl Iterator<Item = &RatchetTreeNode> {
-        resolution_indices(self, idx)
-            .into_iter()
-            .map(move |idx| self.nodes.get(idx).expect("resolution index out of range"))
-    }
-}
-
 /// Returns the indices of the resolution of a given node: this an ordered sequence of minimal set
 /// of non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
-/// non-blank descendants of the given node. The ordering is the node index.
-fn resolution_indices(tree: &RatchetTree, idx: usize) -> Vec<usize> {
+    /// non-blank descendants of the given node. The ordering is ascending by node index.
+    pub(crate) fn resolution(&self, idx: usize) -> Vec<usize> {
     // Helper function that accumulates the resolution recursively
     fn helper(tree: &RatchetTree, i: usize, acc: &mut Vec<usize>) {
         if let RatchetTreeNode::Blank = tree.nodes[i] {
@@ -94,8 +84,9 @@ fn resolution_indices(tree: &RatchetTree, idx: usize) -> Vec<usize> {
     }
 
     let mut ret = Vec::new();
-    helper(tree, idx, &mut ret);
+        helper(self, idx, &mut ret);
     ret
+}
 }
 
 #[cfg(test)]
@@ -172,7 +163,7 @@ mod test {
     }
 
     fn resolution_vec(tree: &RatchetTree, idx: usize) -> Vec<u8> {
-        resolution_indices(tree, idx)
+        tree.resolution(idx)
             .into_iter()
             .map(|i| {
                 // These had better be small indices
