@@ -19,7 +19,6 @@ mod test {
         tls_de::TlsDeserializer,
         tls_ser::serialize_to_bytes,
         upcast::CryptoUpcast,
-        utils::{group_from_test_group, TestGroupState},
     };
 
     use serde::de::Deserialize;
@@ -142,9 +141,8 @@ mod test {
         assert_eq!(&derive_secret_out, &case1.derive_secret_out);
 
         // Test Derive-Key-Pair(derive_key_pair_seed) against known answer
-        let (recip_public_key, recip_secret_key) = X25519_SHA256_AES128GCM
-            .derive_key_pair(&test_vec.derive_key_pair_seed)
-            .unwrap();
+        let (recip_public_key, recip_secret_key) =
+            X25519_SHA256_AES128GCM.derive_key_pair(&test_vec.derive_key_pair_seed).unwrap();
         let expected_recip_public_key = case1.derive_key_pair_pub;
         // Just compare the public keys
         assert_eq!(
@@ -153,12 +151,9 @@ mod test {
         );
 
         // Make sure the decryption of the ECIES ciphertext is indeed the given plaintext
-        let derived_plaintext = ecies_decrypt(
-            &X25519_SHA256_AES128GCM,
-            &recip_secret_key,
-            case1.ecies_out.clone(),
-        )
-        .unwrap();
+        let derived_plaintext =
+            ecies_decrypt(&X25519_SHA256_AES128GCM, &recip_secret_key, case1.ecies_out.clone())
+                .unwrap();
         let expected_plaintext = test_vec.ecies_plaintext.clone();
         assert_eq!(&derived_plaintext, &expected_plaintext);
 
@@ -167,15 +162,10 @@ mod test {
         // key_pair = Derive-Key-Pair(recip_public_key.as_bytes() || plaintext)
         let (_, sender_secret_key) = {
             // key_material = pkR || plaintext where pkR is the serialization of recip_public_key
-            let key_material = [
-                recip_public_key.as_bytes(),
-                test_vec.ecies_plaintext.as_slice(),
-            ]
-            .concat();
+            let key_material =
+                [recip_public_key.as_bytes(), test_vec.ecies_plaintext.as_slice()].concat();
             // key_pair = Derive-Key-Pair(key_material)
-            X25519_SHA256_AES128GCM
-                .derive_key_pair(&key_material)
-                .unwrap()
+            X25519_SHA256_AES128GCM.derive_key_pair(&key_material).unwrap()
         };
         // ciphertext = Ecies-Encrypt_(sender_secret_key,recip_public_key)(plaintext)
         let derived_ciphertext = ecies_encrypt_with_scalar(

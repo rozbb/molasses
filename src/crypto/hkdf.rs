@@ -46,9 +46,9 @@ pub(crate) fn hkdf_expand_label(
     // label = "mls10 " + Label
     let mut full_label_info = [0u8; 255];
     full_label_info[0..MLS_PREFIX.len()].copy_from_slice(MLS_PREFIX);
-    full_label_info[MLS_PREFIX.len()..MLS_PREFIX.len()+label_info.len()]
+    full_label_info[MLS_PREFIX.len()..MLS_PREFIX.len() + label_info.len()]
         .copy_from_slice(label_info);
-    let full_label_info_slice = &full_label_info[0..MLS_PREFIX.len()+label_info.len()];
+    let full_label_info_slice = &full_label_info[0..MLS_PREFIX.len() + label_info.len()];
 
     // We're gonna used the serialized label as the `info` parameter to HKDF-Expand
     let label = HkdfLabel {
@@ -73,12 +73,7 @@ pub(crate) fn derive_secret(secret: &Prk, label_info: &[u8], context: &[u8]) -> 
     let hash_alg = secret.digest_algorithm();
     let hashed_ctx = ring::digest::digest(hash_alg, context);
     let mut out_buf = vec![0u8; hash_alg.output_len];
-    hkdf_expand_label(
-        secret,
-        label_info,
-        hashed_ctx.as_ref(),
-        out_buf.as_mut_slice(),
-    );
+    hkdf_expand_label(secret, label_info, hashed_ctx.as_ref(), out_buf.as_mut_slice());
 
     out_buf
 }

@@ -1,7 +1,7 @@
 use crate::{
     crypto::{
         aead::{AuthenticatedEncryption, AES128GCM_IMPL},
-        dh::{DhPublicKey, DhPrivateKey, DiffieHellman, X25519_IMPL, P256_IMPL},
+        dh::{DhPrivateKey, DhPublicKey, DiffieHellman, P256_IMPL, X25519_IMPL},
         sig::{SignatureScheme, ECDSA_P256_IMPL, ED25519_IMPL},
     },
     error::Error,
@@ -51,7 +51,10 @@ pub(crate) struct CipherSuite {
 impl CipherSuite {
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
     /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
-    pub(crate) fn derive_key_pair(&self, bytes: &[u8]) -> Result<(DhPublicKey, DhPrivateKey), Error> {
+    pub(crate) fn derive_key_pair(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(DhPublicKey, DhPrivateKey), Error> {
         let digest = ring::digest::digest(self.hash_alg, bytes);
         let scalar_bytes = digest.as_ref();
 

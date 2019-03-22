@@ -18,7 +18,7 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::DhPublicKey,
-        sig::{Signature, SignatureScheme, SigPublicKey},
+        sig::{SigPublicKey, Signature, SignatureScheme},
     },
     error::Error,
 };
@@ -52,7 +52,10 @@ impl CryptoCtx {
 impl CryptoCtx {
     /// Makes a new empty `CryptoCtx`
     pub(crate) fn new() -> CryptoCtx {
-        CryptoCtx { cs: None, ss: None }
+        CryptoCtx {
+            cs: None,
+            ss: None,
+        }
     }
 }
 
@@ -88,7 +91,7 @@ impl CryptoUpcast for DhPublicKey {
             Some(cs) => {
                 *self = cs.dh_impl.public_key_from_bytes(raw.0.as_slice())?;
                 Ok(())
-            },
+            }
             None => Err(Error::UpcastError("Need a CipherSuite to upcast a DhPublicKey")),
         }
     }
@@ -101,7 +104,7 @@ impl CryptoUpcast for SigPublicKey {
             Some(ss) => {
                 *self = ss.public_key_from_bytes(&raw.0)?;
                 Ok(())
-            },
+            }
             None => Err(Error::UpcastError("Need a SignatureScheme to upcast a SigPublicKey")),
         }
     }
@@ -117,7 +120,7 @@ impl CryptoUpcast for Signature {
             Some(ss) => {
                 *self = ss.signature_from_bytes(&raw.0)?;
                 Ok(())
-            },
+            }
             None => Err(Error::UpcastError("Need a SignatureScheme to upcast a Signature")),
         }
     }
@@ -144,8 +147,8 @@ impl CryptoUpcast for Credential {
                 let mut new_ctx = *ctx;
                 new_ctx.ss = Some(b.signature_scheme);
                 b.upcast_crypto_values(&new_ctx)
-            },
-            _ => Ok(())
+            }
+            _ => Ok(()),
         }
     }
 }
@@ -160,7 +163,6 @@ impl CryptoUpcast for crate::group_state::WelcomeInfo {
         Ok(())
     }
 }
-
 
 impl CryptoUpcast for crate::handshake::UserInitKey {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {

@@ -1,7 +1,7 @@
 use crate::crypto::{
     aead::{AeadKey, AeadNonce},
     ciphersuite::CipherSuite,
-    dh::{DhPublicKey, DhPrivateKey},
+    dh::{DhPrivateKey, DhPublicKey},
     rng::CryptoRng,
 };
 use crate::error::Error;
@@ -69,9 +69,7 @@ pub(crate) fn ecies_encrypt_with_scalar(
     let my_ephemeral_public_key = cs.dh_impl.derive_public_key(&my_ephemeral_secret);
 
     // This is `abP` where `bP` is the other person's public key is `bP`
-    let shared_secret = cs
-        .dh_impl
-        .diffie_hellman(&my_ephemeral_secret, &others_public_key);
+    let shared_secret = cs.dh_impl.diffie_hellman(&my_ephemeral_secret, &others_public_key);
 
     let (key, nonce) = derive_ecies_key_nonce(cs, shared_secret.as_bytes());
 
@@ -100,18 +98,13 @@ pub(crate) fn ecies_decrypt(
     }: EciesCiphertext,
 ) -> Result<Vec<u8>, Error> {
     // This is `abP` where `bP` is the other person's public key is `bP` and my secret key is `a`
-    let shared_secret = cs
-        .dh_impl
-        .diffie_hellman(&my_secret_key, &ephemeral_public_key);
+    let shared_secret = cs.dh_impl.diffie_hellman(&my_secret_key, &ephemeral_public_key);
 
     // Derive the key and nonce, then open the ciphertext. The length of the subslice it gives is
     // the length we'll truncate the plaintext to. Recall this happens because there was a MAC at
     // the end of the ciphertext.
     let (key, nonce) = derive_ecies_key_nonce(cs, shared_secret.as_bytes());
-    let plaintext_len = cs
-        .aead_impl
-        .open(&key, nonce, ciphertext.as_mut_slice())?
-        .len();
+    let plaintext_len = cs.aead_impl.open(&key, nonce, ciphertext.as_mut_slice())?.len();
 
     // Rename for clarity
     let mut plaintext = ciphertext;
@@ -153,14 +146,9 @@ fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (Aead
     ring::hkdf::expand(&prk, &serialized_key_label, &mut key_buf[..]);
     ring::hkdf::expand(&prk, &serialized_nonce_label, &mut nonce_buf[..]);
 
-    let key = cs
-        .aead_impl
-        .key_from_bytes(&key_buf)
-        .expect("couldn't derive AEAD key from HKDF");
-    let nonce = cs
-        .aead_impl
-        .nonce_from_bytes(&nonce_buf)
-        .expect("couldn't derive AEAD nonce from HKDF");
+    let key = cs.aead_impl.key_from_bytes(&key_buf).expect("couldn't derive AEAD key from HKDF");
+    let nonce =
+        cs.aead_impl.nonce_from_bytes(&nonce_buf).expect("couldn't derive AEAD nonce from HKDF");
 
     (key, nonce)
 }
@@ -187,17 +175,12 @@ mod test {
 
             // Now encrypt to Alice
             let ecies_ciphertext: EciesCiphertext =
-                ecies_encrypt(cs, &alice_point, plaintext.clone(), &mut rng).expect(&format!(
-                    "failed to encrypt ECIES plaintext; ciphersuite {}",
-                    cs.name
-                ));
+                ecies_encrypt(cs, &alice_point, plaintext.clone(), &mut rng)
+                    .expect(&format!("failed to encrypt ECIES plaintext; ciphersuite {}", cs.name));
 
             // Now let Alice decrypt it
             let recovered_plaintext = ecies_decrypt(cs, &alice_scalar, ecies_ciphertext)
-                .expect(&format!(
-                    "failed to decrypt ECIES ciphertext; ciphersuite {}",
-                    cs.name
-                ))
+                .expect(&format!("failed to decrypt ECIES ciphertext; ciphersuite {}", cs.name))
                 .to_vec();
 
             assert_eq!(recovered_plaintext, plaintext);

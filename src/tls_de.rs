@@ -67,7 +67,9 @@ pub(crate) struct TlsDeserializer<'a, R: std::io::Read> {
 impl<'a, R: std::io::Read> TlsDeserializer<'a, R> {
     /// Makes a new `TlsDeserializer` from the given byte reader
     pub(crate) fn from_reader(reader: &'a mut R) -> TlsDeserializer<R> {
-        TlsDeserializer { reader: reader }
+        TlsDeserializer {
+            reader: reader,
+        }
     }
 }
 
@@ -176,12 +178,10 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
             let s = TlsEnumU8::new(self);
             visitor.visit_enum(s)
         } else {
-            Err(make_custom_error(
-                format_args!(
-                    "don't know how to deserialize non-__enum_u8 enums: {}",
-                    name
-                )
-            ))
+            Err(make_custom_error(format_args!(
+                "don't know how to deserialize non-__enum_u8 enums: {}",
+                name
+            )))
         }
     }
 
@@ -379,10 +379,8 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
     {
         // This function will not be called more times than there are fields in the struct. If it
         // is, we will panic
-        let field = self
-            .fields
-            .get(self.field_idx)
-            .expect("in unknown field while deserializing a struct");
+        let field =
+            self.fields.get(self.field_idx).expect("in unknown field while deserializing a struct");
         self.field_idx += 1;
 
         // If this is a variable-length field, read off the length
@@ -416,7 +414,9 @@ struct TlsVecSeq<'a, 'b, R: std::io::Read> {
 impl<'a, 'b, R: std::io::Read> TlsVecSeq<'a, 'b, R> {
     /// Makes a new `TlsVecSeq` object from the given deserializer
     fn new(de: &'a mut TlsDeserializer<'b, R>) -> TlsVecSeq<'a, 'b, R> {
-        TlsVecSeq { de: de }
+        TlsVecSeq {
+            de: de,
+        }
     }
 }
 
@@ -456,7 +456,9 @@ struct TlsEnumU8<'a, 'b, R: std::io::Read> {
 impl<'a, 'b, R: std::io::Read> TlsEnumU8<'a, 'b, R> {
     /// Makes a new `TlsEnumU8` object from the given deserializer
     fn new(de: &'a mut TlsDeserializer<'b, R>) -> TlsEnumU8<'a, 'b, R> {
-        TlsEnumU8 { de: de }
+        TlsEnumU8 {
+            de: de,
+        }
     }
 }
 

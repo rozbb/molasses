@@ -1,9 +1,12 @@
 //! This module defines specialized serialization and deserialization routines for various types
 
 use crate::crypto::{
-    ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM, P256_SHA256_AES128GCM},
+    ciphersuite::{CipherSuite, P256_SHA256_AES128GCM, X25519_SHA256_AES128GCM},
     dh::{DhPublicKey, DhPublicKeyRaw},
-    sig::{SigPublicKey, SigPublicKeyRaw, Signature, SignatureRaw, SignatureScheme, ECDSA_P256_IMPL, ED25519_IMPL},
+    sig::{
+        SigPublicKey, SigPublicKeyRaw, Signature, SignatureRaw, SignatureScheme, ECDSA_P256_IMPL,
+        ED25519_IMPL,
+    },
 };
 
 use serde::{

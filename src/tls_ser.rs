@@ -294,10 +294,7 @@ impl<'a> Serializer for &'a mut TlsSerializer {
     ) -> Result<Self::Ok, Self::Error> {
         if name.ends_with("__enum_u8") {
             // Make sure the variant index isn't out of our range
-            assert!(
-                variant_index <= core::u8::MAX as u32,
-                "enum variant index out of bounds"
-            );
+            assert!(variant_index <= core::u8::MAX as u32, "enum variant index out of bounds");
             self.serialize_u8(variant_index as u8)
         } else {
             let err = <Error as serde::ser::Error>::custom(
@@ -558,7 +555,10 @@ pub(crate) mod test {
     #[serde(rename = "Hacc__enum_u8")]
     enum Hacc {
         Nothing,
-        Something { sa: u16, sb: u32 },
+        Something {
+            sa: u16,
+            sb: u32,
+        },
     }
 
     #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]

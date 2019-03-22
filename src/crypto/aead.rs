@@ -124,9 +124,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
         let mut key = [0u8; AES_128_GCM_KEY_SIZE];
         // This could fail for a number of reasons, but the net result is that we don't have
         // random bytes anymore
-        csprng
-            .try_fill_bytes(&mut key)
-            .map_err(|_| Error::OutOfEntropy)?;
+        csprng.try_fill_bytes(&mut key).map_err(|_| Error::OutOfEntropy)?;
 
         self.key_from_bytes(&key)
     }
@@ -143,9 +141,7 @@ impl AuthenticatedEncryption for Aes128Gcm {
 
         let mut nonce = [0u8; AES_128_GCM_NONCE_SIZE];
         nonce.copy_from_slice(nonce_bytes);
-        Ok(AeadNonce::Aes128GcmNonce(
-            ring::aead::Nonce::assume_unique_for_key(nonce),
-        ))
+        Ok(AeadNonce::Aes128GcmNonce(ring::aead::Nonce::assume_unique_for_key(nonce)))
     }
 
     /// Does an in-place authenticated decryption of the given ciphertext and tag. The input should
@@ -242,9 +238,7 @@ mod test {
     #[quickcheck]
     fn aes_gcm_correctness(plaintext: Vec<u8>, rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        let key = AES128GCM_IMPL
-            .key_from_random(&mut rng)
-            .expect("failed to generate key");
+        let key = AES128GCM_IMPL.key_from_random(&mut rng).expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
         // Make sure there's enough room in the plaintext for the tag
@@ -257,9 +251,8 @@ mod test {
         // Rename for clarity, since plaintext was modified in-place
         let auth_ciphertext = extended_plaintext.as_mut_slice();
 
-        let recovered_plaintext = AES128GCM_IMPL
-            .open(&key, nonce2, auth_ciphertext)
-            .expect("failed to decrypt");
+        let recovered_plaintext =
+            AES128GCM_IMPL.open(&key, nonce2, auth_ciphertext).expect("failed to decrypt");
 
         // Make sure we get out what we put in
         assert_eq!(plaintext, recovered_plaintext);
@@ -270,17 +263,13 @@ mod test {
     #[quickcheck]
     fn aes_gcm_integrity_ct_and_tag(mut plaintext: Vec<u8>, rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        let key = AES128GCM_IMPL
-            .key_from_random(&mut rng)
-            .expect("failed to generate key");
+        let key = AES128GCM_IMPL.key_from_random(&mut rng).expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
         // Make sure there's enough room in the plaintext for the tag
         plaintext.extend(vec![0u8; AES_128_GCM_TAG_SIZE]);
 
-        AES128GCM_IMPL
-            .seal(&key, nonce1, plaintext.as_mut_slice())
-            .expect("failed to encrypt");
+        AES128GCM_IMPL.seal(&key, nonce1, plaintext.as_mut_slice()).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
         let auth_ciphertext = plaintext.as_mut_slice();
@@ -312,17 +301,13 @@ mod test {
         }
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        let key = AES128GCM_IMPL
-            .key_from_random(&mut rng)
-            .expect("failed to generate key");
+        let key = AES128GCM_IMPL.key_from_random(&mut rng).expect("failed to generate key");
         // The open method consumes our nonce, so make two nonces
         let (nonce1, nonce2) = make_nonce_pair(&mut rng);
         // Make sure there's enough room in the plaintext for the tag
         plaintext.extend(vec![0u8; AES_128_GCM_TAG_SIZE]);
 
-        AES128GCM_IMPL
-            .seal(&key, nonce1, plaintext.as_mut_slice())
-            .expect("failed to encrypt");
+        AES128GCM_IMPL.seal(&key, nonce1, plaintext.as_mut_slice()).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
         let auth_ciphertext = plaintext.as_mut_slice();

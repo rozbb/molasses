@@ -152,9 +152,7 @@ impl SignatureScheme for Ed25519 {
     /// `Error::OutOfEntropy`.
     fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error> {
         let mut key_bytes = [0u8; 32];
-        csprng
-            .try_fill_bytes(&mut key_bytes)
-            .map_err(|_| Error::OutOfEntropy)?;
+        csprng.try_fill_bytes(&mut key_bytes).map_err(|_| Error::OutOfEntropy)?;
         let key = ed25519_dalek::SecretKey::from_bytes(&key_bytes)
             .map_err(|_| Error::SignatureError("Could not make key from random"))?;
         Ok(SigSecretKey::Ed25519SecretKey(key))
@@ -184,9 +182,7 @@ impl SignatureScheme for Ed25519 {
 
         // Don't worry, it's okay to say "bad signature" for signature schemes, since this
         // function does not depend on any private information, there is nothing to leak.
-        public_key
-            .verify(msg, &sig)
-            .map_err(|_| Error::SignatureError("Bad signature"))
+        public_key.verify(msg, &sig).map_err(|_| Error::SignatureError("Bad signature"))
     }
 }
 
