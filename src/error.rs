@@ -13,6 +13,8 @@ pub enum Error {
     SerdeError(std::io::Error),
     /// For errors encountered during upcasting
     UpcastError(&'static str),
+    /// For errors relating to group operations
+    GroupOpError(&'static str),
     /// For when we need randomness and there's none left
     OutOfEntropy,
 }
@@ -30,6 +32,7 @@ impl std::error::Error for Error {
         match self {
             Error::EncryptionError(e) => e,
             Error::DhError(e) => e,
+            Error::GroupOpError(e) => e,
             Error::SignatureError(e) => e,
             Error::KdfError(e) => e,
             Error::SerdeError(e) => e.description(),
@@ -50,19 +53,13 @@ impl std::fmt::Display for Error {
 // serde requires that any Serializer's error type implement serde::ser::Error
 impl serde::ser::Error for Error {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Error::SerdeError(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("{}", msg),
-        ))
+        Error::SerdeError(std::io::Error::new(std::io::ErrorKind::Other, format!("{}", msg)))
     }
 }
 
 // serde requires that any Deserializer's error type implement serde::de::Error
 impl serde::de::Error for Error {
     fn custom<T: std::fmt::Display>(msg: T) -> Self {
-        Error::SerdeError(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("{}", msg),
-        ))
+        Error::SerdeError(std::io::Error::new(std::io::ErrorKind::Other, format!("{}", msg)))
     }
 }

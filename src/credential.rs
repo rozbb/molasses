@@ -30,3 +30,12 @@ pub(crate) enum Credential {
     Basic(BasicCredential),
     X509(X509CertData),
 }
+
+impl Credential {
+    pub(crate) fn get_public_key(&self) -> &SigPublicKey {
+        match &self {
+            Credential::Basic(basic) => &basic.public_key,
+            Credential::X509(_) => unimplemented!(),
+        }
+    }
+}

@@ -99,11 +99,11 @@ pub(crate) enum GroupOperation {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Handshake {
     /// This is equal to the epoch of the current `GroupState`
-    prior_epoch: u32,
+    pub(crate) prior_epoch: u32,
     /// The operation this `Handshake` is perofrming
     pub(crate) operation: GroupOperation,
     /// Position of the signer in the roster
-    signer_index: u32,
+    pub(crate) signer_index: u32,
     /// Signature over the `Group`'s history:
     /// `Handshake.signature = Sign(identity_key, GroupState.transcript_hash)`
     pub(crate) signature: Signature,
@@ -112,7 +112,7 @@ pub(crate) struct Handshake {
     /// `confirmation_data = GroupState.transcript_hash || Handshake.signature`
     /// `Handshake.confirmation = HMAC(confirmation_key, confirmation_data)`
     #[serde(rename = "confirmation__bound_u8")]
-    confirmation: Vec<u8>,
+    pub(crate) confirmation: Vec<u8>,
 }
 
 impl Handshake {
@@ -123,15 +123,13 @@ impl Handshake {
         op: GroupOperation,
     ) -> Handshake {
         // signature = Sign(identity_key, GroupState.transcript_hash)
-        let signature = cs
-            .sig_impl
-            .sign(&state.identity_key, &state.transcript_hash);
+        let signature = cs.sig_impl.sign(&state.identity_key, &state.transcript_hash);
 
         // confirmation = HMAC(confirmation_key, confirmation_data)
         // where confirmation_data = GroupState.transcript_hash || Handshake.signature
         let confirmation = {
             let confirmation_key =
-                ring::hmac::SigningKey::new(cs.hash_alg, &state.confirmation_key);
+                ring::hmac::SigningKey::new(cs.hash_alg, &state.epoch_secrets.confirmation_key);
 
             let mut ctx = ring::hmac::SigningContext::with_key(&confirmation_key);
             ctx.update(&state.transcript_hash);
@@ -143,7 +141,7 @@ impl Handshake {
         Handshake {
             prior_epoch: state.epoch,
             operation: op,
-            signer_index: state.my_position_in_roster,
+            signer_index: state.roster_index,
             signature: signature,
             confirmation: confirmation.as_ref().to_vec(),
         }
@@ -154,14 +152,14 @@ impl Handshake {
 mod test {
     use super::*;
     use crate::{
-        error::Error,
-        group_state::WelcomeInfo,
-        tls_de::TlsDeserializer,
         crypto::{
             ciphersuite::{CipherSuite, P256_SHA256_AES128GCM, X25519_SHA256_AES128GCM},
             sig::SignatureScheme,
         },
-        upcast::{CryptoCtx, CryptoUpcast},
+        error::Error,
+        group_state::WelcomeInfo,
+        tls_de::TlsDeserializer,
+        upcast::CryptoUpcast,
     };
 
     use serde::Deserialize;
@@ -242,9 +240,8 @@ mod test {
 
     impl CryptoUpcast for MessagesCase {
         fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
-            let new_ctx = ctx
-                .set_cipher_suite(self.cipher_suite)
-                .set_signature_scheme(self.signature_scheme);
+            let new_ctx =
+                ctx.set_cipher_suite(self.cipher_suite).set_signature_scheme(self.signature_scheme);
             self.user_init_key.upcast_crypto_values(&new_ctx);
             self.welcome_info.upcast_crypto_values(&new_ctx);
             self.welcome.upcast_crypto_values(&new_ctx);

@@ -17,6 +17,18 @@ pub(crate) enum DhPrivateKey {
     X25519PrivateKey(x25519_dalek::StaticSecret),
 }
 
+// TODO: Remove this hack once StaticSecret becomes cloneable
+impl Clone for DhPrivateKey {
+    fn clone(&self) -> DhPrivateKey {
+        match &self {
+            DhPrivateKey::X25519PrivateKey(ref secret) => {
+                let copy = x25519_dalek::StaticSecret::from(secret.to_bytes());
+                DhPrivateKey::X25519PrivateKey(copy)
+            }
+        }
+    }
+}
+
 impl core::fmt::Debug for DhPrivateKey {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         f.write_str("DhPrivateKey: CONTENTS OMITTED")
@@ -76,7 +88,6 @@ impl DhPublicKey {
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
 /// etc.
 pub(crate) trait DiffieHellman {
-
     fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPublicKey, Error>;
 
     fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error>;
@@ -208,16 +219,12 @@ mod test {
         let alice_scalar = {
             let hex_str = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL
-                .private_key_from_bytes(&bytes)
-                .expect("couldn't make scalar from bytes")
+            X25519_IMPL.private_key_from_bytes(&bytes).expect("couldn't make scalar from bytes")
         };
         let bob_scalar = {
             let hex_str = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL
-                .private_key_from_bytes(&bytes)
-                .expect("couldn't make scalar from bytes")
+            X25519_IMPL.private_key_from_bytes(&bytes).expect("couldn't make scalar from bytes")
         };
 
         // Compute aP and bP where a is Alice's scalar, and b is Bob's
@@ -263,10 +270,8 @@ mod test {
             )
         };
 
-        let (point1, point2) = (
-            X25519_IMPL.derive_public_key(&scalar1),
-            X25519_IMPL.derive_public_key(&scalar2),
-        );
+        let (point1, point2) =
+            (X25519_IMPL.derive_public_key(&scalar1), X25519_IMPL.derive_public_key(&scalar2));
         let (shared1, shared2) = (
             X25519_IMPL.diffie_hellman(&scalar1, &point2),
             X25519_IMPL.diffie_hellman(&scalar2, &point1),
@@ -282,9 +287,7 @@ mod test {
         let scalar = {
             let hex_str = "e029fbe9de859e7bd6aea95ac258ae743a9eabccde9358420d8c975365938714";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL
-                .private_key_from_bytes(&bytes)
-                .expect("couldn't make scalar from bytes")
+            X25519_IMPL.private_key_from_bytes(&bytes).expect("couldn't make scalar from bytes")
         };
 
         let pubkey = X25519_IMPL.derive_public_key(&scalar);

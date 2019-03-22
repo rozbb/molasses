@@ -6,10 +6,7 @@ macro_rules! enum_variant {
     ($val:expr, $variant:path) => {
         match $val {
             $variant(x) => x,
-            _ => panic!(
-                "Got wrong enum variant. Was expecting {}",
-                stringify!($variant)
-            ),
+            _ => panic!("Got wrong enum variant. Was expecting {}", stringify!($variant)),
         }
     };
 }
@@ -87,8 +84,12 @@ pub(crate) use test_utils::*;
 #[cfg(test)]
 mod test_utils {
     use crate::{
-        credential::Credential, crypto::ciphersuite::X25519_SHA256_AES128GCM, error::Error,
-        group_state::GroupState, ratchet_tree::RatchetTree, upcast::CryptoUpcast,
+        credential::Credential,
+        crypto::ciphersuite::X25519_SHA256_AES128GCM,
+        error::Error,
+        group_state::{EpochSecrets, GroupState},
+        ratchet_tree::RatchetTree,
+        upcast::CryptoUpcast,
     };
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
@@ -108,7 +109,6 @@ mod test_utils {
         pub(crate) transcript_hash: Vec<u8>,
     }
 
-
     impl crate::upcast::CryptoUpcast for TestGroupState {
         fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
             self.roster.upcast_crypto_values(ctx)
@@ -126,10 +126,12 @@ mod test_utils {
             roster: tgs.roster,
             tree: tgs.tree,
             transcript_hash: tgs.transcript_hash,
-            my_position_in_roster: 0,
-            init_secret: Vec::new(),
-            application_secret: Vec::new(),
-            confirmation_key: Vec::new(),
+            roster_index: 0,
+            epoch_secrets: EpochSecrets {
+                init_secret: Vec::new(),
+                application_secret: Vec::new(),
+                confirmation_key: Vec::new(),
+            },
         }
     }
 }
