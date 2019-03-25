@@ -628,6 +628,7 @@ mod test {
     // File: tree_math.bin
     //
     // struct {
+    //   uint32 tree_size;
     //   uint32 root<0..2^32-1>;
     //   uint32 left<0..2^32-1>;
     //   uint32 right<0..2^32-1>;
@@ -638,6 +639,8 @@ mod test {
     // These vectors have the following meaning, where the tree relations are as defined in the
     // specification
     //
+    // * tree_size specifies the size of the test tree for the left / right / parent / sibling
+    //   tests.
     // * root[i] is the index of the root of a tree with i+1 leaves
     // * The remaining vectors are all within the context of a tree with 255 leaves:
     //   * left[i] is the index of the left child of node i
@@ -647,6 +650,7 @@ mod test {
 
     #[derive(Deserialize)]
     struct TreeMathTestVectors {
+        tree_size: u32,
         #[serde(rename = "root__bound_u32")]
         root: Vec<u32>,
         #[serde(rename = "left__bound_u32")]
@@ -666,7 +670,7 @@ mod test {
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = TreeMathTestVectors::deserialize(&mut deserializer).unwrap();
 
-        let size = 255;
+        let size = test_vec.tree_size as usize;
         let num_root_ops = test_vec.root.len();
         let num_left_ops = test_vec.left.len();
         let num_right_ops = test_vec.right.len();
