@@ -2,7 +2,7 @@ use crate::{
     credential::{Credential, Identity},
     crypto::{ciphersuite::CipherSuite, hkdf, sig::SigSecretKey},
     error::Error,
-    handshake::{GroupOperation, Handshake},
+    handshake::{GroupOperation, Handshake, ProtocolVersion},
     ratchet_tree::RatchetTree,
     tree_math,
 };
@@ -322,6 +322,10 @@ impl GroupState {
 /// Contains everything a new user needs to know to join a Group
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct WelcomeInfo {
+    // ProtocolVersion version;
+    /// The protocol version
+    protocol_version: ProtocolVersion,
+
     // opaque group_id<0..255>;
     /// An application-defined identifier for the group
     #[serde(rename = "group_id__bound_u8")]

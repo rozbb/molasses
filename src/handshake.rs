@@ -4,6 +4,9 @@ use crate::{
     group_state::GroupState,
 };
 
+// uint8 ProtocolVersion;
+pub(crate) type ProtocolVersion = u8;
+
 /// This contains the encrypted `WelcomeInfo` for new group participants
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct Welcome {
@@ -43,18 +46,29 @@ pub(crate) struct UserInitKey {
     /// the client
     #[serde(rename = "user_init_key_id__bound_u8")]
     user_init_key_id: Vec<u8>,
+
+    // ProtocolVersion supported_versions<0..255>;
+    /// The protocol versions supported by this client. Each entry is the supported protocol
+    /// version of the entry in `init_keys` of the same index. This MUST have the same length as
+    /// `init_keys`.
+    #[serde(rename = "supported_versions__bound_u8")]
+    supported_versions: Vec<ProtocolVersion>,
+
     // CipherSuite cipher_suites<0..255>
     /// The cipher suites supported by this client. Each cipher suite here corresponds uniquely to
     /// a DH public key in `init_keys`. As such, this MUST have the same length as `init_keys`.
     #[serde(rename = "cipher_suites__bound_u8")]
     pub(crate) cipher_suites: Vec<&'static CipherSuite>,
-    // DHPublicKey init_keys<1..2^16-1>
+
+    // HPKEPublicKey init_keys<1..2^16-1>
     /// The DH public keys owned by this client. Each public key corresponds uniquely to a cipher
     /// suite in `cipher_suites`. As such, this MUST have the same length as `cipher_suites`.
     #[serde(rename = "init_keys__bound_u16")]
     pub(crate) init_keys: Vec<DhPublicKey>,
+
     /// The identity information of this user
     pub(crate) credential: Credential,
+
     /// Contains the signature of all the other fields of this struct, under the identity key of
     /// the client.
     pub(crate) signature: Signature,
@@ -67,7 +81,19 @@ pub(crate) struct GroupInit;
 /// Operation to add a partcipant to a group
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupAdd {
+    // uint32 index;
+    /// Indicates where to add the new participant. This may be a blank node or at index `n` where
+    /// `n` is the size of the tree.
+    index: u32,
+
+    // UserInitKey init_key;
+    /// Contains the public key used to add the new participant
     pub(crate) init_key: UserInitKey,
+
+    // opaque welcome_info_hash<0..255>;
+    /// Contains the hash of the `WelcomeInfo` object that preceded this `Add`
+    #[serde(rename = "welcome_info_hash__bound_u8")]
+    welcome_info_hash: Vec<u8>,
 }
 
 /// Operation to add entropy to the group
@@ -79,7 +105,10 @@ pub(crate) struct GroupUpdate {
 /// Operation to remove a partcipant from the group
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupRemove {
+    /// The index of the removed participant
     removed: u32,
+
+    /// New entropy for the tree
     pub(crate) path: DirectPathMessage,
 }
 
@@ -272,6 +301,7 @@ mod test {
         uik_all_scheme: &'static SignatureScheme,
         _user_init_key_all_len: u32,
         user_init_key_all: UserInitKey,
+
         case_p256_p256: MessagesCase,
         case_x25519_ed25519: MessagesCase,
     }

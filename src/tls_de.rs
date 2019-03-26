@@ -379,8 +379,10 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
     {
         // This function will not be called more times than there are fields in the struct. If it
         // is, we will panic
-        let field =
-            self.fields.get(self.field_idx).expect("in unknown field while deserializing a struct");
+        let field = self
+            .fields
+            .get(self.field_idx)
+            .expect("in unknown field while deserializing a struct");
         self.field_idx += 1;
 
         // If this is a variable-length field, read off the length
@@ -390,7 +392,7 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
         // number of bytes specified by the length tag. Then deserialize the contents normally. It
         // will finish when it runs out of things to read. This is guaranteed by the logic in
         // TlsVecSeq.
-        if let Some(len) = field_len {
+        let res = if let Some(len) = field_len {
             // Make a sub-buffer to read from
             let mut sub_reader = self.de.reader.take(len);
             let mut sub_deserializer = TlsDeserializer::from_reader(&mut sub_reader);
@@ -400,7 +402,9 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
         } else {
             // If no length is specified, do the natural thing
             seed.deserialize(&mut *self.de).map(Some)
-        }
+        };
+
+        res.map_err(|e| make_custom_error(format!("Error reading field {}\n{}", field, e)))
     }
 }
 

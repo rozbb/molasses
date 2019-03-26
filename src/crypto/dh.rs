@@ -52,7 +52,7 @@ impl DhSharedSecret {
     }
 }
 
-// opaque DHPublicKey<1..2^16-1>
+// opaque HPKEPublicKey<1..2^16-1>
 /// This is the form that all `DhPublicKey`s take when being sent or received over the wire
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "DhPublicKeyRaw__bound_u16")]
@@ -61,8 +61,8 @@ pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 /// An enum of possible types for a public DH value, depending on the underlying algorithm. In EC
 /// terminology, this is a point on the curve. In finite-field terminology, this is a field
 /// element. The `Raw` variant only gets instantiated at the serialization/deserialization
-/// boundary, and should never be dealt with directly. The `CryptoUpcast` trait should take
-/// care of this.
+/// boundary, and should never be dealt with directly. The `CryptoUpcast` trait should take care of
+/// this.
 #[derive(Clone, Debug)]
 pub(crate) enum DhPublicKey {
     /// A curve point in Curve25519
