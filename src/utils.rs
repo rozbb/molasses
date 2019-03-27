@@ -120,6 +120,7 @@ mod test_utils {
         let cs = &X25519_SHA256_AES128GCM;
         GroupState {
             cs: cs,
+            protocol_version: 0,
             identity_key: cs.sig_impl.secret_key_from_bytes(&[0u8; 32]).unwrap(),
             group_id: tgs.group_id,
             epoch: tgs.epoch,

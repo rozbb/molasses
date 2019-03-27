@@ -379,10 +379,8 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
     {
         // This function will not be called more times than there are fields in the struct. If it
         // is, we will panic
-        let field = self
-            .fields
-            .get(self.field_idx)
-            .expect("in unknown field while deserializing a struct");
+        let field =
+            self.fields.get(self.field_idx).expect("in unknown field while deserializing a struct");
         self.field_idx += 1;
 
         // If this is a variable-length field, read off the length

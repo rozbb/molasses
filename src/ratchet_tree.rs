@@ -201,8 +201,8 @@ impl RatchetTree {
         }
     }
 
-    /// Returns the indices of the resolution of a given node: this an ordered sequence of minimal set
-    /// of non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
+    /// Returns the indices of the resolution of a given node: this an ordered sequence of minimal
+    /// set of non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
     /// non-blank descendants of the given node. The ordering is ascending by node index.
     pub(crate) fn resolution(&self, idx: usize) -> Vec<usize> {
         // Helper function that accumulates the resolution recursively
@@ -212,15 +212,16 @@ impl RatchetTree {
                     // The resolution of a blank leaf node is the empty list
                     return;
                 } else {
-                    // The resolution of a blank intermediate node is the result of concatinating the
-                    // resolution of its left child with the resolution of its right child, in that
-                    // order
+                    // The resolution of a blank intermediate node is the result of concatinating
+                    // the resolution of its left child with the resolution of its right child, in
+                    // that order
                     let num_leaves = tree_math::num_leaves_in_tree(tree.nodes.len());
                     helper(tree, tree_math::node_left_child(i), acc);
                     helper(tree, tree_math::node_right_child(i, num_leaves), acc);
                 }
             } else {
-                // The resolution of a non-blank node is a one element list containing the node itself
+                // The resolution of a non-blank node is a one element list containing the node
+                // itself
                 acc.push(i);
             }
         }

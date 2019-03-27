@@ -13,8 +13,10 @@ pub enum Error {
     SerdeError(std::io::Error),
     /// For errors encountered during upcasting
     UpcastError(&'static str),
-    /// For errors relating to group operations
+    /// For errors concerning group operations
     GroupOpError(&'static str),
+    /// For errors concerning invalid data structures
+    ValidationError(&'static str),
     /// For when we need randomness and there's none left
     OutOfEntropy,
 }
@@ -33,6 +35,7 @@ impl std::error::Error for Error {
             Error::EncryptionError(e) => e,
             Error::DhError(e) => e,
             Error::GroupOpError(e) => e,
+            Error::ValidationError(e) => e,
             Error::SignatureError(e) => e,
             Error::KdfError(e) => e,
             Error::SerdeError(e) => e.description(),

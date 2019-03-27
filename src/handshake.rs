@@ -1,6 +1,7 @@
 use crate::{
     credential::Credential,
     crypto::{ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, sig::Signature},
+    error::Error,
     group_state::GroupState,
 };
 
@@ -74,6 +75,78 @@ pub(crate) struct UserInitKey {
     pub(crate) signature: Signature,
 }
 
+impl UserInitKey {
+    /// Verifies this `UserInitKey` under the identity key specified in the `credential` field
+    ///
+    /// Returns: `Ok(())` on success, `Error::SignatureError` on verification failure, and
+    /// `Error::SerdeError` on some serialization failure.
+    #[must_use]
+    pub(crate) fn verify_sig(&self) -> Result<(), Error> {
+        // This struct is everything but the last field in UserInitKey. We use the serialized form
+        // of this as the message that the signature is computed over
+        #[derive(Serialize)]
+        struct PartialUserInitKey<'a> {
+            #[serde(rename = "user_init_key_id__bound_u8")]
+            user_init_key_id: &'a [u8],
+            #[serde(rename = "supported_versions__bound_u8")]
+            supported_versions: &'a [ProtocolVersion],
+            #[serde(rename = "cipher_suites__bound_u8")]
+            cipher_suites: &'a [&'static CipherSuite],
+            #[serde(rename = "init_keys__bound_u16")]
+            init_keys: &'a [DhPublicKey],
+            credential: &'a Credential,
+        }
+
+        let partial = PartialUserInitKey {
+            user_init_key_id: self.user_init_key_id.as_slice(),
+            supported_versions: self.supported_versions.as_slice(),
+            cipher_suites: self.cipher_suites.as_slice(),
+            init_keys: self.init_keys.as_slice(),
+            credential: &self.credential,
+        };
+        let serialized_uik = crate::tls_ser::serialize_to_bytes(&partial)?;
+
+        let sig_scheme = self.credential.get_signature_scheme();
+        let public_key = self.credential.get_public_key();
+
+        sig_scheme.verify(public_key, &serialized_uik, &self.signature)
+    }
+
+    // TODO: URGENT: Figure out how to implement the mandatory check specified in section 6:
+    // "UserInitKeys also contain an identifier chosen by the client, which the client MUST assure
+    // uniquely identifies a given UserInitKey object among the set of UserInitKeys created by this
+    // client."
+
+    /// Validates the invariants that `UserInitKey` must satisfy, as in section 6 of the MLS spec
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        // All three of supported_versions, cipher_suites, and init_keys MUST have the same length
+        if self.supported_versions.len() != self.cipher_suites.len() {
+            return Err(Error::ValidationError(
+                "UserInitKey::supported_verions.len() != UserInitKey::cipher_suites.len()",
+            ));
+        }
+        if self.init_keys.len() != self.cipher_suites.len() {
+            return Err(Error::ValidationError(
+                "UserInitKey::init_keys.len() != UserInitKey::cipher_suites.len()",
+            ));
+        }
+
+        // The elements of cipher_suites MUST be unique. Sort them, dedup them, and see if the
+        // number has decreased.
+        let mut cipher_suites = self.cipher_suites.clone();
+        let original_len = cipher_suites.len();
+        cipher_suites.sort_by_key(|c| c.name);
+        cipher_suites.dedup_by_key(|c| c.name);
+        if cipher_suites.len() != original_len {
+            return Err(Error::ValidationError(
+                "UserInitKey has init keys with duplicate ciphersuites",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 /// This is currently not defined by the spec. See open issue in section 7.1
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupInit;
@@ -84,7 +157,7 @@ pub(crate) struct GroupAdd {
     // uint32 index;
     /// Indicates where to add the new participant. This may be a blank node or at index `n` where
     /// `n` is the size of the tree.
-    index: u32,
+    pub(crate) index: u32,
 
     // UserInitKey init_key;
     /// Contains the public key used to add the new participant
@@ -93,7 +166,7 @@ pub(crate) struct GroupAdd {
     // opaque welcome_info_hash<0..255>;
     /// Contains the hash of the `WelcomeInfo` object that preceded this `Add`
     #[serde(rename = "welcome_info_hash__bound_u8")]
-    welcome_info_hash: Vec<u8>,
+    pub(crate) welcome_info_hash: Vec<u8>,
 }
 
 /// Operation to add entropy to the group

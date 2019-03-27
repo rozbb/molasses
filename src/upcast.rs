@@ -164,6 +164,8 @@ impl CryptoUpcast for crate::group_state::WelcomeInfo {
     }
 }
 
+// TODO: URGENT: self.signature should have the variant determined by
+// self.credential.signature_scheme. This may require a large refactor.
 impl CryptoUpcast for crate::handshake::UserInitKey {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
         for (cs, pk) in self.cipher_suites.iter().zip(self.init_keys.iter_mut()) {

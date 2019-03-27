@@ -48,6 +48,15 @@ pub(crate) struct CipherSuite {
     pub(crate) hash_alg: &'static ring::digest::Algorithm,
 }
 
+// TODO: Remove this impl if Add messages come with public_key indices in the future
+// CipherSuites are uniquely identified by their tags. We need this in order to dedup ciphersuite
+// lists in UserInitKeys
+impl PartialEq for CipherSuite {
+    fn eq(&self, other: &CipherSuite) -> bool {
+        self.name.eq(other.name)
+    }
+}
+
 impl CipherSuite {
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
     /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.

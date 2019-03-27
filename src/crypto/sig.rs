@@ -9,13 +9,13 @@ pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
 
 // opaque SignaturePublicKey<1..2^16-1>
 /// This is the form that all `SigPublicKey`s take when being sent or received over the wire
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "SigPublicKeyRaw__bound_u16")]
 pub(crate) struct SigPublicKeyRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for a signature scheme's public key, depending on the underlying
 /// algorithm
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum SigPublicKey {
     Ed25519PublicKey(ed25519_dalek::PublicKey),
     Raw(SigPublicKeyRaw),
@@ -34,6 +34,18 @@ impl SigPublicKey {
 /// algorithm
 pub(crate) enum SigSecretKey {
     Ed25519SecretKey(ed25519_dalek::SecretKey),
+}
+
+// We only really need this in order to derive(Clone) for GroupState
+impl Clone for SigSecretKey {
+    fn clone(&self) -> SigSecretKey {
+        match &self {
+            SigSecretKey::Ed25519SecretKey(s) => {
+                let inner_clone = ed25519_dalek::SecretKey::from_bytes(s.as_bytes()).unwrap();
+                SigSecretKey::Ed25519SecretKey(inner_clone)
+            }
+        }
+    }
 }
 
 impl core::fmt::Debug for SigSecretKey {

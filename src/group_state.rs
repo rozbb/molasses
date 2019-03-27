@@ -2,12 +2,13 @@ use crate::{
     credential::{Credential, Identity},
     crypto::{ciphersuite::CipherSuite, hkdf, sig::SigSecretKey},
     error::Error,
-    handshake::{GroupOperation, Handshake, ProtocolVersion},
-    ratchet_tree::RatchetTree,
+    handshake::{GroupAdd, GroupOperation, GroupUpdate, Handshake, ProtocolVersion},
+    ratchet_tree::{RatchetTree, RatchetTreeNode},
     tree_math,
 };
 
 /// These are a bunch of secrets derived from `epoch_secret` via HKDF-Expand. See section 5.9.
+#[derive(Clone)]
 pub(crate) struct EpochSecrets {
     /// The initial secret used to derive all the rest
     pub(crate) init_secret: Vec<u8>,
@@ -19,22 +20,17 @@ pub(crate) struct EpochSecrets {
     pub(crate) confirmation_key: Vec<u8>,
 }
 
-/// This is like a patch that can be applied to a GroupState object via `GroupState::apply_delta`.
-/// This only contains values that would be updated in a normal group operation.
-struct GroupStateDelta {
-    epoch: u32,
-    transcript_hash: Vec<u8>,
-    tree: Option<RatchetTree>,
-    epoch_secrets: EpochSecrets,
-}
-
 /// Contains all group state
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(crate) struct GroupState {
     /// You can think of this as a context variable. It helps us implement crypto ops and
     /// disambiguate serialized data structures
     #[serde(skip)]
     pub(crate) cs: &'static CipherSuite,
+
+    /// Version info
+    #[serde(skip)]
+    pub(crate) protocol_version: ProtocolVersion,
 
     /// A long-lived signing key used to authenticate the sender of a message
     #[serde(skip)]
@@ -102,6 +98,7 @@ impl GroupState {
 
         GroupState {
             cs: cs,
+            protocol_version: w.protocol_version,
             identity_key: my_identity_key,
             group_id: w.group_id,
             epoch: w.epoch,
@@ -118,35 +115,57 @@ impl GroupState {
         }
     }
 
-    /// Swaps out all the none-`None` values in the delta with the corresponding values in the
-    /// `GroupState`. The returned object contains all the old values. So to rollback a delta
-    /// application, you just apply the delta you received from the first invocation.
-    fn apply_delta(&mut self, delta: GroupStateDelta) -> GroupStateDelta {
-        // Replace all the values
-        let old_epoch = core::mem::replace(&mut self.epoch, delta.epoch);
-        let old_transcript_hash =
-            core::mem::replace(&mut self.transcript_hash, delta.transcript_hash);
-        let old_tree = delta.tree.map(|t| core::mem::replace(&mut self.tree, t));
-        let old_epoch_secrets = core::mem::replace(&mut self.epoch_secrets, delta.epoch_secrets);
-
-        // Return a delta with the old values
-        GroupStateDelta {
-            epoch: old_epoch,
-            transcript_hash: old_transcript_hash,
-            tree: old_tree,
-            epoch_secrets: old_epoch_secrets,
+    fn as_welcome_info(&self) -> WelcomeInfo {
+        WelcomeInfo {
+            protocol_version: self.protocol_version,
+            group_id: self.group_id.clone(),
+            epoch: self.epoch,
+            roster: self.roster.clone(),
+            tree: self.tree.clone(),
+            transcript_hash: self.transcript_hash.clone(),
+            init_secret: self.epoch_secrets.init_secret.clone(),
         }
     }
 
-    /// Derives the next generation of Group secrets as per section 5.9 in the spec
-    pub fn derive_epoch_secrets(&self, update_secret: &[u8]) -> Result<EpochSecrets, Error> {
+    /// Increments the epoch counter by 1
+    ///
+    /// Returns: An `Error::GroupOpError` if it's at its max
+    fn update_epoch(&mut self) -> Result<(), Error> {
+        let new_epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or(Error::GroupOpError("Cannot increment epoch past its maximum"))?;
+        self.epoch = new_epoch;
+
+        Ok(())
+    }
+
+    /// Computes and updates the transcript hash, given a new `Handshake` message.
+    ///
+    /// Returns: An `Error::SerdeError` if there was an issue during serialization
+    fn update_transcript_hash(&mut self, handshake: &Handshake) -> Result<(), Error> {
+        // Compute the new transcript hash
+        // From section 5.7: transcript_hash_[n] = Hash(transcript_hash_[n-1] || operation)
+        let new_transcript_hash = {
+            let operation_bytes = crate::tls_ser::serialize_to_bytes(&handshake.operation)?;
+            let mut ctx = ring::digest::Context::new(self.cs.hash_alg);
+            ctx.update(&self.transcript_hash);
+            ctx.update(&operation_bytes);
+            ctx.finish().as_ref().to_vec()
+        };
+        self.transcript_hash = new_transcript_hash;
+
+        Ok(())
+    }
+
+    /// Derives and sets the next generation of Group secrets as per section 5.9 in the spec
+    fn update_epoch_secrets(&mut self, update_secret: &[u8]) -> Result<(), Error> {
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
         let salt = hkdf::prk_from_bytes(self.cs.hash_alg, &self.epoch_secrets.init_secret);
         let epoch_secret: ring::hmac::SigningKey = hkdf::hkdf_extract(&salt, &update_secret);
 
         let serialized_self = crate::tls_ser::serialize_to_bytes(self)?;
-
-        let res = EpochSecrets {
+        self.epoch_secrets = EpochSecrets {
             // application_secret = Derive-Secret(epoch_secret, "app", GroupState_[n])
             application_secret: hkdf::derive_secret(&epoch_secret, b"app", &serialized_self),
             // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
@@ -154,7 +173,8 @@ impl GroupState {
             // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
             init_secret: hkdf::derive_secret(&epoch_secret, b"init", &serialized_self),
         };
-        Ok(res)
+
+        Ok(())
     }
 
     /// Converts an index into the participant roster to an index to the corresponding leaf node of
@@ -165,57 +185,41 @@ impl GroupState {
     }
 
     /// Performs and validates an update operation on the `GroupState`.
-    ///
-    /// Requires: `update_op` is a `GroupOperation::Update` variant.
-    ///
-    /// Returns: `Ok(delta)` on success, where `delta` contains all the changes to the
-    /// `GroupState`. Otherwise, returns some sort of `Error`.
-    fn process_update(
-        &self,
-        update_op: &GroupOperation,
+    fn process_update_op(
+        &mut self,
+        update: &GroupUpdate,
         sender_tree_idx: u32,
-    ) -> Result<GroupStateDelta, Error> {
+    ) -> Result<(), Error> {
         // We do three things: compute the new ratchet tree, compute the new transcript hash, and
         // compute the new epoch secrets. We shove all these new values into a delta. To validate
         // the operation, we check that the derived public keys match the ones in the message. If
         // they do not, this is an error.
 
-        // Compute the new transcript hash
-        // From section 5.7: transcript_hash_[n] = Hash(transcript_hash_[n-1] || operation)
-        let new_transcript_hash = {
-            let operation_bytes = crate::tls_ser::serialize_to_bytes(update_op)?;
-            let mut ctx = ring::digest::Context::new(self.cs.hash_alg);
-            ctx.update(&self.transcript_hash);
-            ctx.update(&operation_bytes);
-            ctx.finish().as_ref().to_vec()
-        };
-
-        // The only reason we required that update_op is a GroupOperation is because
-        // transcript_hash needs to be computed over a GroupOperation object.
-        let update = enum_variant!(update_op, GroupOperation::Update);
-
         // Decrypt the path secret from the GroupUpdate and propogate it through our tree
         // Recall that roster_index is just another (IMO clearer) name for signer_index
         let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index);
-        let mut new_tree = self.tree.clone();
-        let (path_secret, ancestor_idx) = new_tree.decrypt_direct_path_message(
+        let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
             self.cs,
             &update.path,
             sender_tree_idx as usize,
             my_tree_idx as usize,
         )?;
-        new_tree.propogate_new_path_secret(self.cs, path_secret, ancestor_idx)?;
+        self.tree.propogate_new_path_secret(self.cs, path_secret, ancestor_idx)?;
 
-        // We update the epoch secrets using the root node secret as the update secret.
-        // That's a lot of secrets
-        let new_epoch_secrets = {
-            let root_node = new_tree.get_root_node().expect("tried to update empty tree");
-            let root_node_secret = root_node.get_node_secret().expect("root node has no secret");
-            self.derive_epoch_secrets(root_node_secret)?
+        // "The update secret resulting from this change is the secret for the root node of the
+        // ratchet tree."
+        let root_node_secret = {
+            let root_node = self.tree.get_root_node().expect("tried to update empty tree");
+            root_node.get_node_secret().expect("root node has no secret").to_vec()
         };
+        self.update_epoch_secrets(&root_node_secret)?;
 
-        // Now for update validation. Make the updated tree immutable for this step
-        let new_tree = new_tree;
+        //
+        // Validation
+        //
+
+        // Make the tree we're validating immutable
+        let new_tree = &self.tree;
         let num_leaves = tree_math::num_leaves_in_tree(new_tree.size());
         let direct_path = tree_math::node_direct_path(sender_tree_idx as usize, num_leaves);
 
@@ -233,20 +237,93 @@ impl GroupState {
             }
         }
 
-        let new_epoch = self
-            .epoch
-            .checked_add(1)
-            .ok_or(Error::GroupOpError("Cannot increment epoch past its maximum"))?;
+        Ok(())
+    }
 
-        // All this new info goes into a delta
-        let delta = GroupStateDelta {
-            epoch: new_epoch,
-            transcript_hash: new_transcript_hash,
-            tree: Some(new_tree),
-            epoch_secrets: new_epoch_secrets,
+    /// Performs and validates an add operation on the `GroupState`. Requires a `WelcomeInfo`
+    /// representing the `GroupState` before this handshake was received.
+    fn process_add_op(
+        &mut self,
+        add: &GroupAdd,
+        prior_welcome_info: &WelcomeInfo,
+    ) -> Result<(), Error> {
+        // What we have to do, in order
+        // 1. If the index value is equal to the size of the group, increment the size of the
+        //    group, and extend the tree and roster accordingly
+        // 2. Verify the signature on the included UserInitKey; if the signature verification
+        //    fails, abort
+        // 3. Generate a WelcomeInfo object describing the state prior to the add, and verify that
+        //    its hash is the same as the value of the welcome_info_hash field
+        // 4. Set the roster entry at position index to the credential in the included UserInitKey
+        // 5. Update the ratchet tree by setting to blank all nodes in the direct path of the new
+        //    node
+        // 6. Set the leaf node in the tree at position index to a new node containing the public
+        //    key from the UserInitKey in the Add corresponding to the ciphersuite in use
+
+        let new_index = add.index as usize;
+        if new_index > self.tree.size() {
+            return Err(Error::GroupOpError("Invalid insertion index in Add operation"));
+        }
+
+        // Check the WelcomeInfo hash
+        let my_prior_welcome_info_hash = {
+            let serialized = crate::tls_ser::serialize_to_bytes(&prior_welcome_info)?;
+            ring::digest::digest(self.cs.hash_alg, &serialized)
+        };
+        if my_prior_welcome_info_hash.as_ref() != add.welcome_info_hash.as_slice() {
+            return Err(Error::GroupOpError("Invalid WelcomeInfo hash in Add operation"));
+        }
+
+        // Verify the UserInitKey's signature, then validate its contents
+        add.init_key.verify_sig()?;
+        add.init_key.validate()?;
+
+        // Update the roster
+        self.roster.insert(new_index, Some(add.init_key.credential.clone()));
+
+        let cipher_suites = &add.init_key.cipher_suites;
+        let init_keys = &add.init_key.init_keys;
+
+        // The public key we associate to the new participant is the one that corresponds to our
+        // current ciphersuite. These two lists must be the same length, because this property is
+        // checked in validate() above
+        let mut public_key = None;
+        for (cs, key) in cipher_suites.iter().zip(init_keys.iter()) {
+            if cs == &self.cs {
+                public_key = Some(key)
+            }
+        }
+        let public_key = public_key
+            .ok_or(Error::GroupOpError("UserInitKey has no public keys for group's ciphersuite"))?;
+        let new_node = RatchetTreeNode::Filled {
+            public_key: public_key.clone(),
+            private_key: None,
+            secret: None,
         };
 
-        Ok(delta)
+        let is_append = new_index == self.tree.size();
+        if is_append {
+            // If we're adding a new node to the end tree, we have to make new nodes
+            self.tree.add_leaf_node(new_node);
+        } else {
+            // Otherwise, it's an in-place Add. In this case, check that we're only overwriting a
+            // Blank node.
+            let node_to_overwrite = self.tree.get_mut(new_index).unwrap();
+            if let RatchetTreeNode::Filled {
+                ..
+            } = node_to_overwrite
+            {
+                return Err(Error::GroupOpError("Add tried to overwrite non-blank node"));
+            } else {
+                *node_to_overwrite = new_node;
+            }
+        }
+
+        // "The update secret resulting from this change is an all-zero octet string of length
+        // Hash.length."
+        self.update_epoch_secrets(&vec![0u8; self.cs.hash_alg.output_len])?;
+
+        Ok(())
     }
 
     // According to the spec, this is how we process handshakes:
@@ -277,24 +354,41 @@ impl GroupState {
             .ok_or(Error::GroupOpError("Credential at signer's index is empty"))?
             .get_public_key();
 
-        let delta = match &handshake.operation {
-            update_op @ &GroupOperation::Update(_) => {
+        // Make a preliminary new state with updated transcript_hash and epoch. The rest of the
+        // updates are handled in the branches of the match statement below
+        let mut new_state = self.clone();
+        new_state.update_transcript_hash(handshake);
+        new_state.update_epoch();
+
+        // Do the handshake operation on the preliminary new state. If there are no errors, we set
+        // the actual state to the new one.
+        match handshake.operation {
+            GroupOperation::Update(ref update) => {
                 let sender_tree_idx =
                     GroupState::roster_index_to_tree_index(handshake.signer_index);
-                self.process_update(update_op, sender_tree_idx)?
+                new_state.process_update_op(update, sender_tree_idx)?
+            }
+            GroupOperation::Add(ref add) => {
+                let sender_tree_idx =
+                    GroupState::roster_index_to_tree_index(handshake.signer_index);
+                let prior_welcome_info = self.as_welcome_info();
+                new_state.process_add_op(add, &prior_welcome_info)?;
             }
             _ => unimplemented!(),
         };
 
         //
-        // Now validate the delta
+        // Now validate the new state
         //
+
+        // Make the state immutable for the rest of this function
+        let new_state = new_state;
 
         // Check the signature. From section 7 of the spec:
         // signature_data = GroupState.transcript_hash
         // Handshake.signature = Sign(identity_key, signature_data)
-        let sig_data = &delta.transcript_hash;
-        self.cs.sig_impl.verify(sender_public_key, sig_data, &handshake.signature)?;
+        let sig_data = &new_state.transcript_hash;
+        new_state.cs.sig_impl.verify(sender_public_key, sig_data, &handshake.signature)?;
 
         // Check the MAC. From section 7 of the spec:
         // confirmation_data = GroupState.transcript_hash || Handshake.signature
@@ -304,7 +398,8 @@ impl GroupState {
             &self.epoch_secrets.confirmation_key,
         );
         let conf_data =
-            [self.transcript_hash.as_slice(), handshake.signature.to_bytes().as_slice()].concat();
+            [new_state.transcript_hash.as_slice(), handshake.signature.to_bytes().as_slice()]
+                .concat();
         // It's okay to reveal that the MAC is incorrect, because the ring::hmac::verify runs in
         // constant time
         ring::hmac::verify(&conf_key, &conf_data, &handshake.confirmation)
@@ -314,10 +409,12 @@ impl GroupState {
         // If we've made it this far. We commit the changes
         //
 
-        self.apply_delta(delta);
+        core::mem::replace(self, new_state);
         Ok(())
     }
 }
+
+// TODO: Make this COW so we don't have to clone everything in GroupState::as_welcome_info
 
 /// Contains everything a new user needs to know to join a Group
 #[derive(Debug, Deserialize, Serialize)]
@@ -451,16 +548,14 @@ mod test {
         // Keep deriving new secrets with respect to the given update secret. Check all the
         // resulting keys against the test vector.
         for epoch in case1.epochs.into_iter() {
-            let derived_secrets = group_state.derive_epoch_secrets(&epoch.update_secret).unwrap();
+            group_state.update_epoch_secrets(&epoch.update_secret).unwrap();
+            let derived_secrets = &group_state.epoch_secrets;
 
             // We don't save the derived epoch_secret anywhere, since it's just an intermediate
             // value. We do test all the things derived from it, though.
             assert_eq!(&derived_secrets.application_secret, &epoch.application_secret);
             assert_eq!(&derived_secrets.confirmation_key, &epoch.confirmation_key);
             assert_eq!(&derived_secrets.init_secret, &epoch.init_secret);
-
-            // Save the new derived secrets
-            group_state.epoch_secrets = derived_secrets;
 
             // Increment the state epoch every time we do a key derivation. This is what happens in
             // the actual protocol.
