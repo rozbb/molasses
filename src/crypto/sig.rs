@@ -224,23 +224,28 @@ impl SignatureScheme for DummyEcdsaP256 {
     }
 
     #[cfg(test)]
-    fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey {
+    fn public_key_from_secret_key(&self, _secret: &SigSecretKey) -> SigPublicKey {
         unimplemented!()
     }
 
-    fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
+    fn secret_key_from_bytes(&self, _bytes: &[u8]) -> Result<SigSecretKey, Error> {
         unimplemented!()
     }
 
-    fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error> {
+    fn secret_key_from_random(&self, _csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error> {
         unimplemented!()
     }
 
-    fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
+    fn sign(&self, _secret: &SigSecretKey, _msg: &[u8]) -> Signature {
         unimplemented!()
     }
 
-    fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
+    fn verify(
+        &self,
+        _public_key: &SigPublicKey,
+        _msg: &[u8],
+        sig: &Signature,
+    ) -> Result<(), Error> {
         unimplemented!()
     }
 }

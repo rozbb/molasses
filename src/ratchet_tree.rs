@@ -33,7 +33,10 @@ pub(crate) enum RatchetTreeNode {
 impl RatchetTreeNode {
     /// Returns `true` iff this is the `Filled` variant
     fn is_filled(&self) -> bool {
-        if let RatchetTreeNode::Filled { .. } = self {
+        if let RatchetTreeNode::Filled {
+            ..
+        } = self
+        {
             true
         } else {
             false
@@ -76,7 +79,7 @@ impl RatchetTreeNode {
         match self {
             &mut RatchetTreeNode::Blank => panic!("tried to update private key of blank node"),
             &mut RatchetTreeNode::Filled {
-                ref public_key,
+                public_key: _,
                 ref mut private_key,
                 ..
             } => {
@@ -92,8 +95,8 @@ impl RatchetTreeNode {
         match self {
             &mut RatchetTreeNode::Blank => panic!("tried to update secret of blank node"),
             &mut RatchetTreeNode::Filled {
-                ref public_key,
-                ref private_key,
+                public_key: _,
+                private_key: _,
                 ref mut secret,
             } => {
                 *secret = Some(new_secret);
@@ -108,8 +111,8 @@ impl RatchetTreeNode {
         match self {
             &mut RatchetTreeNode::Blank => None,
             &mut RatchetTreeNode::Filled {
-                ref public_key,
-                ref private_key,
+                public_key: _,
+                private_key: _,
                 ref mut secret,
             } => match secret {
                 Some(ref mut inner) => Some(inner.as_mut_slice()),
@@ -126,8 +129,8 @@ impl RatchetTreeNode {
         match self {
             &RatchetTreeNode::Blank => None,
             &RatchetTreeNode::Filled {
-                ref public_key,
-                ref private_key,
+                public_key: _,
+                private_key: _,
                 ref secret,
             } => secret.as_ref().map(|v| v.as_slice()),
         }
@@ -138,7 +141,7 @@ impl RatchetTreeNode {
         match self {
             &RatchetTreeNode::Blank => None,
             &RatchetTreeNode::Filled {
-                ref public_key,
+                public_key: _,
                 ref private_key,
                 ..
             } => private_key.as_ref(),
@@ -213,7 +216,7 @@ impl RatchetTree {
     /// Blanks out the direct path of the given node, as well as the root node
     pub(crate) fn propogate_blank(&mut self, start_idx: usize) {
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let mut direct_path = tree_math::node_direct_path(start_idx, num_leaves);
+        let direct_path = tree_math::node_direct_path(start_idx, num_leaves);
 
         // Blank the direct path
         for i in direct_path {
@@ -241,7 +244,7 @@ impl RatchetTree {
             None => self.nodes.clear(),
             Some(i) => {
                 // This can't fail, because i is an index
-                let num_elements_to_retain = i+1;
+                let num_elements_to_retain = i + 1;
                 self.nodes.truncate(num_elements_to_retain)
             }
         }

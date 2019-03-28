@@ -163,10 +163,10 @@ pub(crate) fn common_ancestor(idx1: usize, idx2: usize, num_leaves: usize) -> us
 
     // If idx2 is at a higher level than idx1 (i.e., idx2 is closer to the root), then the idx1
     // direct path has to be bumped up until the levels match
-    let mut idx1_dp = node_direct_path(idx1, num_leaves).skip(idx2_lvl.saturating_sub(idx1_lvl));
+    let idx1_dp = node_direct_path(idx1, num_leaves).skip(idx2_lvl.saturating_sub(idx1_lvl));
     // If idx1 is at a higher level than idx2 (i.e., idx1 is closer to the root), then the idx2
     // direct path has to be bumped up until the levels match
-    let mut idx2_dp = node_direct_path(idx2, num_leaves).skip(idx1_lvl.saturating_sub(idx2_lvl));
+    let idx2_dp = node_direct_path(idx2, num_leaves).skip(idx1_lvl.saturating_sub(idx2_lvl));
 
     // Now that they're on the same level, just keep following the two iterators up the tree until
     // they agree

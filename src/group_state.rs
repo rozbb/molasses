@@ -130,6 +130,7 @@ impl GroupState {
     /// Increments the epoch counter by 1
     ///
     /// Returns: An `Error::GroupOpError` if it's at its max
+    #[must_use]
     fn update_epoch(&mut self) -> Result<(), Error> {
         let new_epoch = self
             .epoch
@@ -143,6 +144,7 @@ impl GroupState {
     /// Computes and updates the transcript hash, given a new `Handshake` message.
     ///
     /// Returns: An `Error::SerdeError` if there was an issue during serialization
+    #[must_use]
     fn update_transcript_hash(&mut self, handshake: &Handshake) -> Result<(), Error> {
         // Compute the new transcript hash
         // From section 5.7: transcript_hash_[n] = Hash(transcript_hash_[n-1] || operation)
@@ -159,6 +161,7 @@ impl GroupState {
     }
 
     /// Derives and sets the next generation of Group secrets as per section 5.9 in the spec
+    #[must_use]
     fn update_epoch_secrets(&mut self, update_secret: &[u8]) -> Result<(), Error> {
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
         let salt = hkdf::prk_from_bytes(self.cs.hash_alg, &self.epoch_secrets.init_secret);
@@ -184,7 +187,8 @@ impl GroupState {
         signer_index.checked_mul(2).expect("roster/tree size invariant violated")
     }
 
-    /// Performs and validates an update operation on the `GroupState`.
+    /// Performs and validates an Update operation on the `GroupState`.
+    #[must_use]
     fn process_update_op(
         &mut self,
         update: &GroupUpdate,
@@ -240,10 +244,12 @@ impl GroupState {
         Ok(())
     }
 
+    /// Performs and validates a Remove operation on the `GroupState`
+    #[must_use]
     fn process_remove_op(
         &mut self,
         remove: &GroupRemove,
-        sender_tree_idx: u32
+        sender_tree_idx: u32,
     ) -> Result<(), Error> {
         // * Update the roster by setting the credential in the removed slot to the null optional
         //   value
@@ -287,7 +293,7 @@ impl GroupState {
             None => self.roster.clear(),
             Some(i) => {
                 // This can't fail, because i is an index
-                let num_elements_to_retain = i+1;
+                let num_elements_to_retain = i + 1;
                 self.roster.truncate(num_elements_to_retain)
             }
         }
@@ -305,8 +311,9 @@ impl GroupState {
         Ok(())
     }
 
-    /// Performs and validates an add operation on the `GroupState`. Requires a `WelcomeInfo`
+    /// Performs and validates an Add operation on the `GroupState`. Requires a `WelcomeInfo`
     /// representing the `GroupState` before this handshake was received.
+    #[must_use]
     fn process_add_op(
         &mut self,
         add: &GroupAdd,
@@ -406,6 +413,7 @@ impl GroupState {
     //    message, as described below, and verify that it is the same as the confirmation field.
     // 7. If the the above checks are successful, consider the updated GroupState object as the
     //    current state of the group.
+    #[must_use]
     pub(crate) fn process_handshake(&mut self, handshake: &Handshake) -> Result<(), Error> {
         if handshake.prior_epoch != self.epoch {
             return Err(Error::GroupOpError("Handshake's prior epoch isn't the current epoch"));
@@ -424,8 +432,8 @@ impl GroupState {
         // Make a preliminary new state with updated transcript_hash and epoch. The rest of the
         // updates are handled in the branches of the match statement below
         let mut new_state = self.clone();
-        new_state.update_transcript_hash(handshake);
-        new_state.update_epoch();
+        new_state.update_transcript_hash(handshake)?;
+        new_state.update_epoch()?;
 
         // Do the handshake operation on the preliminary new state. If there are no errors, we set
         // the actual state to the new one.

@@ -207,7 +207,7 @@ impl CryptoUpcast for crate::handshake::DirectPathMessage {
 
 impl CryptoUpcast for crate::handshake::GroupInit {
     // GroupInit is empty; this is a no-op
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+    fn upcast_crypto_values(&mut self, _ctx: &CryptoCtx) -> Result<(), Error> {
         Ok(())
     }
 }

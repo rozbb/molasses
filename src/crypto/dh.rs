@@ -186,22 +186,22 @@ impl DiffieHellman for DummyP256 {
         }
     }
 
-    fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
+    fn private_key_from_bytes(&self, _bytes: &[u8]) -> Result<DhPrivateKey, Error> {
         unimplemented!()
     }
 
     // This has to take a dyn CryptoRng because DiffieHellman is itself a trait object inside a
     // CipherSuite. Trait objects can't have associated types, associated constants, or generic
     // methods.
-    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
+    fn scalar_from_random(&self, _csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
         unimplemented!()
     }
 
-    fn derive_public_key(&self, scalar: &DhPrivateKey) -> DhPublicKey {
+    fn derive_public_key(&self, _scalar: &DhPrivateKey) -> DhPublicKey {
         unimplemented!()
     }
 
-    fn diffie_hellman(&self, privkey: &DhPrivateKey, pubkey: &DhPublicKey) -> DhSharedSecret {
+    fn diffie_hellman(&self, _privkey: &DhPrivateKey, _pubkey: &DhPublicKey) -> DhSharedSecret {
         unimplemented!()
     }
 }
