@@ -2,7 +2,7 @@ use crate::{
     credential::{Credential, Identity},
     crypto::{ciphersuite::CipherSuite, hkdf, sig::SigSecretKey},
     error::Error,
-    handshake::{GroupAdd, GroupOperation, GroupUpdate, Handshake, ProtocolVersion},
+    handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion},
     ratchet_tree::{RatchetTree, RatchetTreeNode},
     tree_math,
 };
@@ -240,6 +240,71 @@ impl GroupState {
         Ok(())
     }
 
+    fn process_remove_op(
+        &mut self,
+        remove: &GroupRemove,
+        sender_tree_idx: u32
+    ) -> Result<(), Error> {
+        // * Update the roster by setting the credential in the removed slot to the null optional
+        //   value
+        // * Update the ratchet tree by replacing nodes in the direct path from the removed leaf
+        //   using the information in the Remove message
+        // * Reduce the size of the roster and the tree until the rightmost element roster element
+        //   and leaf node are non-null
+        // * Update the ratchet tree by setting to blank all nodes in the direct path of the
+        //   removed leaf
+
+        // Blank out the roster location
+        let remove_idx = remove.removed as usize;
+        self.roster.insert(remove_idx, None);
+
+        // Update the ratchet tree with the entropy provided in remove.path
+        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index);
+        let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
+            self.cs,
+            &remove.path,
+            sender_tree_idx as usize,
+            my_tree_idx as usize,
+        )?;
+        self.tree.propogate_new_path_secret(self.cs, path_secret, ancestor_idx)?;
+
+        // "The update secret resulting from this change is the secret for the root node of the
+        // ratchet tree after the second step"
+        let update_secret = {
+            let root_node = self.tree.get_root_node().expect("tried to update empty tree");
+            root_node.get_node_secret().expect("root node has no secret").to_vec()
+        };
+
+        // Truncate the roster to the last non-None credential
+        let mut last_nonempty_roster_entry = None;
+        for (i, entry) in self.roster.iter().rev().enumerate() {
+            if entry.is_some() {
+                last_nonempty_roster_entry = Some(i);
+            }
+        }
+        match last_nonempty_roster_entry {
+            // If there are no nonempty entries in the roster, clear it
+            None => self.roster.clear(),
+            Some(i) => {
+                // This can't fail, because i is an index
+                let num_elements_to_retain = i+1;
+                self.roster.truncate(num_elements_to_retain)
+            }
+        }
+
+        // Truncate the tree in a similar fashion
+        self.tree.prune_from_right();
+
+        // Blank out the direct path of remove_idx
+        self.tree.propogate_blank(remove_idx);
+
+        // All the modifications have been made. Update the epoch secrets with old root node secret
+        // as the update secret
+        self.update_epoch_secrets(&update_secret)?;
+
+        Ok(())
+    }
+
     /// Performs and validates an add operation on the `GroupState`. Requires a `WelcomeInfo`
     /// representing the `GroupState` before this handshake was received.
     fn process_add_op(
@@ -345,6 +410,8 @@ impl GroupState {
         if handshake.prior_epoch != self.epoch {
             return Err(Error::GroupOpError("Handshake's prior epoch isn't the current epoch"));
         }
+
+        let sender_tree_idx = GroupState::roster_index_to_tree_index(handshake.signer_index);
         let sender_credential = self
             .roster
             .get(handshake.signer_index as usize)
@@ -364,17 +431,16 @@ impl GroupState {
         // the actual state to the new one.
         match handshake.operation {
             GroupOperation::Update(ref update) => {
-                let sender_tree_idx =
-                    GroupState::roster_index_to_tree_index(handshake.signer_index);
                 new_state.process_update_op(update, sender_tree_idx)?
             }
             GroupOperation::Add(ref add) => {
-                let sender_tree_idx =
-                    GroupState::roster_index_to_tree_index(handshake.signer_index);
                 let prior_welcome_info = self.as_welcome_info();
                 new_state.process_add_op(add, &prior_welcome_info)?;
             }
-            _ => unimplemented!(),
+            GroupOperation::Remove(ref remove) => {
+                new_state.process_remove_op(remove, sender_tree_idx)?
+            }
+            GroupOperation::Init(_) => unimplemented!(),
         };
 
         //

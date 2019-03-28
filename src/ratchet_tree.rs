@@ -31,6 +31,15 @@ pub(crate) enum RatchetTreeNode {
 }
 
 impl RatchetTreeNode {
+    /// Returns `true` iff this is the `Filled` variant
+    fn is_filled(&self) -> bool {
+        if let RatchetTreeNode::Filled { .. } = self {
+            true
+        } else {
+            false
+        }
+    }
+
     /// Updates the node's public key to the given one. This is the only way to convert a `Blank`
     /// node into a `Filled` one.
     pub(crate) fn update_public_key(&mut self, new_public_key: DhPublicKey) {
@@ -198,6 +207,43 @@ impl RatchetTree {
         } else {
             self.nodes.push(RatchetTreeNode::Blank);
             self.nodes.push(node);
+        }
+    }
+
+    /// Blanks out the direct path of the given node, as well as the root node
+    pub(crate) fn propogate_blank(&mut self, start_idx: usize) {
+        let num_leaves = tree_math::num_leaves_in_tree(self.size());
+        let mut direct_path = tree_math::node_direct_path(start_idx, num_leaves);
+
+        // Blank the direct path
+        for i in direct_path {
+            // No need to check index here. By construction, there's no way this is out of bounds
+            self.nodes[i] = RatchetTreeNode::Blank;
+        }
+
+        // Blank the root
+        let root_idx = tree_math::root_idx(num_leaves);
+        self.nodes[root_idx] = RatchetTreeNode::Blank;
+    }
+
+    // TODO: Convince myself of the correctness of this pruning. Why can't this ever produce a
+    // degenerate tree (i.e., a nonempty tree with an even number of nodes)?
+    /// Prunes blank nodes from the right side of the tree until the rightmost node is non-blank
+    pub(crate) fn prune_from_right(&mut self) {
+        let mut last_nonblank_node = None;
+        for (i, entry) in self.nodes.iter().rev().enumerate() {
+            if entry.is_filled() {
+                last_nonblank_node = Some(i);
+            }
+        }
+        match last_nonblank_node {
+            // If there are no nonempty entries in the roster, clear it
+            None => self.nodes.clear(),
+            Some(i) => {
+                // This can't fail, because i is an index
+                let num_elements_to_retain = i+1;
+                self.nodes.truncate(num_elements_to_retain)
+            }
         }
     }
 

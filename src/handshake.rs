@@ -179,7 +179,7 @@ pub(crate) struct GroupUpdate {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupRemove {
     /// The index of the removed participant
-    removed: u32,
+    pub(crate) removed: u32,
 
     /// New entropy for the tree
     pub(crate) path: DirectPathMessage,
