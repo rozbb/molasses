@@ -344,12 +344,12 @@ mod test {
         fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
             let new_ctx =
                 ctx.set_cipher_suite(self.cipher_suite).set_signature_scheme(self.signature_scheme);
-            self.user_init_key.upcast_crypto_values(&new_ctx);
-            self.welcome_info.upcast_crypto_values(&new_ctx);
-            self.welcome.upcast_crypto_values(&new_ctx);
-            self.add.upcast_crypto_values(&new_ctx);
-            self.update.upcast_crypto_values(&new_ctx);
-            self.remove.upcast_crypto_values(&new_ctx);
+            self.user_init_key.upcast_crypto_values(&new_ctx)?;
+            self.welcome_info.upcast_crypto_values(&new_ctx)?;
+            self.welcome.upcast_crypto_values(&new_ctx)?;
+            self.add.upcast_crypto_values(&new_ctx)?;
+            self.update.upcast_crypto_values(&new_ctx)?;
+            self.remove.upcast_crypto_values(&new_ctx)?;
             Ok(())
         }
     }

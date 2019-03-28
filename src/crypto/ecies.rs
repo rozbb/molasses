@@ -39,7 +39,7 @@ pub(crate) struct EciesCiphertext {
 ///
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with random scalar generation or
 /// sealing the plaintext, an `Error` is returned.
-fn ecies_encrypt(
+pub(crate) fn ecies_encrypt(
     cs: &CipherSuite,
     others_public_key: &DhPublicKey,
     plaintext: Vec<u8>,

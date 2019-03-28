@@ -3,7 +3,7 @@ pub(crate) mod ciphersuite;
 pub(crate) mod dh;
 pub(crate) mod ecies;
 pub(crate) mod hkdf;
-mod rng;
+pub(crate) mod rng;
 pub(crate) mod sig;
 
 #[cfg(test)]

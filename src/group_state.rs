@@ -214,7 +214,7 @@ impl GroupState {
         // ratchet tree."
         let root_node_secret = {
             let root_node = self.tree.get_root_node().expect("tried to update empty tree");
-            root_node.get_node_secret().expect("root node has no secret").to_vec()
+            root_node.get_secret().expect("root node has no secret").to_vec()
         };
         self.update_epoch_secrets(&root_node_secret)?;
 
@@ -278,7 +278,7 @@ impl GroupState {
         // ratchet tree after the second step"
         let update_secret = {
             let root_node = self.tree.get_root_node().expect("tried to update empty tree");
-            root_node.get_node_secret().expect("root node has no secret").to_vec()
+            root_node.get_secret().expect("root node has no secret").to_vec()
         };
 
         // Truncate the roster to the last non-None credential

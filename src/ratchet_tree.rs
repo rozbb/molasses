@@ -2,11 +2,12 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
-        ecies::ecies_decrypt,
+        ecies,
         hkdf,
+        rng::CryptoRng,
     },
     error::Error,
-    handshake::DirectPathMessage,
+    handshake::{DirectPathMessage, DirectPathNodeMessage},
     tree_math,
 };
 
@@ -125,7 +126,7 @@ impl RatchetTreeNode {
     }
 
     /// Returns a reference to the contained node secret. If no secret exists, `None` is returned.
-    pub(crate) fn get_node_secret(&self) -> Option<&[u8]> {
+    pub(crate) fn get_secret(&self) -> Option<&[u8]> {
         match self {
             &RatchetTreeNode::Blank => None,
             &RatchetTreeNode::Filled {
@@ -280,6 +281,68 @@ impl RatchetTree {
         ret
     }
 
+    /// Given a new path secret for the given node, constructs a `DirectPathMessage` for the rest
+    /// of the ratchet tree
+    pub(crate) fn encrypt_path_secret(
+        &self,
+        cs: &'static CipherSuite,
+        my_new_path_secret: &[u8],
+        my_tree_idx: usize,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<DirectPathMessage, Error> {
+        let num_leaves = tree_math::num_leaves_in_tree(self.size());
+        let direct_path = tree_math::node_direct_path(my_tree_idx as usize, num_leaves);
+
+        let mut node_messages = Vec::new();
+
+        // The first node message should be just my public key
+        let my_public_key = self
+            .get(my_tree_idx)
+            .ok_or(Error::TreeError("My tree index isn't in the tree"))?
+            .get_public_key()
+            .ok_or(Error::TreeError("My tree index is blank"))?;
+        node_messages.push(DirectPathNodeMessage {
+            public_key: my_public_key.clone(),
+            node_secrets: Vec::with_capacity(0),
+        });
+
+        // Go up the direct path of my_tree_idx
+        for path_node_idx in direct_path {
+            // For each node in our direct path, we need to encrypt the parent's new node_secret
+            // for the sibling, and also include the parent's public key
+            let parent_path_node_idx = tree_math::node_parent(path_node_idx, num_leaves);
+            let parent_path_node = self.get(parent_path_node_idx).unwrap();
+            let parent_public_key = parent_path_node.get_public_key()
+                .ok_or(Error::TreeError("Non-blank node has a blank parent"))?;
+            let parent_secret = parent_path_node.get_secret()
+                .ok_or(Error::TreeError("Node doesn't know its parent's secret"))?;
+
+            // Encrypt the secret of the current node for everyone in the resolution of the
+            // copath node. We can unwrap() here because self.resolution only returns indices that
+            // are actually in the tree.
+            let mut node_secrets = Vec::new();
+            let copath_node_idx = tree_math::node_sibling(path_node_idx, num_leaves);
+            for res_node in self.resolution(copath_node_idx).iter().map(|&i| self.get(i).unwrap()) {
+                // We can unwrap() here because self.resolution only returns indices of nodes
+                // that are non-blank, by definition of "resolution"
+                let others_public_key = res_node.get_public_key().unwrap();
+                let ciphertext =
+                    ecies::ecies_encrypt(cs, others_public_key, parent_secret.to_vec(), csprng)?;
+                node_secrets.push(ciphertext);
+            }
+
+            // Push the collection to the message list
+            node_messages.push(DirectPathNodeMessage {
+                public_key: parent_public_key.clone(),
+                node_secrets: node_secrets,
+            });
+        }
+
+        Ok(DirectPathMessage {
+            node_messages
+        })
+    }
+
     /// Finds the (unique) ciphertext in the given direct path message that is meant for this
     /// participant and decrypts it. `leaf_idx` is the the index of the creator of `msg`. This
     /// operation clears out all `node_secrets: EciesCiphertext` values contained in `msg`.
@@ -341,7 +404,7 @@ impl RatchetTree {
                 let decryption_key = res_node.get_private_key().unwrap();
 
                 // Finally, decrypt the thing and return the plaintext and ancestor idx
-                let pt = ecies_decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
+                let pt = ecies::ecies_decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
                 return Ok((pt, ancestor_tree_idx));
             }
         }
@@ -349,7 +412,7 @@ impl RatchetTree {
         // Unless we were the encryptor of this message, is impossible not to hit the if-statement
         // inside the above for loop. Self-made updates are not handles here. They are handled
         // during the creation of the GroupUpdate itself.
-        Err(Error::GroupOpError("Tried to decrypt self-made direct path"))
+        Err(Error::TreeError("Tried to decrypt self-made direct path"))
     }
 
     /// Updates the secret of the node at the given index and derives the path secrets, node

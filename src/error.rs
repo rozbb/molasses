@@ -15,6 +15,8 @@ pub enum Error {
     UpcastError(&'static str),
     /// For errors concerning group operations
     GroupOpError(&'static str),
+    /// For errors concerning ratchet tree operations
+    TreeError(&'static str),
     /// For errors concerning invalid data structures
     ValidationError(&'static str),
     /// For when we need randomness and there's none left
@@ -35,6 +37,7 @@ impl std::error::Error for Error {
             Error::EncryptionError(e) => e,
             Error::DhError(e) => e,
             Error::GroupOpError(e) => e,
+            Error::TreeError(e) => e,
             Error::ValidationError(e) => e,
             Error::SignatureError(e) => e,
             Error::KdfError(e) => e,
