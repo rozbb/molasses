@@ -2,8 +2,7 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
-        ecies,
-        hkdf,
+        ecies, hkdf,
         rng::CryptoRng,
     },
     error::Error,
@@ -33,11 +32,9 @@ pub(crate) enum RatchetTreeNode {
 
 impl RatchetTreeNode {
     /// Returns `true` iff this is the `Filled` variant
+    #[rustfmt::skip]
     fn is_filled(&self) -> bool {
-        if let RatchetTreeNode::Filled {
-            ..
-        } = self
-        {
+        if let RatchetTreeNode::Filled { .. } = self {
             true
         } else {
             false
@@ -230,17 +227,22 @@ impl RatchetTree {
         self.nodes[root_idx] = RatchetTreeNode::Blank;
     }
 
-    // TODO: Convince myself of the correctness of this pruning. Why can't this ever produce a
-    // degenerate tree (i.e., a nonempty tree with an even number of nodes)?
-    /// Prunes blank nodes from the right side of the tree until the rightmost node is non-blank
-    pub(crate) fn prune_from_right(&mut self) {
-        let mut last_nonblank_node = None;
-        for (i, entry) in self.nodes.iter().rev().enumerate() {
-            if entry.is_filled() {
-                last_nonblank_node = Some(i);
+    // This always produces a valid tree. To see this, note that truncating to a leaf node when
+    // there are >1 non-blank leaf nodes gives you a vector of odd length. All vectors of odd
+    // length have a unique interpretation as a binary left-balanced tree. And if there are no
+    // non-blank leaf nodes, you get an empty tree.
+    /// Truncates the tree down to the first non-blank leaf node
+    pub(crate) fn truncate_to_last_nonblank(&mut self) {
+        let num_leaves = tree_math::num_leaves_in_tree(self.size());
+
+        let mut last_nonblank_leaf = None;
+        for leaf_idx in tree_math::tree_leaves(num_leaves).rev() {
+            if self.nodes[leaf_idx].is_filled() {
+                last_nonblank_leaf = Some(leaf_idx);
             }
         }
-        match last_nonblank_node {
+
+        match last_nonblank_leaf {
             // If there are no nonempty entries in the roster, clear it
             None => self.nodes.clear(),
             Some(i) => {
@@ -281,23 +283,31 @@ impl RatchetTree {
         ret
     }
 
-    /// Given a new path secret for the given node, constructs a `DirectPathMessage` for the rest
-    /// of the ratchet tree
-    pub(crate) fn encrypt_path_secret(
+    /// Given a node with a known secret, constructs a `DirectPathMessage` containing encrypted
+    /// copies of the appropriately ratcheted secret for the rest of the ratchet tree. See section
+    /// 5.2 in the spec for details.
+    ///
+    /// Requires: `my_leaf_idx` to be a leaf node. Otherwise, any child of ours would be unable to
+    /// decrypt this message.
+    pub(crate) fn encrypt_direct_path_secrets(
         &self,
         cs: &'static CipherSuite,
-        my_new_path_secret: &[u8],
-        my_tree_idx: usize,
+        my_leaf_idx: usize,
         csprng: &mut dyn CryptoRng,
     ) -> Result<DirectPathMessage, Error> {
+        // Check if it's a leaf node
+        if my_leaf_idx % 2 != 0 {
+            return Err(Error::TreeError("Cannot encrypt direct paths of non-leaf nodes"));
+        }
+
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let direct_path = tree_math::node_direct_path(my_tree_idx as usize, num_leaves);
+        let direct_path = tree_math::node_direct_path(my_leaf_idx as usize, num_leaves);
 
         let mut node_messages = Vec::new();
 
         // The first node message should be just my public key
         let my_public_key = self
-            .get(my_tree_idx)
+            .get(my_leaf_idx)
             .ok_or(Error::TreeError("My tree index isn't in the tree"))?
             .get_public_key()
             .ok_or(Error::TreeError("My tree index is blank"))?;
@@ -306,15 +316,17 @@ impl RatchetTree {
             node_secrets: Vec::with_capacity(0),
         });
 
-        // Go up the direct path of my_tree_idx
+        // Go up the direct path of my_leaf_idx
         for path_node_idx in direct_path {
             // For each node in our direct path, we need to encrypt the parent's new node_secret
             // for the sibling, and also include the parent's public key
             let parent_path_node_idx = tree_math::node_parent(path_node_idx, num_leaves);
             let parent_path_node = self.get(parent_path_node_idx).unwrap();
-            let parent_public_key = parent_path_node.get_public_key()
+            let parent_public_key = parent_path_node
+                .get_public_key()
                 .ok_or(Error::TreeError("Non-blank node has a blank parent"))?;
-            let parent_secret = parent_path_node.get_secret()
+            let parent_secret = parent_path_node
+                .get_secret()
                 .ok_or(Error::TreeError("Node doesn't know its parent's secret"))?;
 
             // Encrypt the secret of the current node for everyone in the resolution of the
@@ -322,7 +334,7 @@ impl RatchetTree {
             // are actually in the tree.
             let mut node_secrets = Vec::new();
             let copath_node_idx = tree_math::node_sibling(path_node_idx, num_leaves);
-            for res_node in self.resolution(copath_node_idx).iter().map(|&i| self.get(i).unwrap()) {
+            for res_node in self.resolution(copath_node_idx).iter().map(|&i| &self.nodes[i]) {
                 // We can unwrap() here because self.resolution only returns indices of nodes
                 // that are non-blank, by definition of "resolution"
                 let others_public_key = res_node.get_public_key().unwrap();
@@ -339,18 +351,21 @@ impl RatchetTree {
         }
 
         Ok(DirectPathMessage {
-            node_messages
+            node_messages,
         })
     }
 
     /// Finds the (unique) ciphertext in the given direct path message that is meant for this
-    /// participant and decrypts it. `leaf_idx` is the the index of the creator of `msg`. This
-    /// operation clears out all `node_secrets: EciesCiphertext` values contained in `msg`.
+    /// participant and decrypts it. `sender_tree_idx` is the the index of the creator of `msg`,
+    /// and `my_tree_idx` is the index of the decryptor.
     ///
-    /// Returns: `Ok((pt, idx))` where `pt` is the `Result` of decrypting the found ciphertext
-    /// and `idx` is the tree index of the ancestor for whom the plaintext was encrypted. If no
-    /// decryptable ciphertext exists, returns an `Error::GroupOpError`. If decryption fails,
-    /// returns an `Error::EncryptionError`.
+    /// Requires: `sender_tree_idx` cannot be an ancestor of `my_tree_idx`, nor vice-versa. We
+    /// cannot decrypt messages that violate this.
+    ///
+    /// Returns: `Ok((pt, idx))` where `pt` is the `Result` of decrypting the found ciphertext and
+    /// `idx` is the common ancestor of `sender_tree_idx` and `my_tree_idx`. If no decryptable
+    /// ciphertext exists, returns an `Error::TreeError`. If decryption fails, returns an
+    /// `Error::EncryptionError`.
     pub(crate) fn decrypt_direct_path_message(
         &self,
         cs: &'static CipherSuite,
@@ -359,60 +374,76 @@ impl RatchetTree {
         my_tree_idx: usize,
     ) -> Result<(Vec<u8>, usize), Error> {
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let direct_path = tree_math::node_direct_path(sender_tree_idx as usize, num_leaves);
+        let direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
 
-        // First we have to find which ciphertext is meant for us. This is means finding the
-        // appropriate node in the copath of the creator of the direct path, then finding the
-        // appropriate node in the resolution of that copath node.
-        for (node_msg, path_node_idx) in direct_path_msg.node_messages.iter().zip(direct_path) {
-            // Now see if any of the messages are meant for us
-            let copath_node_idx = tree_math::node_sibling(path_node_idx, num_leaves);
-            // If the copath node is an ancestor of mine, I can decrypt the message. This is the
-            // case precisely once when traversing a direct path.
-            if tree_math::is_ancestor(copath_node_idx, my_tree_idx as usize, num_leaves) {
-                // I am looking for an ancestor in the resolution of this copath node. There is
-                // only one such node. Furthermore, I should already know the private key of the
-                // node that I find. So our strategy is to look for a node with a private key that
-                // we know, then make sure that it is our ancestor.
-                let resolution = self.resolution(copath_node_idx);
+        if sender_tree_idx >= self.size() || my_tree_idx >= self.size() {
+            return Err(Error::TreeError("Input index out of range"));
+        }
 
-                // This value an index into the tree
-                let mut ancestor_tree_idx = None;
-                // This value is an index into the resolution vector
-                let mut ancestor_resolution_idx = None;
+        if tree_math::is_ancestor(sender_tree_idx, my_tree_idx, num_leaves)
+            || tree_math::is_ancestor(my_tree_idx, sender_tree_idx, num_leaves)
+        {
+            return Err(Error::TreeError("Cannot decrypt messages from ancestors or descendants"));
+        }
 
-                // Comb the resolution for a node whose private key we know
-                for (i, res_node_idx) in resolution.into_iter().enumerate() {
-                    let res_node = self.get(res_node_idx).expect("resolution out of bounds");
-                    if res_node.get_private_key().is_some()
-                        && tree_math::is_ancestor(res_node_idx, my_tree_idx as usize, num_leaves)
-                    {
-                        ancestor_tree_idx = Some(res_node_idx);
-                        ancestor_resolution_idx = Some(i);
-                        break;
-                    }
-                }
+        // This is the intermediate node in the direct path whose secret was encrypted for us.
+        let common_ancestor_idx =
+            tree_math::common_ancestor(sender_tree_idx, my_tree_idx, num_leaves);
 
-                let ancestor_tree_idx = ancestor_tree_idx.ok_or(Error::GroupOpError(
-                    "Cannot find node in resolution with known private key",
-                ))?;
+        // This holds the secret of the intermediate node, encrypted for all the nodes in the
+        // resolution of the copath node.
+        let node_msg = {
+            // To get this value, we have to figure out the correct index into node_message
+            let (pos_in_msg_vec, _) =
+                tree_math::node_extended_direct_path(sender_tree_idx, num_leaves)
+                    .enumerate()
+                    .find(|&(_, dp_idx)| dp_idx == common_ancestor_idx)
+                    .expect("common ancestor somehow did not appear in direct path");
+            direct_path_msg
+                .node_messages
+                .get(pos_in_msg_vec)
+                .ok_or(Error::TreeError("Malformed DirectPathMessage"))?
+        };
 
-                // These can't fail because we just did them above
-                let ancestor_resolution_idx = ancestor_resolution_idx.unwrap();
-                let ciphertext_for_me = &node_msg.node_secrets[ancestor_resolution_idx];
-                let res_node = self.get(ancestor_tree_idx).unwrap();
+        // This is the unique acnestor of the receiver that is in the copath of the sender. This is
+        // the one whose resolution is used.
+        let copath_ancestor_idx = {
+            let left = tree_math::node_left_child(common_ancestor_idx);
+            let right = tree_math::node_right_child(common_ancestor_idx, num_leaves);
+            if tree_math::is_ancestor(left, my_tree_idx, num_leaves) {
+                left
+            } else {
+                right
+            }
+        };
+
+        // We're looking for an ancestor in the resolution of this copath node. There is
+        // only one such node. Furthermore, we should already know the private key of the
+        // node that we find. So our strategy is to look for a node with a private key that
+        // we know, then make sure that it is our ancestor.
+        let resolution = self.resolution(copath_ancestor_idx);
+
+        // Comb the resolution for a node whose private key we know
+        for (pos_in_res, res_node_idx) in resolution.into_iter().enumerate() {
+            let res_node = self.get(res_node_idx).expect("resolution out of bounds");
+            if res_node.get_private_key().is_some()
+                && tree_math::is_ancestor(res_node_idx, my_tree_idx, num_leaves)
+            {
+                // We found the ancestor in the resolution. Now get the decryption key and
+                // corresopnding ciphertext
                 let decryption_key = res_node.get_private_key().unwrap();
+                let ciphertext_for_me = node_msg
+                    .node_secrets
+                    .get(pos_in_res)
+                    .ok_or(Error::TreeError("Malformed DirectPathMessage"))?;
 
-                // Finally, decrypt the thing and return the plaintext and ancestor idx
+                // Finally, decrypt the thing and return the plaintext and common ancestor
                 let pt = ecies::ecies_decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
-                return Ok((pt, ancestor_tree_idx));
+                return Ok((pt, common_ancestor_idx));
             }
         }
 
-        // Unless we were the encryptor of this message, is impossible not to hit the if-statement
-        // inside the above for loop. Self-made updates are not handles here. They are handled
-        // during the creation of the GroupUpdate itself.
-        Err(Error::TreeError("Tried to decrypt self-made direct path"))
+        return Err(Error::TreeError("Cannot find node in resolution with known private key"));
     }
 
     /// Updates the secret of the node at the given index and derives the path secrets, node
@@ -466,10 +497,17 @@ impl RatchetTree {
 mod test {
     use super::*;
     use crate::{
-        crypto::dh::{DhPublicKey, DhPublicKeyRaw, DiffieHellman},
+        crypto::{
+            ciphersuite::X25519_SHA256_AES128GCM,
+            dh::{DhPublicKey, DhPublicKeyRaw, DiffieHellman},
+        },
         tls_de::TlsDeserializer,
     };
 
+    use quickcheck::TestResult;
+    use quickcheck_macros::quickcheck;
+    use rand::Rng;
+    use rand_core::SeedableRng;
     use serde::Deserialize;
 
     // The following test vector is from
@@ -514,46 +552,113 @@ mod test {
         cases: Vec<ResolutionCase>,
     }
 
-    fn make_tree_from_int(t: usize, num_nodes: usize) -> RatchetTree {
-        let mut nodes: Vec<RatchetTreeNode> = Vec::new();
-        let mut bit_mask = 0x01;
+    // Test that decrypt_direct_path_message is the inverse of encrypt_direct_path_secrets
+    //#[quickcheck]
+    //fn direct_path_message_correctness(num_leaves: u8, rng_seed: u64) -> TestResult {
+    #[test]
+    fn direct_path_message_correctness() {
+        let num_leaves = 7;
+        let rng_seed = 36;
+        // Turns out this test is super slow
+        if num_leaves > 50 || num_leaves < 2 {
+            return;
+        }
 
-        for _ in 0..num_nodes {
-            if t & bit_mask == 0 {
-                nodes.push(RatchetTreeNode::Blank);
-            } else {
-                // TODO: Make a better way to put dummy values in the tree than invalid DH pubkeys
-                nodes.push(RatchetTreeNode::Filled {
-                    public_key: DhPublicKey::Raw(DhPublicKeyRaw(Vec::new())),
-                    private_key: None,
-                    secret: None,
-                });
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        let num_leaves = num_leaves as usize;
+        let num_nodes = tree_math::num_nodes_in_tree(num_leaves);
+        let root_idx = tree_math::root_idx(num_leaves);
+
+        // Fill a tree with Blanks
+        let mut tree = RatchetTree::new();
+        for _ in 0..num_leaves {
+            tree.add_leaf_node(RatchetTreeNode::Blank);
+        }
+
+        // Fill the tree with deterministic path secrets
+        let cs: &'static CipherSuite = &X25519_SHA256_AES128GCM;
+        for i in 0..num_leaves {
+            let leaf_idx = 2 * i;
+            let initial_path_secret = vec![i as u8; 32];
+            tree.propogate_new_path_secret(cs, initial_path_secret, leaf_idx);
+        }
+
+        // Come up with sender and receiver indices. The sender must be a leaf node, because
+        // encryption function requires it. The receiver must be different from the sender, because
+        // the decryption function requires it. Also the receiver cannot be an ancestor of the
+        // sender, because then it doesn't lie in the copath (and also it would have no need to
+        // decrypt the message, since it knows its own secret)
+        let sender_tree_idx = 2 * rng.gen_range(0, num_leaves);
+        let receiver_tree_idx = loop {
+            let idx = rng.gen_range(0, num_nodes);
+            if idx != sender_tree_idx && !tree_math::is_ancestor(idx, sender_tree_idx, num_leaves) {
+                break idx;
             }
-            bit_mask <<= 1;
-        }
+        };
 
-        RatchetTree {
-            nodes,
-        }
-    }
+        // Encrypt the sender's direct path secrets
+        let direct_path_msg = tree
+            .encrypt_direct_path_secrets(cs, sender_tree_idx, &mut rng)
+            .expect("failed to encrypt direct path secrets");
+        // Decrypt the path secret closest to the receiver
+        let (derived_path_secret, common_ancestor_idx) = tree
+            .decrypt_direct_path_message(cs, &direct_path_msg, sender_tree_idx, receiver_tree_idx)
+            .expect("failed to decrypt direct path secret");
 
-    fn resolution_vec(tree: &RatchetTree, idx: usize) -> Vec<u8> {
-        tree.resolution(idx)
-            .into_iter()
-            .map(|i| {
-                // These had better be small indices
-                if i > core::u8::MAX as usize {
-                    panic!("resolution node indices are too big to fit into a u8");
-                } else {
-                    i as u8
-                }
-            })
-            .collect()
+        // Make sure it really is the common ancestor
+        assert_eq!(
+            common_ancestor_idx,
+            tree_math::common_ancestor(sender_tree_idx, receiver_tree_idx, num_leaves)
+        );
+
+        // The path secret is precisely the secret of the common ancestor of the sender and
+        // receiver.
+        let expected_path_secret = tree.get(common_ancestor_idx).unwrap().get_secret().unwrap();
+        assert_eq!(derived_path_secret, expected_path_secret);
     }
 
     // Tests against the official tree math test vector. See above comment for explanation.
     #[test]
     fn official_resolution_kat() {
+        // Helper function
+        fn u8_resolution(tree: &RatchetTree, idx: usize) -> Vec<u8> {
+            tree.resolution(idx)
+                .into_iter()
+                .map(|i| {
+                    // These had better be small indices
+                    if i > core::u8::MAX as usize {
+                        panic!("resolution node indices are too big to fit into a u8");
+                    } else {
+                        i as u8
+                    }
+                })
+                .collect()
+        }
+
+        // Helper function
+        fn make_tree_from_int(t: usize, num_nodes: usize) -> RatchetTree {
+            let mut nodes: Vec<RatchetTreeNode> = Vec::new();
+            let mut bit_mask = 0x01;
+
+            for _ in 0..num_nodes {
+                if t & bit_mask == 0 {
+                    nodes.push(RatchetTreeNode::Blank);
+                } else {
+                    // TODO: Make a better way to put dummy values in the tree than invalid DH pubkeys
+                    nodes.push(RatchetTreeNode::Filled {
+                        public_key: DhPublicKey::Raw(DhPublicKeyRaw(Vec::new())),
+                        private_key: None,
+                        secret: None,
+                    });
+                }
+                bit_mask <<= 1;
+            }
+
+            RatchetTree {
+                nodes,
+            }
+        }
+
         let mut f = std::fs::File::open("test_vectors/resolution.bin").unwrap();
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = ResolutionTestVectors::deserialize(&mut deserializer).unwrap();
@@ -566,7 +671,7 @@ mod test {
 
             // We compute the resolution of every node in the tree
             for (idx, expected_resolution) in case.0.into_iter().enumerate() {
-                let derived_resolution = resolution_vec(&tree, idx);
+                let derived_resolution = u8_resolution(&tree, idx);
                 assert_eq!(derived_resolution, expected_resolution.0);
             }
         }

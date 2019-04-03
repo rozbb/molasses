@@ -6,7 +6,7 @@
 // Suppose usize is u64. If there are k := 2^(63)+1 leaves, then there are a total of 2(k-1) + 1 =
 // 2(2^(63))+1 = 2^(64)+1 nodes in the tree, which is outside the representable range. So our upper
 // bound is 2^(63) leaves, which gives a tree with 2^(64)-1 nodes.
-const MAX_LEAVES: usize = (std::usize::MAX >> 1) + 1;
+pub(crate) const MAX_LEAVES: usize = (std::usize::MAX >> 1) + 1;
 
 /// Returns `Some(floor(log2(x))` when `x != 0`, and `None` otherwise
 fn log2(x: usize) -> Option<usize> {
@@ -149,35 +149,31 @@ pub(crate) fn node_parent(idx: usize, num_leaves: usize) -> usize {
     }
 }
 
-/// Finds a common ancestor of the given nodes. By convention, we say that the common ancestor of
-/// `a` and `a` is `a`.
+/// Finds the minmal common ancestor of the given nodes. Here, minimal means having the smallest
+/// node level. By convention, we say that the common ancestor of `a` and `a` is `a`.
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or `idx1 >=
 /// num_nodes_in_tree(num_leaves)` or `idx2 >= num_nodes_in_tree(num_leaves)`
 pub(crate) fn common_ancestor(idx1: usize, idx2: usize, num_leaves: usize) -> usize {
-    // We will compute the direct paths of both, truncate one of them so that they start on the
-    // same tree level, and then move up in lock-step until an ancestor is found
+    // We will compute the direct paths of both and find the first location where they begin to
+    // agree. If they never agree, then their common ancestor is the root node
 
-    let idx1_lvl = node_level(idx1);
-    let idx2_lvl = node_level(idx2);
+    // We have to allocate because our implementation of node_direct_path isn't reversible as-is
+    let idx1_dp: Vec<usize> = node_direct_path(idx1, num_leaves).collect();
+    let idx2_dp: Vec<usize> = node_direct_path(idx2, num_leaves).collect();
 
-    // If idx2 is at a higher level than idx1 (i.e., idx2 is closer to the root), then the idx1
-    // direct path has to be bumped up until the levels match
-    let idx1_dp = node_direct_path(idx1, num_leaves).skip(idx2_lvl.saturating_sub(idx1_lvl));
-    // If idx1 is at a higher level than idx2 (i.e., idx1 is closer to the root), then the idx2
-    // direct path has to be bumped up until the levels match
-    let idx2_dp = node_direct_path(idx2, num_leaves).skip(idx1_lvl.saturating_sub(idx2_lvl));
-
-    // Now that they're on the same level, just keep following the two iterators up the tree until
-    // they agree
-    for (ancestor1, ancestor2) in idx1_dp.zip(idx2_dp) {
-        if ancestor1 == ancestor2 {
-            return ancestor1;
+    // We iterate backwards through the direct paths and stop after we find the first place where
+    // they disagree
+    let mut common_ancestor = root_idx(num_leaves);
+    for (&a, &b) in idx1_dp.iter().rev().zip(idx2_dp.iter().rev()) {
+        if a == b {
+            common_ancestor = a;
+        } else {
+            break;
         }
     }
-    // If they never agree, then the common ancestor must be the root node (recall the root node is
-    // not included in direct paths)
-    root_idx(num_leaves)
+
+    common_ancestor
 }
 
 /// Returns whether the node at index `a` is an ancestor of the node at index `b`. By convention,
@@ -186,7 +182,25 @@ pub(crate) fn common_ancestor(idx1: usize, idx2: usize, num_leaves: usize) -> us
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or `idx1 >=
 /// num_nodes_in_tree(num_leaves)` or `idx2 >= num_nodes_in_tree(num_leaves)`
 pub(crate) fn is_ancestor(a: usize, b: usize, num_leaves: usize) -> bool {
-    common_ancestor(a, b, num_leaves) == a
+    let mut curr_idx = b;
+    let root = root_idx(num_leaves);
+
+    // Try to find a along the direct path of b by iteratively moving up the tree. Note that this
+    // doesn't check the root node
+    while curr_idx != root {
+        if curr_idx == a {
+            return true;
+        }
+        curr_idx = node_parent(curr_idx, num_leaves);
+    }
+
+    // If a is the root, then it's everybody's ancestor. Otherwise, we couldn't find a in b's
+    // direct path, so it's not an ancestor
+    if a == root {
+        true
+    } else {
+        false
+    }
 }
 
 /// Computes the index of the sibling of a given node. The sibling of the root is the root.
@@ -213,8 +227,8 @@ pub(crate) fn node_sibling(idx: usize, num_leaves: usize) -> usize {
     }
 }
 
-/// Returns an iterator for direct path of a given node in the order `i_1, i_2, ..., i_n` where
-/// `i_1` is the the given node and `i_n` is a child of the root node.
+/// Returns an iterator for the path up the tree `i_1, i_2, ..., i_n` where `i_1` is the the given
+/// starting node and `i_n` is a child of the root node.
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
@@ -231,7 +245,22 @@ pub(crate) fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iter
     }
 }
 
-/// Returns a direct path from a starting node, given the number of leaves and the starting index
+/// Returns an iterator for the path up the tree `i_1, i_2, ..., i_n` where `i_1` is the the given
+/// starting node and `i_n` is the root node. This is called "extended" because direct paths do not
+/// contain the root node. The extended direct path of a singleton tree is just
+/// 1 node long.
+///
+/// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
+/// `start_idx >= num_nodes_in_tree(num_leaves)`
+pub(crate) fn node_extended_direct_path(
+    start_idx: usize,
+    num_leaves: usize,
+) -> impl Iterator<Item = usize> {
+    let root = std::iter::once(root_idx(num_leaves));
+    node_direct_path(start_idx, num_leaves).chain(root)
+}
+
+/// An iterator for direct paths
 struct DirectPathIter {
     num_leaves: usize,
     successive_parent: usize,
@@ -301,10 +330,10 @@ fn tree_frontier(num_leaves: usize) -> Vec<usize> {
 /// Returns a list of indices for leaf nodes in a tree of given size
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES`
-fn tree_leaves(num_leaves: usize) -> Vec<usize> {
+pub(crate) fn tree_leaves(num_leaves: usize) -> impl DoubleEndedIterator<Item = usize> {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     // The leaves are just all the even indices
-    (0..num_leaves).map(|i| 2 * i).collect()
+    (0..num_leaves).map(|i| 2 * i)
 }
 
 #[cfg(test)]
@@ -315,6 +344,7 @@ mod test {
     use quickcheck::TestResult;
     use quickcheck_macros::quickcheck;
     use rand::Rng;
+    use rand_core::SeedableRng;
     use serde::de::Deserialize;
 
     #[test]
@@ -365,9 +395,10 @@ mod test {
         TestResult::from_bool(n == num_nodes)
     }
 
-    // Checks correctness of relationships in the tree (e.g., the parent of my child is me)
+    // Checks correctness of immediate relationships in the tree (for example, the parent of my
+    // child is me)
     #[quickcheck]
-    fn tree_relations_correctness(num_leaves: usize) {
+    fn tree_immediate_family_correctness(num_leaves: usize, rng_seed: u64) {
         if num_leaves == 0 || num_leaves > MAX_LEAVES {
             // This is an invalid input. Do nothing.
             return;
@@ -377,7 +408,7 @@ mod test {
 
         // This is our starting node
         let me: usize = {
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
             rng.gen_range(0, num_nodes)
         };
         let my_sibling = node_sibling(me, num_leaves);
@@ -418,6 +449,35 @@ mod test {
             assert_eq!(node_parent(my_left_child, num_leaves), me);
             assert_eq!(node_parent(my_right_child, num_leaves), me);
         }
+    }
+
+    // Checks that common_ancestor returns a minimal common ancestor
+    #[quickcheck]
+    fn ancestry_correctness(num_leaves: usize, rng_seed: u64) {
+        // We only care about valid trees with at least 2 nodes
+        if num_leaves <= 1 || num_leaves > MAX_LEAVES {
+            return;
+        }
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        let num_nodes = num_nodes_in_tree(num_leaves);
+
+        // The two nodes we want to test. This test is for cases where idx1 != idx2
+        let idx1 = rng.gen_range(0, num_nodes);
+        let idx2 = loop {
+            let i = rng.gen_range(0, num_nodes);
+            if i != idx1 {
+                break i;
+            }
+        };
+
+        let ancestor = common_ancestor(idx1, idx2, num_leaves);
+        let left = node_left_child(ancestor);
+        let right = node_right_child(ancestor, num_leaves);
+
+        // The child of a common ancestor should not be an ancestor to both
+        assert!(!(is_ancestor(left, idx1, num_leaves) && is_ancestor(left, idx2, num_leaves)));
+        assert!(!(is_ancestor(right, idx1, num_leaves) && is_ancestor(right, idx2, num_leaves)));
     }
 
     // Tests that common_ancestor(a, b, num_leaves) always equals common_ancestor(b, a, num_leaves)
@@ -618,6 +678,10 @@ mod test {
         assert_eq!(common_ancestor(7, 8, num_leaves), 7);
 
         assert_eq!(common_ancestor(8, 8, num_leaves), 8);
+
+        // Regression tests
+        assert!(is_ancestor(11, 12, 7));
+        assert_eq!(common_ancestor(12, 10, 7), 11);
     }
 
     // TODO: Add Panic tests

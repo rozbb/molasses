@@ -182,9 +182,9 @@ impl GroupState {
 
     /// Converts an index into the participant roster to an index to the corresponding leaf node of
     /// the ratchet tree
-    fn roster_index_to_tree_index(signer_index: u32) -> u32 {
+    fn roster_index_to_tree_index(signer_index: u32) -> usize {
         // This is easy. The nth leaf node is at position 2n
-        signer_index.checked_mul(2).expect("roster/tree size invariant violated")
+        signer_index.checked_mul(2).expect("roster/tree size invariant violated") as usize
     }
 
     /// Performs and validates an Update operation on the `GroupState`.
@@ -192,7 +192,7 @@ impl GroupState {
     fn process_update_op(
         &mut self,
         update: &GroupUpdate,
-        sender_tree_idx: u32,
+        sender_tree_idx: usize,
     ) -> Result<(), Error> {
         // We do three things: compute the new ratchet tree, compute the new transcript hash, and
         // compute the new epoch secrets. We shove all these new values into a delta. To validate
@@ -201,14 +201,16 @@ impl GroupState {
 
         // Decrypt the path secret from the GroupUpdate and propogate it through our tree
         // Recall that roster_index is just another (IMO clearer) name for signer_index
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index);
+        let num_leaves = tree_math::num_leaves_in_tree(self.tree.size());
+        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index) as usize;
         let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
             self.cs,
             &update.path,
-            sender_tree_idx as usize,
-            my_tree_idx as usize,
+            sender_tree_idx,
+            my_tree_idx,
         )?;
-        self.tree.propogate_new_path_secret(self.cs, path_secret, ancestor_idx)?;
+        let common_ancestor = tree_math::common_ancestor(sender_tree_idx, my_tree_idx, num_leaves);
+        self.tree.propogate_new_path_secret(self.cs, path_secret, common_ancestor)?;
 
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree."
@@ -224,8 +226,7 @@ impl GroupState {
 
         // Make the tree we're validating immutable
         let new_tree = &self.tree;
-        let num_leaves = tree_math::num_leaves_in_tree(new_tree.size());
-        let direct_path = tree_math::node_direct_path(sender_tree_idx as usize, num_leaves);
+        let direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
 
         // Verify that the pubkeys in the message agree with our newly-derived pubkeys
         for (node_msg, path_node_idx) in update.path.node_messages.iter().zip(direct_path) {
@@ -249,7 +250,7 @@ impl GroupState {
     fn process_remove_op(
         &mut self,
         remove: &GroupRemove,
-        sender_tree_idx: u32,
+        sender_tree_idx: usize,
     ) -> Result<(), Error> {
         // * Update the roster by setting the credential in the removed slot to the null optional
         //   value
@@ -269,8 +270,8 @@ impl GroupState {
         let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
             self.cs,
             &remove.path,
-            sender_tree_idx as usize,
-            my_tree_idx as usize,
+            sender_tree_idx,
+            my_tree_idx,
         )?;
         self.tree.propogate_new_path_secret(self.cs, path_secret, ancestor_idx)?;
 
@@ -299,7 +300,7 @@ impl GroupState {
         }
 
         // Truncate the tree in a similar fashion
-        self.tree.prune_from_right();
+        self.tree.truncate_to_last_nonblank();
 
         // Blank out the direct path of remove_idx
         self.tree.propogate_blank(remove_idx);
