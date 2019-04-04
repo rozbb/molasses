@@ -89,7 +89,6 @@ mod test_utils {
         error::Error,
         group_state::{EpochSecrets, GroupState},
         ratchet_tree::RatchetTree,
-        upcast::CryptoUpcast,
     };
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState

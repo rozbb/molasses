@@ -408,7 +408,7 @@ mod test {
         let mut cursor = original_bytes.as_slice();
         let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
         let test_vec = {
-            let mut raw = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
+            let raw = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
             // We can't do the upcasting here. The documentation lied when it said that
             // UserInitKeys are validly signed. They are [0xd6; 32], which is not a valid Ed25519
             // signature. So skip this step and call it a mission success.

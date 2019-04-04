@@ -490,7 +490,8 @@ mod test {
         let idx2 = indices[1];
         let num_leaves = indices[2];
 
-        if num_leaves >= MAX_LEAVES {
+        // idx2 has to index into the tree, and num_leaves can't be too big
+        if idx2 == num_leaves || num_leaves >= MAX_LEAVES {
             return;
         }
 

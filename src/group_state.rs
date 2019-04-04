@@ -203,13 +203,12 @@ impl GroupState {
         // Recall that roster_index is just another (IMO clearer) name for signer_index
         let num_leaves = tree_math::num_leaves_in_tree(self.tree.size());
         let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index) as usize;
-        let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
+        let (path_secret, common_ancestor) = self.tree.decrypt_direct_path_message(
             self.cs,
             &update.path,
             sender_tree_idx,
             my_tree_idx,
         )?;
-        let common_ancestor = tree_math::common_ancestor(sender_tree_idx, my_tree_idx, num_leaves);
         self.tree.propogate_new_path_secret(self.cs, path_secret, common_ancestor)?;
 
         // "The update secret resulting from this change is the secret for the root node of the
@@ -238,7 +237,7 @@ impl GroupState {
                 .ok_or(Error::GroupOpError("Node on updated path has no public key"))?;
 
             if expected_public_key.as_bytes() != received_public_key.as_bytes() {
-                return Err(Error::GroupOpError("Inconsistent public keys in Update message"));
+                return Err(Error::ValidationError("Inconsistent public keys in Update message"));
             }
         }
 
@@ -359,7 +358,8 @@ impl GroupState {
 
         // The public key we associate to the new participant is the one that corresponds to our
         // current ciphersuite. These two lists must be the same length, because this property is
-        // checked in validate() above
+        // checked in validate() above. Furthermore, all ciphersuites in add.init_key.cipher_suites
+        // are unique, because this property is also checked in validate() above.
         let mut public_key = None;
         for (cs, key) in cipher_suites.iter().zip(init_keys.iter()) {
             if cs == &self.cs {

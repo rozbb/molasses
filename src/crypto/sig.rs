@@ -244,7 +244,7 @@ impl SignatureScheme for DummyEcdsaP256 {
         &self,
         _public_key: &SigPublicKey,
         _msg: &[u8],
-        sig: &Signature,
+        _sig: &Signature,
     ) -> Result<(), Error> {
         unimplemented!()
     }

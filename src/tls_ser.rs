@@ -522,8 +522,6 @@ impl<'a> serde::ser::SerializeStructVariant for &'a mut TlsSerializer {
 pub(crate) mod test {
     use super::*;
 
-    use serde::de::Deserialize;
-
     // I'm bad at naming things. These are just structs that I'm using to test (de)serialization
     // though, so whatever.
     // We're making some of these pub(crate), because tls_de will use these data structures for

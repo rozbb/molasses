@@ -374,7 +374,6 @@ impl RatchetTree {
         my_tree_idx: usize,
     ) -> Result<(Vec<u8>, usize), Error> {
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
 
         if sender_tree_idx >= self.size() || my_tree_idx >= self.size() {
             return Err(Error::TreeError("Input index out of range"));
@@ -504,7 +503,6 @@ mod test {
         tls_de::TlsDeserializer,
     };
 
-    use quickcheck::TestResult;
     use quickcheck_macros::quickcheck;
     use rand::Rng;
     use rand_core::SeedableRng;
@@ -567,7 +565,6 @@ mod test {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         let num_leaves = num_leaves as usize;
         let num_nodes = tree_math::num_nodes_in_tree(num_leaves);
-        let root_idx = tree_math::root_idx(num_leaves);
 
         // Fill a tree with Blanks
         let mut tree = RatchetTree::new();
