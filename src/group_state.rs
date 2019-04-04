@@ -211,6 +211,21 @@ impl GroupState {
         )?;
         self.tree.propogate_new_path_secret(self.cs, path_secret, common_ancestor)?;
 
+        // Update all the public keys of the nodes in the direct path that are below our common
+        // ancestor, i.e., all the ones whose secret we don't know
+        let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
+        for (dp_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
+            if dp_node_idx == common_ancestor {
+                // We reached the node whose secret we do know
+                break;
+            } else {
+                // This get_mut shouldn't fail. The bounds of sender_tree_idx are checked in
+                // process_handshake
+                let mut node = self.tree.get_mut(dp_node_idx).expect("bad direct path node");
+                node.update_public_key(node_msg.public_key.clone());
+            }
+        }
+
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree."
         let root_node_secret = {
