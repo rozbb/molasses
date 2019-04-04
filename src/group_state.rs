@@ -129,13 +129,13 @@ impl GroupState {
 
     /// Increments the epoch counter by 1
     ///
-    /// Returns: An `Error::GroupOpError` if it's at its max
+    /// Returns: An `Error::ValidationError` if it's at its max
     #[must_use]
     fn update_epoch(&mut self) -> Result<(), Error> {
         let new_epoch = self
             .epoch
             .checked_add(1)
-            .ok_or(Error::GroupOpError("Cannot increment epoch past its maximum"))?;
+            .ok_or(Error::ValidationError("Cannot increment epoch past its maximum"))?;
         self.epoch = new_epoch;
 
         Ok(())
@@ -214,14 +214,14 @@ impl GroupState {
         // Update all the public keys of the nodes in the direct path that are below our common
         // ancestor, i.e., all the ones whose secret we don't know
         let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
-        for (dp_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
-            if dp_node_idx == common_ancestor {
+        for (path_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
+            if path_node_idx == common_ancestor {
                 // We reached the node whose secret we do know
                 break;
             } else {
                 // This get_mut shouldn't fail. The bounds of sender_tree_idx are checked in
                 // process_handshake
-                let mut node = self.tree.get_mut(dp_node_idx).expect("bad direct path node");
+                let mut node = self.tree.get_mut(path_node_idx).expect("bad direct path node");
                 node.update_public_key(node_msg.public_key.clone());
             }
         }
@@ -240,16 +240,16 @@ impl GroupState {
 
         // Make the tree we're validating immutable
         let new_tree = &self.tree;
-        let direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
+        let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
 
         // Verify that the pubkeys in the message agree with our newly-derived pubkeys
-        for (node_msg, path_node_idx) in update.path.node_messages.iter().zip(direct_path) {
+        for (path_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
             let received_public_key = &node_msg.public_key;
             let expected_public_key = new_tree
                 .get(path_node_idx)
-                .ok_or(Error::GroupOpError("Unexpected out-of-bounds path index"))?
+                .ok_or(Error::ValidationError("Unexpected out-of-bounds path index"))?
                 .get_public_key()
-                .ok_or(Error::GroupOpError("Node on updated path has no public key"))?;
+                .ok_or(Error::ValidationError("Node on updated path has no public key"))?;
 
             if expected_public_key.as_bytes() != received_public_key.as_bytes() {
                 return Err(Error::ValidationError("Inconsistent public keys in Update message"));
@@ -349,7 +349,7 @@ impl GroupState {
 
         let new_index = add.index as usize;
         if new_index > self.tree.size() {
-            return Err(Error::GroupOpError("Invalid insertion index in Add operation"));
+            return Err(Error::ValidationError("Invalid insertion index in Add operation"));
         }
 
         // Check the WelcomeInfo hash
@@ -358,7 +358,7 @@ impl GroupState {
             ring::digest::digest(self.cs.hash_alg, &serialized)
         };
         if my_prior_welcome_info_hash.as_ref() != add.welcome_info_hash.as_slice() {
-            return Err(Error::GroupOpError("Invalid WelcomeInfo hash in Add operation"));
+            return Err(Error::ValidationError("Invalid WelcomeInfo hash in Add operation"));
         }
 
         // Verify the UserInitKey's signature, then validate its contents
@@ -381,8 +381,9 @@ impl GroupState {
                 public_key = Some(key)
             }
         }
-        let public_key = public_key
-            .ok_or(Error::GroupOpError("UserInitKey has no public keys for group's ciphersuite"))?;
+        let public_key = public_key.ok_or(Error::ValidationError(
+            "UserInitKey has no public keys for group's ciphersuite",
+        ))?;
         let new_node = RatchetTreeNode::Filled {
             public_key: public_key.clone(),
             private_key: None,
@@ -401,7 +402,7 @@ impl GroupState {
                 ..
             } = node_to_overwrite
             {
-                return Err(Error::GroupOpError("Add tried to overwrite non-blank node"));
+                return Err(Error::ValidationError("Add tried to overwrite non-blank node"));
             } else {
                 *node_to_overwrite = new_node;
             }
@@ -432,17 +433,21 @@ impl GroupState {
     #[must_use]
     pub(crate) fn process_handshake(&mut self, handshake: &Handshake) -> Result<(), Error> {
         if handshake.prior_epoch != self.epoch {
-            return Err(Error::GroupOpError("Handshake's prior epoch isn't the current epoch"));
+            return Err(Error::ValidationError("Handshake's prior epoch isn't the current epoch"));
         }
 
         let sender_tree_idx = GroupState::roster_index_to_tree_index(handshake.signer_index);
+        if sender_tree_idx >= self.tree.size() {
+            return Err(Error::ValidationError("Handshake sender tree index is out of range"));
+        }
+
         let sender_credential = self
             .roster
             .get(handshake.signer_index as usize)
-            .ok_or(Error::GroupOpError("Signer index is out of bounds"))?;
+            .ok_or(Error::ValidationError("Signer index is out of bounds"))?;
         let sender_public_key = sender_credential
             .as_ref()
-            .ok_or(Error::GroupOpError("Credential at signer's index is empty"))?
+            .ok_or(Error::ValidationError("Credential at signer's index is empty"))?
             .get_public_key();
 
         // Make a preliminary new state with updated transcript_hash and epoch. The rest of the
