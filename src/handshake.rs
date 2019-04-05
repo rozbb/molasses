@@ -2,7 +2,6 @@ use crate::{
     credential::Credential,
     crypto::{ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, sig::Signature},
     error::Error,
-    group_state::GroupState,
 };
 
 // uint8 ProtocolVersion;
@@ -215,39 +214,6 @@ pub(crate) struct Handshake {
     /// `Handshake.confirmation = HMAC(confirmation_key, confirmation_data)`
     #[serde(rename = "confirmation__bound_u8")]
     pub(crate) confirmation: Vec<u8>,
-}
-
-impl Handshake {
-    /// Creates a `Handshake` message, given a ciphersuite, group state, and group operation
-    fn from_group_op(
-        cs: &'static CipherSuite,
-        state: &GroupState,
-        op: GroupOperation,
-    ) -> Handshake {
-        // signature = Sign(identity_key, GroupState.transcript_hash)
-        let signature = cs.sig_impl.sign(&state.identity_key, &state.transcript_hash);
-
-        // confirmation = HMAC(confirmation_key, confirmation_data)
-        // where confirmation_data = GroupState.transcript_hash || Handshake.signature
-        let confirmation = {
-            let confirmation_key =
-                ring::hmac::SigningKey::new(cs.hash_alg, &state.epoch_secrets.confirmation_key);
-
-            let mut ctx = ring::hmac::SigningContext::with_key(&confirmation_key);
-            ctx.update(&state.transcript_hash);
-            ctx.update(&signature.to_bytes());
-
-            ctx.sign()
-        };
-
-        Handshake {
-            prior_epoch: state.epoch,
-            operation: op,
-            signer_index: state.roster_index,
-            signature: signature,
-            confirmation: confirmation.as_ref().to_vec(),
-        }
-    }
 }
 
 #[cfg(test)]

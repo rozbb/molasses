@@ -84,11 +84,8 @@ pub(crate) use test_utils::*;
 #[cfg(test)]
 mod test_utils {
     use crate::{
-        credential::Credential,
-        crypto::ciphersuite::X25519_SHA256_AES128GCM,
-        error::Error,
-        group_state::{EpochSecrets, GroupState},
-        ratchet_tree::RatchetTree,
+        credential::Credential, crypto::ciphersuite::X25519_SHA256_AES128GCM, error::Error,
+        group_state::GroupState, ratchet_tree::RatchetTree,
     };
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
@@ -127,11 +124,7 @@ mod test_utils {
             tree: tgs.tree,
             transcript_hash: tgs.transcript_hash,
             roster_index: 0,
-            epoch_secrets: EpochSecrets {
-                init_secret: Vec::new(),
-                application_secret: Vec::new(),
-                confirmation_key: Vec::new(),
-            },
+            init_secret: Vec::new(),
         }
     }
 }
