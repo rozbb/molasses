@@ -30,8 +30,8 @@ pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
     pub(crate) ephemeral_public_key: DhPublicKey,
     /// The payload
-    // opaque ciphertext<0..2^24-1>;
-    #[serde(rename = "ciphertext__bound_u24")]
+    // opaque ciphertext<0..2^32-1>;
+    #[serde(rename = "ciphertext__bound_u32")]
     ciphertext: Vec<u8>,
 }
 
