@@ -1,7 +1,11 @@
 use crate::{
     credential::Credential,
-    crypto::{ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, sig::Signature},
+    crypto::{
+        ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, rng::CryptoRng,
+        sig::Signature,
+    },
     error::Error,
+    group_state::GroupState,
 };
 
 // uint8 ProtocolVersion;
@@ -172,6 +176,24 @@ pub(crate) struct GroupAdd {
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupUpdate {
     pub(crate) path: DirectPathMessage,
+}
+
+impl GroupUpdate {
+    /// Returns a new `GroupUpdate` object representing the operation that updates the node secret
+    /// of this user's leaf to `new_node_secret`
+    fn new(
+        state: &GroupState,
+        new_node_secret: Vec<u8>,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<GroupUpdate, Error> {
+        let cs = state.cs;
+        let tree_idx = GroupState::roster_index_to_tree_index(state.roster_index) as usize;
+        let direct_path_msg = state.tree.encrypt_direct_path_secrets(cs, tree_idx, csprng)?;
+
+        Ok(GroupUpdate {
+            path: direct_path_msg,
+        })
+    }
 }
 
 /// Operation to remove a partcipant from the group

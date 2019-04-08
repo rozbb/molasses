@@ -187,7 +187,7 @@ impl GroupState {
 
     /// Converts an index into the participant roster to an index to the corresponding leaf node of
     /// the ratchet tree
-    fn roster_index_to_tree_index(signer_index: u32) -> usize {
+    pub(crate) fn roster_index_to_tree_index(signer_index: u32) -> usize {
         // This is easy. The nth leaf node is at position 2n
         signer_index.checked_mul(2).expect("roster/tree size invariant violated") as usize
     }
