@@ -608,13 +608,55 @@ pub(crate) struct WelcomeInfo {
 #[cfg(test)]
 mod test {
     use crate::{
-        crypto::ciphersuite::CipherSuite,
-        group_state::UpdateSecret,
+        credential::Credential,
+        crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        error::Error,
+        group_state::{GroupState, UpdateSecret},
+        ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
-        utils::{group_from_test_group, TestGroupState},
     };
 
     use serde::de::Deserialize;
+
+    // This is all the serializable bits of a GroupState. We have this separate because GroupState
+    // is only ever meant to be serialized. The fields in it that are for us and not for
+    // serialization require a Default instance in order for GroupState to impl Deserialize. Since
+    // I don't think that's a good idea, I'll just initialize all those things to 0 myself. See
+    // group_from_test_group.
+    #[derive(Debug, Deserialize)]
+    pub(crate) struct TestGroupState {
+        #[serde(rename = "group_id__bound_u8")]
+        group_id: Vec<u8>,
+        epoch: u32,
+        #[serde(rename = "roster__bound_u32")]
+        roster: Vec<Option<Credential>>,
+        tree: RatchetTree,
+        #[serde(rename = "transcript_hash__bound_u8")]
+        pub(crate) transcript_hash: Vec<u8>,
+    }
+
+    impl crate::upcast::CryptoUpcast for TestGroupState {
+        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
+            self.roster.upcast_crypto_values(ctx)
+        }
+    }
+
+    // Makes a mostly empty GroupState from a recently-deserialized TestGroupState
+    pub(crate) fn group_from_test_group(tgs: TestGroupState) -> GroupState {
+        let cs = &X25519_SHA256_AES128GCM;
+        GroupState {
+            cs: cs,
+            protocol_version: 0,
+            identity_key: cs.sig_impl.secret_key_from_bytes(&[0u8; 32]).unwrap(),
+            group_id: tgs.group_id,
+            epoch: tgs.epoch,
+            roster: tgs.roster,
+            tree: tgs.tree,
+            transcript_hash: tgs.transcript_hash,
+            roster_index: 0,
+            init_secret: Vec::new(),
+        }
+    }
 
     // The following test vector is from
     // https://github.com/mlswg/mls-implementations/tree/master/test_vectors
