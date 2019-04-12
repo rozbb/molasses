@@ -12,21 +12,10 @@ const X25519_SCALAR_SIZE: usize = 32;
 /// An enum of possible types for a private DH value, depending on the underlying algorithm. In EC
 /// terminology, this is a scalar in the base field. In finite-field terminology, this is an
 /// exponent.
+#[derive(Clone)]
 pub(crate) enum DhPrivateKey {
     /// A scalar value in Curve25519
     X25519PrivateKey(x25519_dalek::StaticSecret),
-}
-
-// TODO: Remove this hack once StaticSecret becomes cloneable
-impl Clone for DhPrivateKey {
-    fn clone(&self) -> DhPrivateKey {
-        match &self {
-            DhPrivateKey::X25519PrivateKey(ref secret) => {
-                let copy = x25519_dalek::StaticSecret::from(secret.to_bytes());
-                DhPrivateKey::X25519PrivateKey(copy)
-            }
-        }
-    }
 }
 
 impl core::fmt::Debug for DhPrivateKey {

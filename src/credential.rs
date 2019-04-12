@@ -2,6 +2,9 @@ use crate::crypto::sig::{SigPublicKey, SignatureScheme};
 
 // TODO: Decide whether we check the size on the lower end while (de)serializing
 
+/// A `Roster`, as it appears in a `GroupState`, is a list of optional `Credential`s
+pub(crate) type Roster = Vec<Option<Credential>>;
+
 // opaque cert_data<1..2^24-1>;
 /// A bunch of bytes representing an X.509 certificate. This currently doesn't do anything.
 #[derive(Clone, Debug, Deserialize, Serialize)]

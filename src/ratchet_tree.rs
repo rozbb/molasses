@@ -551,12 +551,8 @@ mod test {
     }
 
     // Test that decrypt_direct_path_message is the inverse of encrypt_direct_path_secrets
-    //#[quickcheck]
-    //fn direct_path_message_correctness(num_leaves: u8, rng_seed: u64) -> TestResult {
-    #[test]
-    fn direct_path_message_correctness() {
-        let num_leaves = 7;
-        let rng_seed = 36;
+    #[quickcheck]
+    fn direct_path_message_correctness(num_leaves: u8, rng_seed: u64) {
         // Turns out this test is super slow
         if num_leaves > 50 || num_leaves < 2 {
             return;

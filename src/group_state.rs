@@ -1,5 +1,5 @@
 use crate::{
-    credential::{Credential, Identity},
+    credential::{Credential, Identity, Roster},
     crypto::{ciphersuite::CipherSuite, hkdf, sig::SigSecretKey},
     error::Error,
     handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion},
@@ -46,7 +46,7 @@ pub(crate) struct GroupState {
     /// Contains credentials for the occupied slots in the tree, including the identity and
     /// signature public key for the holder of the slot
     #[serde(rename = "roster__bound_u32")]
-    pub(crate) roster: Vec<Option<Credential>>,
+    pub(crate) roster: Roster,
 
     // optional<PublicKey> tree<1..2^32-1>;
     /// The tree field contains the public keys corresponding to the nodes of the ratchet tree for
@@ -478,6 +478,7 @@ impl GroupState {
             GroupOperation::Init(_) => unimplemented!(),
         };
 
+        // TODO: Use application_secret for application key schedule
         let (application_secret, confirmation_key_bytes) =
             new_state.update_epoch_secrets(&update_secret)?;
 
@@ -516,7 +517,10 @@ impl GroupState {
     }
 
     /// Creates a `Handshake` message by applying the given group operation to the current state
-    fn create_handshake(&mut self, operation: GroupOperation) -> Result<Handshake, Error> {
+    pub(crate) fn create_handshake(
+        &mut self,
+        operation: GroupOperation,
+    ) -> Result<Handshake, Error> {
         // First things to do are update transcript hash and increment epoch
         self.update_transcript_hash(&operation)?;
         self.update_epoch()?;
@@ -538,6 +542,7 @@ impl GroupState {
             GroupOperation::Init(_) => unimplemented!(),
         };
 
+        // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
         let (application_secret, confirmation_key_bytes) =
             self.update_epoch_secrets(&update_secret)?;
@@ -587,7 +592,7 @@ pub(crate) struct WelcomeInfo {
     /// Contains credentials for the occupied slots in the tree, including the identity and
     /// signature public key for the holder of the slot
     #[serde(rename = "roster__bound_u32")]
-    pub(crate) roster: Vec<Option<Credential>>,
+    pub(crate) roster: Roster,
 
     // optional<PublicKey> tree<1..2^32-1>;
     /// The tree field contains the public keys corresponding to the nodes of the ratchet tree for
@@ -608,7 +613,7 @@ pub(crate) struct WelcomeInfo {
 #[cfg(test)]
 mod test {
     use crate::{
-        credential::Credential,
+        credential::{Credential, Roster},
         crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         error::Error,
         group_state::{GroupState, UpdateSecret},
@@ -629,7 +634,7 @@ mod test {
         group_id: Vec<u8>,
         epoch: u32,
         #[serde(rename = "roster__bound_u32")]
-        roster: Vec<Option<Credential>>,
+        roster: Roster,
         tree: RatchetTree,
         #[serde(rename = "transcript_hash__bound_u8")]
         pub(crate) transcript_hash: Vec<u8>,

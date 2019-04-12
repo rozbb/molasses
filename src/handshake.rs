@@ -248,12 +248,51 @@ mod test {
         },
         error::Error,
         group_state::WelcomeInfo,
+        handshake::GroupOperation,
         tls_de::TlsDeserializer,
         upcast::CryptoUpcast,
+        utils::test_utils,
     };
 
-    use serde::Deserialize;
     use std::io::Read;
+
+    use quickcheck_macros::quickcheck;
+    use rand::Rng;
+    use rand_core::{RngCore, SeedableRng};
+    use serde::Deserialize;
+
+    //#[quickcheck]
+    //fn update_correctness(rng_seed: u64) {
+    #[test]
+    fn update_correctness() {
+        let rng_seed = 0;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        // Make a starting group
+        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
+
+        // Make a copy of this group, but from another perspective. That is, we want the same group
+        // but with a different roster index
+        let new_index = loop {
+            let idx = rng.gen_range(0, group_state1.roster.len());
+            if idx != group_state1.roster_index as usize {
+                assert!(idx <= core::u32::MAX as usize);
+                break idx as u32;
+            }
+        };
+        let group_state2 = test_utils::change_self_index(&group_state1, &identity_keys, new_index);
+
+        let new_node_secret = {
+            let mut buf = [0u8; 16];
+            rng.fill_bytes(&mut buf);
+            buf.to_vec()
+        };
+        eprintln!("Making Update...");
+        let update = GroupUpdate::new(&group_state1, new_node_secret, &mut rng).unwrap();
+        eprintln!("Making GroupOperation...");
+        let update_op = GroupOperation::Update(update);
+        eprintln!("Making Handshake...");
+        let handshake = group_state1.create_handshake(update_op).unwrap();
+    }
 
     // File: messages.bin
     //
@@ -387,16 +426,13 @@ mod test {
     // being reserialized
     #[test]
     fn official_message_parsing_kat() {
-        // Read in the input
+        // Read in and deserialize the input
         let mut original_bytes = Vec::new();
         let mut f = std::fs::File::open("test_vectors/messages.bin").unwrap();
-        f.read_to_end(&mut original_bytes);
-
-        // Deserialize the input
-        let mut cursor = original_bytes.as_slice();
-        let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
+        let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = {
             let raw = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
+            //println!("{:#x?}", raw);
             // We can't do the upcasting here. The documentation lied when it said that
             // UserInitKeys are validly signed. They are [0xd6; 32], which is not a valid Ed25519
             // signature. So skip this step and call it a mission success.
