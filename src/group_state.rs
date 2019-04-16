@@ -1,22 +1,40 @@
 use crate::{
     credential::{Credential, Identity, Roster},
-    crypto::{ciphersuite::CipherSuite, hkdf, sig::SigSecretKey},
+    crypto::{ciphersuite::CipherSuite, hkdf, rng::CryptoRng, sig::SigSecretKey},
     error::Error,
     handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion},
-    ratchet_tree::{RatchetTree, RatchetTreeNode},
-    tree_math,
+    ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
+    tls_ser, tree_math,
 };
 
 use clear_on_drop::ClearOnDrop;
 
 /// This is called the `application_secret` in the MLS key schedule (section 5.9)
-struct ApplicationSecret(ClearOnDrop<Vec<u8>>);
+pub(crate) struct ApplicationSecret(ClearOnDrop<Vec<u8>>);
+
+impl ApplicationSecret {
+    fn new(v: Vec<u8>) -> ApplicationSecret {
+        ApplicationSecret(ClearOnDrop::new(v))
+    }
+}
 
 /// This is called the `confirmation_key` in the MLS key schedule (section 5.9)
-struct ConfirmationKey(ClearOnDrop<Vec<u8>>);
+pub(crate) struct ConfirmationKey(ClearOnDrop<Vec<u8>>);
+
+impl ConfirmationKey {
+    fn new(v: Vec<u8>) -> ConfirmationKey {
+        ConfirmationKey(ClearOnDrop::new(v))
+    }
+}
 
 /// This is called the `update_secret` in the MLS key schedule (section 5.9)
-struct UpdateSecret(Vec<u8>);
+pub(crate) struct UpdateSecret(ClearOnDrop<Vec<u8>>);
+
+impl UpdateSecret {
+    fn new(v: Vec<u8>) -> UpdateSecret {
+        UpdateSecret(ClearOnDrop::new(v))
+    }
+}
 
 /// Contains all group state
 #[derive(Clone, Serialize)]
@@ -122,9 +140,9 @@ impl GroupState {
 
     /// Increments the epoch counter by 1
     ///
-    /// Returns: An `Error::ValidationError` if it's at its max
+    /// Returns: An `Error::ValidationError` if the epoch value is at its max
     #[must_use]
-    fn update_epoch(&mut self) -> Result<(), Error> {
+    fn increment_epoch(&mut self) -> Result<(), Error> {
         let new_epoch = self
             .epoch
             .checked_add(1)
@@ -141,8 +159,8 @@ impl GroupState {
     fn update_transcript_hash(&mut self, operation: &GroupOperation) -> Result<(), Error> {
         // Compute the new transcript hash
         // From section 5.7: transcript_hash_[n] = Hash(transcript_hash_[n-1] || operation)
+        let operation_bytes = tls_ser::serialize_to_bytes(operation)?;
         let new_transcript_hash = {
-            let operation_bytes = crate::tls_ser::serialize_to_bytes(&operation)?;
             let mut ctx = ring::digest::Context::new(self.cs.hash_alg);
             ctx.update(&self.transcript_hash);
             ctx.update(&operation_bytes);
@@ -164,10 +182,9 @@ impl GroupState {
     ) -> Result<(ApplicationSecret, ConfirmationKey), Error> {
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
         let salt = hkdf::prk_from_bytes(self.cs.hash_alg, &self.init_secret);
-        let epoch_secret: ring::hmac::SigningKey =
-            hkdf::hkdf_extract(&salt, update_secret.0.as_slice());
+        let epoch_secret: ring::hmac::SigningKey = hkdf::hkdf_extract(&salt, &*update_secret.0);
 
-        let serialized_self = crate::tls_ser::serialize_to_bytes(self)?;
+        let serialized_self = tls_ser::serialize_to_bytes(self)?;
 
         // Set my new init_secret first
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
@@ -179,103 +196,58 @@ impl GroupState {
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
         let confirmation_key = hkdf::derive_secret(&epoch_secret, b"confirm", &serialized_self);
 
-        Ok((
-            ApplicationSecret(ClearOnDrop::new(application_secret)),
-            ConfirmationKey(ClearOnDrop::new(confirmation_key)),
-        ))
+        Ok((ApplicationSecret::new(application_secret), ConfirmationKey::new(confirmation_key)))
     }
 
-    /// Converts an index into the participant roster to an index to the corresponding leaf node of
-    /// the ratchet tree
-    pub(crate) fn roster_index_to_tree_index(signer_index: u32) -> usize {
+    /// Converts the index of a roster entry into the index of the corresponding leaf node of the
+    /// ratchet tree
+    ///
+    /// Returns: `Ok(n)` on success, where `n` is the corresponding tree index. Returns an
+    /// `Error::ValidationError` if `roster_index` is out of bounds.
+    pub(crate) fn roster_index_to_tree_index(roster_index: u32) -> Result<usize, Error> {
         // This is easy. The nth leaf node is at position 2n
-        signer_index.checked_mul(2).expect("roster/tree size invariant violated") as usize
+        roster_index
+            .checked_mul(2)
+            .map(|n| n as usize)
+            .ok_or(Error::ValidationError("roster/tree size invariant violated"))
     }
 
-    /// Performs and validates an Update operation on the `GroupState`.
+    /// Performs an Update operation on the `GroupState`, where `new_path_secret` is the node
+    /// secret we will propagate starting at the index `start_idx`
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets.
-    #[must_use]
-    fn process_update_op(
+    /// necessary for generating new epoch secrets
+    fn apply_update(
         &mut self,
-        update: &GroupUpdate,
-        sender_tree_idx: usize,
+        new_path_secret: PathSecret,
+        start_idx: usize,
     ) -> Result<UpdateSecret, Error> {
-        // We do three things: compute the new ratchet tree, compute the new transcript hash, and
-        // compute the new epoch secrets. We shove all these new values into a delta. To validate
-        // the operation, we check that the derived public keys match the ones in the message. If
-        // they do not, this is an error.
+        // The main part of doing an update is updating node secrets, private keys, and public keys
+        self.tree.propagate_new_path_secret(self.cs, new_path_secret, start_idx)?;
 
-        // Decrypt the path secret from the GroupUpdate and propogate it through our tree
-        // Recall that roster_index is just another (IMO clearer) name for signer_index
-        let num_leaves = tree_math::num_leaves_in_tree(self.tree.size());
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index) as usize;
-        let (path_secret, common_ancestor) = self.tree.decrypt_direct_path_message(
-            self.cs,
-            &update.path,
-            sender_tree_idx,
-            my_tree_idx,
-        )?;
-        self.tree.propogate_new_path_secret(self.cs, path_secret, common_ancestor)?;
-
-        // Update all the public keys of the nodes in the direct path that are below our common
-        // ancestor, i.e., all the ones whose secret we don't know
-        let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
-        for (path_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
-            if path_node_idx == common_ancestor {
-                // We reached the node whose secret we do know
-                break;
-            } else {
-                // This get_mut shouldn't fail. The bounds of sender_tree_idx are checked in
-                // process_handshake
-                let mut node = self.tree.get_mut(path_node_idx).expect("bad direct path node");
-                node.update_public_key(node_msg.public_key.clone());
-            }
-        }
-
-        //
-        // Validation
-        //
-
-        // Make the tree we're validating immutable
-        let new_tree = &self.tree;
-        let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
-
-        // Verify that the pubkeys in the message agree with our newly-derived pubkeys
-        for (path_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
-            let received_public_key = &node_msg.public_key;
-            let expected_public_key = new_tree
-                .get(path_node_idx)
-                .ok_or(Error::ValidationError("Unexpected out-of-bounds path index"))?
-                .get_public_key()
-                .ok_or(Error::ValidationError("Node on updated path has no public key"))?;
-
-            if expected_public_key.as_bytes() != received_public_key.as_bytes() {
-                return Err(Error::ValidationError("Inconsistent public keys in Update message"));
-            }
-        }
-
-        // Done validating. Now return the update secret.
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree."
         let root_node_secret = {
             let root_node = self.tree.get_root_node().expect("tried to update empty tree");
             root_node.get_secret().expect("root node has no secret").to_vec()
         };
-        Ok(UpdateSecret(root_node_secret))
+        Ok(UpdateSecret::new(root_node_secret))
     }
 
-    /// Performs and validates a Remove operation on the `GroupState`
+    /// Performs a Remove operation on the `GroupState`, where `remove_roster_idx` is the roster
+    /// index of the participant we want to remove, `new_path_secret` is the new entropy added into
+    /// the group before the removal, and `update_path_start_idx` is the node we start at when
+    /// propagating the new path secret
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets.
-    #[must_use]
-    fn process_remove_op(
+    /// necessary for generating new epoch secrets
+    fn apply_remove(
         &mut self,
-        remove: &GroupRemove,
-        sender_tree_idx: usize,
+        remove_roster_idx: u32,
+        new_path_secret: PathSecret,
+        update_path_start_idx: usize,
     ) -> Result<UpdateSecret, Error> {
+        // Game plan as per the spec:
         // * Update the roster by setting the credential in the removed slot to the null optional
         //   value
         // * Update the ratchet tree by replacing nodes in the direct path from the removed leaf
@@ -285,19 +257,8 @@ impl GroupState {
         // * Update the ratchet tree by setting to blank all nodes in the direct path of the
         //   removed leaf
 
-        // Blank out the roster location
-        let remove_idx = remove.removed as usize;
-        self.roster.insert(remove_idx, None);
-
-        // Update the ratchet tree with the entropy provided in remove.path
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index);
-        let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
-            self.cs,
-            &remove.path,
-            sender_tree_idx,
-            my_tree_idx,
-        )?;
-        self.tree.propogate_new_path_secret(self.cs, path_secret, ancestor_idx)?;
+        // Update the ratchet tree with the entropy provided in path_secret
+        self.tree.propagate_new_path_secret(self.cs, new_path_secret, update_path_start_idx)?;
 
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree after the second step". This will be our return value.
@@ -305,6 +266,12 @@ impl GroupState {
             let root_node = self.tree.get_root_node().expect("tried to update empty tree");
             root_node.get_secret().expect("root node has no secret").to_vec()
         };
+
+        // Blank out the roster location
+        self.roster
+            .get_mut(remove_roster_idx as usize)
+            .map(|cred| *cred = None)
+            .ok_or(Error::ValidationError("Invalid roster index"))?;
 
         // Truncate the roster to the last non-None credential
         let mut last_nonempty_roster_entry = None;
@@ -323,12 +290,100 @@ impl GroupState {
             }
         }
 
-        // Truncate the tree in a similar fashion
+        // Blank out the direct path of remove_tree_idx
+        let remove_tree_idx = GroupState::roster_index_to_tree_index(remove_roster_idx)?;
+        self.tree.propagate_blank(remove_tree_idx);
+        // Truncate the tree in a similar fashion to the roster
         self.tree.truncate_to_last_nonblank();
-        // Blank out the direct path of remove_idx
-        self.tree.propogate_blank(remove_idx);
 
-        Ok(UpdateSecret(update_secret))
+        Ok(UpdateSecret::new(update_secret))
+    }
+
+    /// Performs and validates an incoming (i.e., one we did not generate) Update operation on the
+    /// `GroupState`, where `sender_tree_idx` is the tree index of the sender of this operation
+    ///
+    /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
+    /// necessary for generating new epoch secrets.
+    #[must_use]
+    fn process_incoming_update_op(
+        &mut self,
+        update: &GroupUpdate,
+        sender_tree_idx: usize,
+    ) -> Result<UpdateSecret, Error> {
+        // We do three things: compute the new ratchet tree, compute the new transcript hash, and
+        // compute the new epoch secrets. We shove all these new values into a delta. To validate
+        // the operation, we check that the derived public keys match the ones in the message. If
+        // they do not, this is an error.
+
+        // Decrypt the path secret from the GroupUpdate and propagate it through our tree
+        // Recall that roster_index is just another (IMO clearer) name for signer_index
+        let num_leaves = tree_math::num_leaves_in_tree(self.tree.size());
+        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index)?;
+        let (path_secret, common_ancestor) = self.tree.decrypt_direct_path_message(
+            self.cs,
+            &update.path,
+            sender_tree_idx,
+            my_tree_idx,
+        )?;
+        let update_secret = self.apply_update(path_secret, common_ancestor)?;
+
+        // Update all the public keys of the nodes in the direct path that are below our common
+        // ancestor, i.e., all the ones whose secret we don't know. Note that this step is not
+        // performed in apply_update, because this only happens when we're not the ones who created
+        // the Update operation.
+        let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
+        for (path_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
+            if path_node_idx == common_ancestor {
+                // We reached the node whose secret we do know
+                break;
+            } else {
+                // This get_mut shouldn't fail. The bounds of sender_tree_idx are checked in
+                // process_handshake
+                let node = self.tree.get_mut(path_node_idx).expect("bad direct path node");
+                node.update_public_key(node_msg.public_key.clone());
+            }
+        }
+
+        // Make sure the public keys in the message match the ones we derived
+        let expected_public_keys =
+            update.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
+        self.tree.validate_direct_path_public_keys(sender_tree_idx, expected_public_keys)?;
+
+        // All done
+        Ok(update_secret)
+    }
+
+    /// Performs and validates an incoming (i.e., one we did not generate) Remove operation on the
+    /// `GroupState`, where `sender_tree_idx` is the tree index of the sender of this operation
+    ///
+    /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
+    /// necessary for generating new epoch secrets.
+    #[must_use]
+    fn process_incoming_remove_op(
+        &mut self,
+        remove: &GroupRemove,
+        sender_tree_idx: usize,
+    ) -> Result<UpdateSecret, Error> {
+        // Find the entropy provided in remove.path that we'll use to update the tree before
+        // blanking out the removed node
+        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index)?;
+        let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
+            self.cs,
+            &remove.path,
+            sender_tree_idx,
+            my_tree_idx,
+        )?;
+        // Do the remove operation
+        let update_secret =
+            self.apply_remove(remove.removed_roster_index, path_secret, ancestor_idx)?;
+
+        // Make sure the public keys in the message match the ones we derived
+        let expected_public_keys =
+            remove.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
+        self.tree.validate_direct_path_public_keys(sender_tree_idx, expected_public_keys)?;
+
+        // All done
+        Ok(update_secret)
     }
 
     /// Performs and validates an Add operation on the `GroupState`. Requires a `WelcomeInfo`
@@ -355,14 +410,14 @@ impl GroupState {
         // 6. Set the leaf node in the tree at position index to a new node containing the public
         //    key from the UserInitKey in the Add corresponding to the ciphersuite in use
 
-        let new_index = add.index as usize;
-        if new_index > self.tree.size() {
+        let add_roster_index = add.roster_index;
+        if add_roster_index as usize > self.tree.size() {
             return Err(Error::ValidationError("Invalid insertion index in Add operation"));
         }
 
         // Check the WelcomeInfo hash
         let my_prior_welcome_info_hash = {
-            let serialized = crate::tls_ser::serialize_to_bytes(&prior_welcome_info)?;
+            let serialized = tls_ser::serialize_to_bytes(&prior_welcome_info)?;
             ring::digest::digest(self.cs.hash_alg, &serialized)
         };
         if my_prior_welcome_info_hash.as_ref() != add.welcome_info_hash.as_slice() {
@@ -373,52 +428,80 @@ impl GroupState {
         add.init_key.verify_sig()?;
         add.init_key.validate()?;
 
+        // Is this an appending Add or is it an in-place Add? If in-place, we have to make sure
+        // we're not overwriting any existing members in the group
+        let is_append = add_roster_index as usize == self.roster.len();
+
         // Update the roster
-        self.roster.insert(new_index, Some(add.init_key.credential.clone()));
+        let new_credential = add.init_key.credential.clone();
+        if is_append {
+            self.roster.push(Some(new_credential))
+        } else {
+            // It's an in-place add. Check that we're only overwriting an empty roster entry
+            let entry_to_update = self
+                .roster
+                .get_mut(add_roster_index as usize)
+                .ok_or(Error::ValidationError("Out of bounds roster index"))?;
 
-        let cipher_suites = &add.init_key.cipher_suites;
-        let init_keys = &add.init_key.init_keys;
-
-        // The public key we associate to the new participant is the one that corresponds to our
-        // current ciphersuite. These two lists must be the same length, because this property is
-        // checked in validate() above. Furthermore, all ciphersuites in add.init_key.cipher_suites
-        // are unique, because this property is also checked in validate() above.
-        let mut public_key = None;
-        for (cs, key) in cipher_suites.iter().zip(init_keys.iter()) {
-            if cs == &self.cs {
-                public_key = Some(key)
+            if entry_to_update.is_some() {
+                return Err(Error::ValidationError("Add tried to overwrite non-null roster entry"));
+            } else {
+                *entry_to_update = Some(new_credential);
             }
         }
-        let public_key = public_key.ok_or(Error::ValidationError(
-            "UserInitKey has no public keys for group's ciphersuite",
-        ))?;
+
+        // Update the tree. We add a new blank node in the correct position, then set the leaf node
+        // to the appropriate value
+        if is_append {
+            // If we're adding a new node to the end of the tree, we have to make new nodes
+            self.tree.add_leaf_node(RatchetTreeNode::Blank);
+        }
+
+        let add_tree_index = GroupState::roster_index_to_tree_index(add_roster_index)?;
+
+        // Propagate the blank up the tree before we overwrite the new leaf with the new
+        // participant's pubkey info
+        self.tree.propagate_blank(add_tree_index);
+
+        // Now find the public key and overwrite the node we found with the pubkey info. The public
+        // key we associate to the new participant is the one that corresponds to our current
+        // ciphersuite. These two lists are the same length, because this property is checked in
+        // validate() above. Furthermore, all ciphersuites in add.init_key.cipher_suites are
+        // unique, because this property is also checked in validate() above.
+        let public_key = {
+            let cipher_suites = &add.init_key.cipher_suites;
+            let init_keys = &add.init_key.init_keys;
+
+            let mut found_pubkey = None;
+            for (cs, key) in cipher_suites.iter().zip(init_keys.iter()) {
+                if cs == &self.cs {
+                    found_pubkey = Some(key)
+                }
+            }
+            found_pubkey.ok_or(Error::ValidationError(
+                "UserInitKey has no public keys for group's ciphersuite",
+            ))
+        }?;
+
+        // The new node we add has the public key we found, and no known secrets
         let new_node = RatchetTreeNode::Filled {
             public_key: public_key.clone(),
             private_key: None,
             secret: None,
         };
 
-        let is_append = new_index == self.tree.size();
-        if is_append {
-            // If we're adding a new node to the end tree, we have to make new nodes
-            self.tree.add_leaf_node(new_node);
-        } else {
-            // Otherwise, it's an in-place Add. In this case, check that we're only overwriting a
-            // Blank node.
-            let node_to_overwrite = self.tree.get_mut(new_index).unwrap();
-            if let RatchetTreeNode::Filled {
-                ..
-            } = node_to_overwrite
-            {
-                return Err(Error::ValidationError("Add tried to overwrite non-blank node"));
-            } else {
-                *node_to_overwrite = new_node;
-            }
+        // Check that we're only overwriting a Blank node.
+        let node_to_overwrite = self.tree.get_mut(add_tree_index).unwrap();
+        if node_to_overwrite.is_filled() {
+            return Err(Error::ValidationError("Add tried to overwrite non-blank node"));
         }
+
+        // Finally, do the overwrite
+        *node_to_overwrite = new_node;
 
         // "The update secret resulting from this change is an all-zero octet string of length
         // Hash.length."
-        Ok(UpdateSecret(vec![0u8; self.cs.hash_alg.output_len]))
+        Ok(UpdateSecret::new(vec![0u8; self.cs.hash_alg.output_len]))
     }
 
     // According to the spec, this is how we process handshakes:
@@ -436,16 +519,23 @@ impl GroupState {
     //    message, as described below, and verify that it is the same as the confirmation field.
     // 7. If the the above checks are successful, consider the updated GroupState object as the
     //    current state of the group.
+    /// Processes the given `Handshake` and, if successful, produces a new `GroupState`
     #[must_use]
-    pub(crate) fn process_handshake(&mut self, handshake: &Handshake) -> Result<(), Error> {
+    pub(crate) fn process_handshake(&self, handshake: &Handshake) -> Result<GroupState, Error> {
         if handshake.prior_epoch != self.epoch {
             return Err(Error::ValidationError("Handshake's prior epoch isn't the current epoch"));
         }
 
-        let sender_tree_idx = GroupState::roster_index_to_tree_index(handshake.signer_index);
+        let sender_tree_idx = GroupState::roster_index_to_tree_index(handshake.signer_index)?;
         if sender_tree_idx >= self.tree.size() {
             return Err(Error::ValidationError("Handshake sender tree index is out of range"));
         }
+
+        // Make a preliminary new state and  update its epoch and transcript hash. The state is
+        // further mutated in the branches of the match statement below
+        let mut new_state = self.clone();
+        new_state.update_transcript_hash(&handshake.operation)?;
+        new_state.increment_epoch()?;
 
         let sender_credential = self
             .roster
@@ -456,24 +546,18 @@ impl GroupState {
             .ok_or(Error::ValidationError("Credential at signer's index is empty"))?
             .get_public_key();
 
-        // Make a preliminary new state with updated transcript_hash and epoch. The rest of the
-        // updates are handled in the branches of the match statement below
-        let mut new_state = self.clone();
-        new_state.update_transcript_hash(&handshake.operation)?;
-        new_state.update_epoch()?;
-
         // Do the handshake operation on the preliminary new state. This returns an update secret
         // that the new epoch secrets are derived from.
         let update_secret = match handshake.operation {
             GroupOperation::Update(ref update) => {
-                new_state.process_update_op(update, sender_tree_idx)?
+                new_state.process_incoming_update_op(update, sender_tree_idx)?
+            }
+            GroupOperation::Remove(ref remove) => {
+                new_state.process_incoming_remove_op(remove, sender_tree_idx)?
             }
             GroupOperation::Add(ref add) => {
                 let prior_welcome_info = self.as_welcome_info();
                 new_state.process_add_op(add, &prior_welcome_info)?
-            }
-            GroupOperation::Remove(ref remove) => {
-                new_state.process_remove_op(remove, sender_tree_idx)?
             }
             GroupOperation::Init(_) => unimplemented!(),
         };
@@ -499,7 +583,7 @@ impl GroupState {
         // confirmation_data = GroupState.transcript_hash || Handshake.signature
         // Handshake.confirmation = HMAC(confirmation_key, confirmation_data)
         let confirmation_key =
-            ring::hmac::VerificationKey::new(self.cs.hash_alg, &*confirmation_key_bytes.0);
+            ring::hmac::VerificationKey::new(new_state.cs.hash_alg, &*confirmation_key_bytes.0);
         let confirmation_data =
             [new_state.transcript_hash.as_slice(), handshake.signature.to_bytes().as_slice()]
                 .concat();
@@ -508,52 +592,65 @@ impl GroupState {
         ring::hmac::verify(&confirmation_key, &confirmation_data, &handshake.confirmation)
             .map_err(|_| Error::SignatureError("Handshake confirmation is invalid"))?;
 
-        //
-        // If we've made it this far. We commit the changes
-        //
-
-        core::mem::replace(self, new_state);
-        Ok(())
+        // All is well
+        Ok(new_state)
     }
 
-    /// Creates a `Handshake` message by applying the given group operation to the current state
-    pub(crate) fn create_handshake(
+    /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This also
+    /// returns the newly derived applications secret and confirmation key.
+    pub(crate) fn create_update_op(
         &mut self,
+        new_path_secret: PathSecret,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
+        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index)?;
+
+        // Do the update and increment the epoch
+        let update_secret = self.apply_update(new_path_secret.clone(), my_tree_idx)?;
+        self.increment_epoch()?;
+
+        // Now package the update into a GroupUpdate structure
+        let direct_path_msg =
+            self.tree.encrypt_direct_path_secrets(self.cs, my_tree_idx, new_path_secret, csprng)?;
+        let update = GroupUpdate {
+            path: direct_path_msg,
+        };
+        let op = GroupOperation::Update(update);
+
+        self.update_transcript_hash(&op)?;
+
+        // Final modification: update my epoch secrets
+        let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+
+        Ok((op, application_secret, confirmation_key))
+    }
+
+    /// Creates a `Handshake` message by packaging the given `GroupOperation`.
+    ///
+    /// NOTE: This is intended to be called only after `create_*_op` is called, where `*` is `add`
+    /// or `update` or `remove`. This makes no sense otherwise.
+    pub(crate) fn create_handshake(
+        &self,
         operation: GroupOperation,
+        confirmation_key: ConfirmationKey,
     ) -> Result<Handshake, Error> {
-        // First things to do are update transcript hash and increment epoch
-        self.update_transcript_hash(&operation)?;
-        self.update_epoch()?;
-
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index) as usize;
-
         // signature = Sign(identity_key, GroupState.transcript_hash)
         let signature = self.cs.sig_impl.sign(&self.identity_key, &self.transcript_hash);
 
-        // Do the mutating operation that the group operation entails. This returns an update
-        // secret that the new epoch secrets are derived from
-        let update_secret = match operation {
-            GroupOperation::Update(ref update) => self.process_update_op(update, my_tree_idx)?,
-            GroupOperation::Add(ref add) => {
-                let prior_welcome_info = self.as_welcome_info();
-                self.process_add_op(&add, &prior_welcome_info)?
-            }
-            GroupOperation::Remove(ref remove) => self.process_remove_op(remove, my_tree_idx)?,
-            GroupOperation::Init(_) => unimplemented!(),
-        };
+        let prior_epoch = self
+            .epoch
+            .checked_sub(1)
+            .expect("cannot create a handshake from a brand new GroupState");
 
         // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
-        let (application_secret, confirmation_key_bytes) =
-            self.update_epoch_secrets(&update_secret)?;
 
         // confirmation = HMAC(confirmation_key, confirmation_data)
         // where confirmation_data = GroupState.transcript_hash || Handshake.signature
         let confirmation = {
-            let confirmation_key =
-                ring::hmac::SigningKey::new(self.cs.hash_alg, &*confirmation_key_bytes.0);
+            let mac_key = ring::hmac::SigningKey::new(self.cs.hash_alg, &*confirmation_key.0);
 
-            let mut ctx = ring::hmac::SigningContext::with_key(&confirmation_key);
+            let mut ctx = ring::hmac::SigningContext::with_key(&mac_key);
             ctx.update(&self.transcript_hash);
             ctx.update(&signature.to_bytes());
 
@@ -561,7 +658,7 @@ impl GroupState {
         };
 
         let handshake = Handshake {
-            prior_epoch: self.epoch,
+            prior_epoch: prior_epoch,
             operation: operation,
             signer_index: self.roster_index,
             signature: signature,
@@ -613,7 +710,7 @@ pub(crate) struct WelcomeInfo {
 #[cfg(test)]
 mod test {
     use crate::{
-        credential::{Credential, Roster},
+        credential::Roster,
         crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         error::Error,
         group_state::{GroupState, UpdateSecret},
@@ -748,7 +845,7 @@ mod test {
         // Keep deriving new secrets with respect to the given update secret. Check all the
         // resulting keys against the test vector.
         for epoch in case1.epochs.into_iter() {
-            let update_secret = UpdateSecret(epoch.update_secret);
+            let update_secret = UpdateSecret::new(epoch.update_secret);
             let (app_secret, conf_key) = group_state.update_epoch_secrets(&update_secret).unwrap();
 
             // We don't save the derived epoch_secret anywhere, since it's just an intermediate

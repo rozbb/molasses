@@ -50,6 +50,8 @@ pub(crate) fn ecies_encrypt(
     ecies_encrypt_with_scalar(cs, others_public_key, plaintext, my_ephemeral_secret)
 }
 
+// TODO: Make this function secret-aware by making it take only ClearOnDrop values
+
 /// Performs an ECIES encryption of a given plaintext under a given DH public key and a fixed
 /// scalar value. This is the deterministic function underlying `ecies_encrypt`, and is important
 /// for testing purposes.
@@ -62,8 +64,12 @@ pub(crate) fn ecies_encrypt_with_scalar(
     mut plaintext: Vec<u8>,
     my_ephemeral_secret: DhPrivateKey,
 ) -> Result<EciesCiphertext, Error> {
-    // Make room for the tag
-    plaintext.extend(std::iter::repeat(0u8).take(cs.aead_impl.tag_size()));
+    // Make room for the tag and fill it with zeros
+    let tagged_plaintext_size = plaintext
+        .len()
+        .checked_add(cs.aead_impl.tag_size())
+        .expect("plaintext is too large to be encrypted");
+    plaintext.resize(tagged_plaintext_size, 0u8);
 
     // If my_ephermeral_secret is `a`, let this be `aP`
     let my_ephemeral_public_key = cs.dh_impl.derive_public_key(&my_ephemeral_secret);

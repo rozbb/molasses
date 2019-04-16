@@ -1,3 +1,13 @@
+use crate::{
+    crypto::{
+        ciphersuite::CipherSuite,
+        dh::{DhPrivateKey, DhPublicKey},
+        hkdf,
+    },
+    error::Error,
+    ratchet_tree::PathSecret,
+};
+
 /// Unwraps an enum into an expected variant. Panics if the supplied value is not of the expected
 /// variant. This macro is used to succinctly ensure that ciphersuite values are kept consistent
 /// throughout the library.
@@ -81,18 +91,18 @@ macro_rules! make_enum_u8_discriminant {
 #[cfg(test)]
 pub(crate) mod test_utils {
     use crate::{
-        credential::{self, BasicCredential, Credential, Roster},
+        credential::{self, BasicCredential, Credential},
         crypto::{
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
             rng::CryptoRng,
             sig::{SigSecretKey, SignatureScheme},
         },
         group_state::GroupState,
-        ratchet_tree::{RatchetTree, RatchetTreeNode},
+        ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
         tree_math,
     };
 
-    use rand::{seq::SliceRandom, Rng};
+    use rand::seq::SliceRandom;
 
     // Generates a random BasicCredential with the given SignatureScheme
     fn random_credential<R: rand::Rng + CryptoRng>(
@@ -131,16 +141,16 @@ pub(crate) mod test_utils {
         };
 
         // In a random order, fill the tree
-        let mut leaf_indices: Vec<usize> =
-            (0..num_leaves).map(|i| i.checked_mul(2).unwrap()).collect();
+        let leaf_indices: Vec<usize> = (0..num_leaves).map(|i| i.checked_mul(2).unwrap()).collect();
         for idx in leaf_indices.into_iter() {
             // Random path secret used to derive all private keys up the tree
             let path_secret = {
                 let mut buf = [0u8; 32];
                 rng.fill_bytes(&mut buf);
-                buf.to_vec()
+                PathSecret::new(buf.to_vec())
             };
-            tree.propogate_new_path_secret(cs, path_secret, idx);
+            tree.propagate_new_path_secret(cs, path_secret, idx)
+                .expect("couldn't propagate random secrets in a random tree");
         }
 
         tree
@@ -158,13 +168,12 @@ pub(crate) mod test_utils {
 
         // Group size and position in group are random
         let group_size: u32 = rng.gen_range(2, 50);
-        eprintln!("group_size == {}", group_size);
         let my_roster_idx: u32 = rng.gen_range(0, group_size);
 
         // Make a full roster (no empty slots) of random creds and store the identity keys
         let mut roster = Vec::new();
         let mut identity_keys = Vec::new();
-        for roster_idx in 0..group_size {
+        for _ in 0..group_size {
             let (cred, secret) = random_credential(rng, cs.sig_impl);
             roster.push(Some(cred));
             identity_keys.push(secret);
@@ -172,7 +181,6 @@ pub(crate) mod test_utils {
         let my_identity_key = identity_keys[my_roster_idx as usize].clone();
 
         // Make a full tree with all secrets known
-        let num_leaves = group_size;
         let tree = random_tree(rng, cs, group_size as usize);
 
         // Make a random 16 byte group ID
@@ -225,4 +233,29 @@ pub(crate) mod test_utils {
 
         new_group_state
     }
+}
+
+/// Returns `(node_public_key, node_private_key, node_secret, path_secret_[n])`, given
+/// `path_secret_[n-1]`
+///
+/// Requires: `path_secret.len() == cs.hash_alg.output_len`
+///
+/// Panics: If above condition is not satisfied
+pub(crate) fn derive_node_values(
+    cs: &'static CipherSuite,
+    mut path_secret: PathSecret,
+) -> Result<(DhPublicKey, DhPrivateKey, Vec<u8>, PathSecret), Error> {
+    assert_eq!(path_secret.0.len(), cs.hash_alg.output_len, "path secret length != Hash.length");
+
+    let prk = hkdf::prk_from_bytes(cs.hash_alg, &*path_secret.0);
+    // node_secret[n] = HKDF-Expand-Label(path_secret[n], "node", "", Hash.Length)
+    let mut node_secret = vec![0u8; cs.hash_alg.output_len];
+    hkdf::hkdf_expand_label(&prk, b"node", b"", node_secret.as_mut_slice());
+    // path_secret[n] = HKDF-Expand-Label(path_secret[n-1], "path", "", Hash.Length)
+    hkdf::hkdf_expand_label(&prk, b"path", b"", &mut *path_secret.0);
+
+    // Derive the private and public keys and assign them to the node
+    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret)?;
+
+    Ok((node_public_key, node_private_key, node_secret, path_secret))
 }

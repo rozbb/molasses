@@ -1,11 +1,8 @@
 use crate::{
     credential::Credential,
-    crypto::{
-        ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, rng::CryptoRng,
-        sig::Signature,
-    },
+    crypto::{ciphersuite::CipherSuite, dh::DhPublicKey, ecies::EciesCiphertext, sig::Signature},
     error::Error,
-    group_state::GroupState,
+    tls_ser,
 };
 
 // uint8 ProtocolVersion;
@@ -107,7 +104,7 @@ impl UserInitKey {
             init_keys: self.init_keys.as_slice(),
             credential: &self.credential,
         };
-        let serialized_uik = crate::tls_ser::serialize_to_bytes(&partial)?;
+        let serialized_uik = tls_ser::serialize_to_bytes(&partial)?;
 
         let sig_scheme = self.credential.get_signature_scheme();
         let public_key = self.credential.get_public_key();
@@ -121,6 +118,7 @@ impl UserInitKey {
     // client."
 
     /// Validates the invariants that `UserInitKey` must satisfy, as in section 6 of the MLS spec
+    #[must_use]
     pub(crate) fn validate(&self) -> Result<(), Error> {
         // All three of supported_versions, cipher_suites, and init_keys MUST have the same length
         if self.supported_versions.len() != self.cipher_suites.len() {
@@ -158,9 +156,9 @@ pub(crate) struct GroupInit;
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupAdd {
     // uint32 index;
-    /// Indicates where to add the new participant. This may be a blank node or at index `n` where
-    /// `n` is the size of the tree.
-    pub(crate) index: u32,
+    /// Indicates where to add the new participant. This may index into an empty roster entry or be
+    /// equal to the size of the roster.
+    pub(crate) roster_index: u32,
 
     // UserInitKey init_key;
     /// Contains the public key used to add the new participant
@@ -178,29 +176,11 @@ pub(crate) struct GroupUpdate {
     pub(crate) path: DirectPathMessage,
 }
 
-impl GroupUpdate {
-    /// Returns a new `GroupUpdate` object representing the operation that updates the node secret
-    /// of this user's leaf to `new_node_secret`
-    fn new(
-        state: &GroupState,
-        new_node_secret: Vec<u8>,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<GroupUpdate, Error> {
-        let cs = state.cs;
-        let tree_idx = GroupState::roster_index_to_tree_index(state.roster_index) as usize;
-        let direct_path_msg = state.tree.encrypt_direct_path_secrets(cs, tree_idx, csprng)?;
-
-        Ok(GroupUpdate {
-            path: direct_path_msg,
-        })
-    }
-}
-
 /// Operation to remove a partcipant from the group
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupRemove {
-    /// The index of the removed participant
-    pub(crate) removed: u32,
+    /// The roster index of the removed participant
+    pub(crate) removed_roster_index: u32,
 
     /// New entropy for the tree
     pub(crate) path: DirectPathMessage,
@@ -248,24 +228,21 @@ mod test {
         },
         error::Error,
         group_state::WelcomeInfo,
-        handshake::GroupOperation,
+        ratchet_tree::PathSecret,
         tls_de::TlsDeserializer,
+        tls_ser,
         upcast::CryptoUpcast,
         utils::test_utils,
     };
-
-    use std::io::Read;
 
     use quickcheck_macros::quickcheck;
     use rand::Rng;
     use rand_core::{RngCore, SeedableRng};
     use serde::Deserialize;
 
-    //#[quickcheck]
-    //fn update_correctness(rng_seed: u64) {
-    #[test]
-    fn update_correctness() {
-        let rng_seed = 0;
+    // Check that Update operations are consistent
+    #[quickcheck]
+    fn update_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group
         let (mut group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
@@ -281,17 +258,27 @@ mod test {
         };
         let group_state2 = test_utils::change_self_index(&group_state1, &identity_keys, new_index);
 
-        let new_node_secret = {
-            let mut buf = [0u8; 16];
-            rng.fill_bytes(&mut buf);
-            buf.to_vec()
+        // Make a new path secret and make an Update object out of it and then make a Handshake
+        // object out of that Update
+        let new_path_secret = {
+            let mut buf = vec![0u8; group_state1.cs.hash_alg.output_len];
+            rng.fill_bytes(buf.as_mut_slice());
+            PathSecret::new(buf)
         };
-        eprintln!("Making Update...");
-        let update = GroupUpdate::new(&group_state1, new_node_secret, &mut rng).unwrap();
-        eprintln!("Making GroupOperation...");
-        let update_op = GroupOperation::Update(update);
-        eprintln!("Making Handshake...");
-        let handshake = group_state1.create_handshake(update_op).unwrap();
+        let (update_op, _, conf_key) =
+            group_state1.create_update_op(new_path_secret, &mut rng).unwrap();
+        let handshake = group_state1.create_handshake(update_op, conf_key).unwrap();
+
+        // Apply the Handshake to the clone of the first group
+        let new_group_state2 = group_state2.process_handshake(&handshake).unwrap();
+        let group_state2 = new_group_state2;
+
+        // Now see if the group states agree
+        let (group1_bytes, group2_bytes) = (
+            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
+            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
+        );
+        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree after Update");
     }
 
     // File: messages.bin
@@ -427,7 +414,7 @@ mod test {
     #[test]
     fn official_message_parsing_kat() {
         // Read in and deserialize the input
-        let mut original_bytes = Vec::new();
+        let original_bytes = Vec::new();
         let mut f = std::fs::File::open("test_vectors/messages.bin").unwrap();
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = {
@@ -441,7 +428,7 @@ mod test {
         };
 
         // Reserialized the deserialized input and make sure it's the same as the original
-        let reserialized_bytes = crate::tls_ser::serialize_to_bytes(&test_vec).unwrap();
+        let reserialized_bytes = tls_ser::serialize_to_bytes(&test_vec).unwrap();
         assert_eq!(reserialized_bytes, original_bytes);
     }
 }

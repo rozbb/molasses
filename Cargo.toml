@@ -18,6 +18,7 @@ rand_core = "0.3"
 #ring = "0.14"
 ring = { git = "https://github.com/rozbb/ring.git", branch = "master" }
 serde = { version = "1.0", features = ["derive"] }
+subtle = "2.0"
 x25519-dalek = "0.5"
 
 [dev-dependencies]
