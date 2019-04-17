@@ -267,10 +267,11 @@ impl RatchetTree {
     pub(crate) fn truncate_to_last_nonblank(&mut self) {
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
 
+        // Look for the last non-blank leaf by iterating backwards through the leaves in the tree
         let mut last_nonblank_leaf = None;
-        for leaf_idx in tree_math::tree_leaves(num_leaves).rev() {
-            if self.nodes[leaf_idx].is_filled() {
-                last_nonblank_leaf = Some(leaf_idx);
+        for idx in tree_math::tree_leaves(num_leaves).rev() {
+            if self.nodes[idx].is_filled() {
+                last_nonblank_leaf = Some(idx);
             }
         }
 
