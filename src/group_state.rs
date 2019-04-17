@@ -96,7 +96,7 @@ impl GroupState {
         w: WelcomeInfo,
         my_identity: &Identity,
         my_identity_key: SigSecretKey,
-    ) -> GroupState {
+    ) -> Result<GroupState, Error> {
         // We're not told where we are in the roster, so we first find ourselves
         let roster_index: u32 = {
             let pos = w
@@ -107,12 +107,12 @@ impl GroupState {
                     None => false,
                     Some(_) => unimplemented!("X.509 is not a thing yet"),
                 })
-                .expect("could not find myself in roster");
+                .ok_or(Error::ValidationError("could not find myself in roster"))?;
             assert!(pos <= std::u32::MAX as usize, "roster index out of range");
             pos as u32
         };
 
-        GroupState {
+        let g = GroupState {
             cs: cs,
             protocol_version: w.protocol_version,
             identity_key: my_identity_key,
@@ -123,9 +123,11 @@ impl GroupState {
             transcript_hash: w.transcript_hash,
             roster_index: roster_index,
             init_secret: w.init_secret,
-        }
+        };
+        Ok(g)
     }
 
+    /// Creates a `WelcomeInfo` object with all the current state information
     fn as_welcome_info(&self) -> WelcomeInfo {
         WelcomeInfo {
             protocol_version: self.protocol_version,
@@ -710,15 +712,57 @@ pub(crate) struct WelcomeInfo {
 #[cfg(test)]
 mod test {
     use crate::{
-        credential::Roster,
+        credential::{Credential, Roster},
         crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         error::Error,
         group_state::{GroupState, UpdateSecret},
         ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
+        tls_ser,
+        utils::test_utils,
     };
 
+    use core::convert::TryFrom;
+
+    use quickcheck_macros::quickcheck;
+    use rand::{Rng, SeedableRng};
     use serde::de::Deserialize;
+
+    // Checks that GroupState::from_welcome_info(group.as_welcome_info()) == group
+    #[quickcheck]
+    fn welcome_correctness(rng_seed: u64) {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        // Make a starting group
+        let (group_state1, mut identity_keys) = test_utils::random_full_group_state(&mut rng);
+
+        // Get all the data that a new party would have
+        let cs = group_state1.cs;
+        let welcome_info = group_state1.as_welcome_info();
+        // Pick a roster position. We allow this to be the same as the first group's position
+        let new_roster_index = rng.gen_range(0, group_state1.roster.len()) as u32;
+        // The new identity is the one in the roster. Remember the group is full so the roster has
+        // no blank entries
+        let new_identity = match group_state1.roster[usize::try_from(new_roster_index).unwrap()] {
+            Some(Credential::Basic(ref basic_cred)) => basic_cred.identity.clone(),
+            Some(_) => unimplemented!("X.509 is not a thing yet"),
+            None => panic!("expected a full roster!"),
+        };
+        let new_identity_key = identity_keys.remove(usize::try_from(new_roster_index).unwrap());
+
+        // Make a group state from the first group state's WelcomeInfo. This should be identical to
+        // the first one, except for the roster_index and identity_key (since these are explicitly
+        // different).
+        let group_state2 =
+            GroupState::from_welcome_info(cs, welcome_info, &new_identity, new_identity_key)
+                .unwrap();
+
+        // Now see if the resulting group states agree
+        let (group1_bytes, group2_bytes) = (
+            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
+            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
+        );
+        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree Welcome round-trip");
+    }
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
     // is only ever meant to be serialized. The fields in it that are for us and not for
