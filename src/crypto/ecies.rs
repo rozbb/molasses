@@ -98,11 +98,12 @@ pub(crate) fn ecies_encrypt_with_scalar(
 pub(crate) fn ecies_decrypt(
     cs: &CipherSuite,
     my_secret_key: &DhPrivateKey,
-    EciesCiphertext {
+    ciphertext: EciesCiphertext,
+) -> Result<Vec<u8>, Error> {
+    let EciesCiphertext {
         ephemeral_public_key,
         mut ciphertext,
-    }: EciesCiphertext,
-) -> Result<Vec<u8>, Error> {
+    } = ciphertext;
     // This is `abP` where `bP` is the other person's public key is `bP` and my secret key is `a`
     let shared_secret = cs.dh_impl.diffie_hellman(&my_secret_key, &ephemeral_public_key);
 

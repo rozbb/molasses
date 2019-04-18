@@ -1,13 +1,23 @@
 use crate::{
     credential::{Credential, Identity, Roster},
-    crypto::{ciphersuite::CipherSuite, hkdf, rng::CryptoRng, sig::SigSecretKey},
+    crypto::{
+        ciphersuite::CipherSuite,
+        ecies::{ecies_encrypt, EciesCiphertext},
+        hkdf,
+        rng::CryptoRng,
+        sig::SigSecretKey,
+    },
     error::Error,
-    handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion},
+    handshake::{
+        GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion, UserInitKey,
+    },
     ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
+    tls_de::TlsDeserializer,
     tls_ser, tree_math,
 };
 
 use clear_on_drop::ClearOnDrop;
+use serde::de::Deserialize;
 
 /// This is called the `application_secret` in the MLS key schedule (section 5.9)
 pub(crate) struct ApplicationSecret(ClearOnDrop<Vec<u8>>);
@@ -89,7 +99,7 @@ pub(crate) struct GroupState {
 // transcript_hash is initialized to all zeros.
 
 impl GroupState {
-    /// Initializes a `GroupState` with the given `Welcome` information, this participant's
+    /// Initializes a `GroupState` with the given `WelcomeInfo` information, this participant's
     /// identity, and this participant's identity key
     fn from_welcome_info(
         cs: &'static CipherSuite,
@@ -107,7 +117,7 @@ impl GroupState {
                     None => false,
                     Some(_) => unimplemented!("X.509 is not a thing yet"),
                 })
-                .ok_or(Error::ValidationError("could not find myself in roster"))?;
+                .ok_or(Error::ValidationError("Could not find myself in roster"))?;
             assert!(pos <= std::u32::MAX as usize, "roster index out of range");
             pos as u32
         };
@@ -127,8 +137,44 @@ impl GroupState {
         Ok(g)
     }
 
+    /// Initializes a `GroupState` with the given `Welcome` message. This is an encrypted wrapper
+    /// around a `WelcomeInfo`, so a valid `UserInitKey` with known private keys, as well as
+    /// identity information are necessary to open and initialize this object.
+    fn from_welcome(
+        welcome: Welcome,
+        init_key: &UserInitKey,
+        my_identity: &Identity,
+        my_identity_key: SigSecretKey,
+    ) -> Result<GroupState, Error> {
+        // Verify the UserInitKey signature and validate its contents
+        init_key.verify_sig()?;
+        init_key.validate()?;
+        // Verifiy that the supplied UserInitKey is the one that the Welcome message references
+        if welcome.user_init_key_id != init_key.user_init_key_id {
+            return Err(Error::ValidationError("Supplied UserInitKey ID doesn't match Welcome's"));
+        }
+        // Get the ciphersuite and private key we'll use to decrypt the wrapped WelcomeInfo
+        let cs = welcome.cipher_suite;
+        let dh_private_key = init_key
+            .get_private_key(cs)?
+            .ok_or(Error::ValidationError("Can't decrypt Welcome without a private key"))?;
+
+        // Decrypt the WelcomeInfo and pass it along to from_welcome_info
+        let welcome_info_bytes = crate::crypto::ecies::ecies_decrypt(
+            cs,
+            dh_private_key,
+            welcome.encrypted_welcome_info,
+        )?;
+        let welcome_info = {
+            let mut cursor = welcome_info_bytes.as_slice();
+            let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
+            WelcomeInfo::deserialize(&mut deserializer)
+        }?;
+        GroupState::from_welcome_info(cs, welcome_info, my_identity, my_identity_key)
+    }
+
     /// Creates a `WelcomeInfo` object with all the current state information
-    fn as_welcome_info(&self) -> WelcomeInfo {
+    pub(crate) fn as_welcome_info(&self) -> WelcomeInfo {
         WelcomeInfo {
             protocol_version: self.protocol_version,
             group_id: self.group_id.clone(),
@@ -467,23 +513,10 @@ impl GroupState {
 
         // Now find the public key and overwrite the node we found with the pubkey info. The public
         // key we associate to the new participant is the one that corresponds to our current
-        // ciphersuite. These two lists are the same length, because this property is checked in
-        // validate() above. Furthermore, all ciphersuites in add.init_key.cipher_suites are
-        // unique, because this property is also checked in validate() above.
-        let public_key = {
-            let cipher_suites = &add.init_key.cipher_suites;
-            let init_keys = &add.init_key.init_keys;
-
-            let mut found_pubkey = None;
-            for (cs, key) in cipher_suites.iter().zip(init_keys.iter()) {
-                if cs == &self.cs {
-                    found_pubkey = Some(key)
-                }
-            }
-            found_pubkey.ok_or(Error::ValidationError(
-                "UserInitKey has no public keys for group's ciphersuite",
-            ))
-        }?;
+        // ciphersuite.
+        let public_key = add.init_key.get_public_key(self.cs)?.ok_or(Error::ValidationError(
+            "UserInitKey has no public keys for group's ciphersuite",
+        ))?;
 
         // The new node we add has the public key we found, and no known secrets
         let new_node = RatchetTreeNode::Filled {
@@ -709,13 +742,51 @@ pub(crate) struct WelcomeInfo {
     init_secret: Vec<u8>,
 }
 
+/// This contains the encrypted `WelcomeInfo` for new group participants
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct Welcome {
+    // opaque user_init_key_id<0..255>;
+    #[serde(rename = "user_init_key_id__bound_u8")]
+    user_init_key_id: Vec<u8>,
+    pub(crate) cipher_suite: &'static CipherSuite,
+    pub(crate) encrypted_welcome_info: EciesCiphertext,
+}
+
+impl Welcome {
+    /// Packages up a `WelcomeInfo` object with a preferred cipher suite, and encrypts it to the
+    /// specified `UserInitKey` (under the appropriate public key)
+    fn from_welcome_info(
+        cs: &'static CipherSuite,
+        init_key: &UserInitKey,
+        welcome_info: &WelcomeInfo,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<Welcome, Error> {
+        // Get the public key from the supplied UserInitKey corresponding to the given cipher suite
+        let public_key = init_key
+            .get_public_key(cs)?
+            .ok_or(Error::ValidationError("No corresponding public key for given ciphersuite"))?;
+
+        // Serialize and encrypt the WelcomeInfo
+        let serialized_welcome_info = tls_ser::serialize_to_bytes(welcome_info)?;
+        let ciphertext = ecies_encrypt(cs, &public_key, serialized_welcome_info, csprng)?;
+
+        // All done
+        Ok(Welcome {
+            user_init_key_id: init_key.user_init_key_id.clone(),
+            cipher_suite: cs,
+            encrypted_welcome_info: ciphertext,
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
         credential::{Credential, Roster},
         crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         error::Error,
-        group_state::{GroupState, UpdateSecret},
+        group_state::{GroupState, UpdateSecret, Welcome},
+        handshake::{ProtocolVersion, UserInitKey},
         ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
         tls_ser,
@@ -725,12 +796,12 @@ mod test {
     use core::convert::TryFrom;
 
     use quickcheck_macros::quickcheck;
-    use rand::{Rng, SeedableRng};
+    use rand::{Rng, RngCore, SeedableRng};
     use serde::de::Deserialize;
 
     // Checks that GroupState::from_welcome_info(group.as_welcome_info()) == group
     #[quickcheck]
-    fn welcome_correctness(rng_seed: u64) {
+    fn welcome_info_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group
         let (group_state1, mut identity_keys) = test_utils::random_full_group_state(&mut rng);
@@ -738,22 +809,77 @@ mod test {
         // Get all the data that a new party would have
         let cs = group_state1.cs;
         let welcome_info = group_state1.as_welcome_info();
+
         // Pick a roster position. We allow this to be the same as the first group's position
-        let new_roster_index = rng.gen_range(0, group_state1.roster.len()) as u32;
+        let new_roster_index = rng.gen_range(0, group_state1.roster.len());
         // The new identity is the one in the roster. Remember the group is full so the roster has
         // no blank entries
-        let new_identity = match group_state1.roster[usize::try_from(new_roster_index).unwrap()] {
+        let new_identity = match group_state1.roster[new_roster_index] {
             Some(Credential::Basic(ref basic_cred)) => basic_cred.identity.clone(),
             Some(_) => unimplemented!("X.509 is not a thing yet"),
             None => panic!("expected a full roster!"),
         };
-        let new_identity_key = identity_keys.remove(usize::try_from(new_roster_index).unwrap());
+        let new_identity_key = identity_keys.remove(new_roster_index);
 
         // Make a group state from the first group state's WelcomeInfo. This should be identical to
         // the first one, except for the roster_index and identity_key (since these are explicitly
         // different).
         let group_state2 =
             GroupState::from_welcome_info(cs, welcome_info, &new_identity, new_identity_key)
+                .unwrap();
+
+        // Now see if the resulting group states agree
+        let (group1_bytes, group2_bytes) = (
+            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
+            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
+        );
+        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree Welcome round-trip");
+    }
+
+    // Checks that
+    // GroupState::from_welcome(Welcome::from_welcome_info(group.as_welcome_info())) == group
+    #[quickcheck]
+    fn welcome_correctness(rng_seed: u64) {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        // Make a starting group
+        let (group_state1, mut identity_keys) = test_utils::random_full_group_state(&mut rng);
+
+        // Pick data for another member of this group
+        // Pick a roster position. We allow this to be the same as the first group's position
+        let new_roster_index = rng.gen_range(0, group_state1.roster.len());
+        let new_credential = group_state1.roster[new_roster_index].as_ref().unwrap().clone();
+        let new_identity_key = identity_keys.remove(new_roster_index);
+
+        // Make the data necessary for a Welcome message
+        let cipher_suites = vec![&X25519_SHA256_AES128GCM];
+        let supported_versions: Vec<ProtocolVersion> = vec![0u8; cipher_suites.len()];
+        // Key ID is random
+        let user_init_key_id = {
+            let mut buf = [0u8; 16];
+            rng.fill_bytes(&mut buf);
+            buf.to_vec()
+        };
+        // The UserInitKey has all the information necessary to add a new member to the group and
+        // Welcome them
+        let init_key = UserInitKey::new_from_random(
+            &new_identity_key,
+            user_init_key_id,
+            new_credential.clone(),
+            cipher_suites,
+            supported_versions,
+            &mut rng,
+        )
+        .unwrap();
+
+        // Make the welcome objects
+        let cs = group_state1.cs;
+        let welcome_info = group_state1.as_welcome_info();
+        let welcome = Welcome::from_welcome_info(cs, &init_key, &welcome_info, &mut rng).unwrap();
+
+        // Creates a GroupState from the given Welcome object. This should be identical to the
+        // starting group state, except maybe for the roster index, credential, and identity key.
+        let group_state2 =
+            GroupState::from_welcome(welcome, &init_key, &credential.get_identity(), identity_key)
                 .unwrap();
 
         // Now see if the resulting group states agree

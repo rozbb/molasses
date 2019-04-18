@@ -1,4 +1,4 @@
-use crate::crypto::sig::{SigPublicKey, SignatureScheme};
+use crate::crypto::sig::{SigPublicKey, SigSecretKey, SignatureScheme};
 
 // TODO: Decide whether we check the size on the lower end while (de)serializing
 
@@ -17,12 +17,16 @@ pub(crate) struct X509CertData(Vec<u8>);
 #[serde(rename = "Identity__bound_u16")]
 pub(crate) struct Identity(pub(crate) Vec<u8>);
 
-/// Defines a simple user credential consisting of a user ID, the user's preferred signature
-/// scheme, and the user's public key under said signature scheme.
+/// Defines a simple user credential
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct BasicCredential {
+    /// This is a user ID
     pub(crate) identity: Identity,
+
+    /// The member's preferred signature scheme
     pub(crate) signature_scheme: &'static dyn SignatureScheme,
+
+    /// The member's public key under said signature scheme
     pub(crate) public_key: SigPublicKey,
 }
 
@@ -36,15 +40,22 @@ pub(crate) enum Credential {
 
 impl Credential {
     pub(crate) fn get_public_key(&self) -> &SigPublicKey {
-        match &self {
-            Credential::Basic(basic) => &basic.public_key,
+        match self {
+            Credential::Basic(ref basic) => &basic.public_key,
             Credential::X509(_) => unimplemented!(),
         }
     }
 
     pub(crate) fn get_signature_scheme(&self) -> &'static dyn SignatureScheme {
-        match &self {
-            Credential::Basic(basic) => basic.signature_scheme,
+        match self {
+            Credential::Basic(ref basic) => basic.signature_scheme,
+            Credential::X509(_) => unimplemented!(),
+        }
+    }
+
+    pub(crate) fn get_identity(&self) -> &Identity {
+        match self {
+            Credential::Basic(ref basic) => &basic.identity,
             Credential::X509(_) => unimplemented!(),
         }
     }

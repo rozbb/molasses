@@ -25,22 +25,6 @@ impl PathSecret {
     }
 }
 
-/*
-impl core::ops::Deref for PathSecret {
-    type Target = ClearOnDrop<Vec<u8>>;
-
-    fn deref(&self) -> &ClearOnDrop<Vec<u8>> {
-        &self.0
-    }
-}
-
-impl core::ops::DerefMut for PathSecret {
-    fn deref_mut(&mut self) -> &mut ClearOnDrop<Vec<u8>> {
-        &mut self.0
-    }
-}
-*/
-
 // Ratchet trees are serialized in DirectPath messages as optional<PublicKey> tree<1..2^32-1> So we
 // encode RatchetTree as a Vec<RatchetTreeNode> with length bound u32, and we encode
 // RatchetTreeNode as enum { Blank, Filled { DhPublicKey } }, which is encoded in the same way as
@@ -587,7 +571,7 @@ mod test {
     use crate::{
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
-            dh::{DhPublicKey, DhPublicKeyRaw, DiffieHellman},
+            dh::{DhPublicKey, DhPublicKeyRaw},
         },
         tls_de::TlsDeserializer,
     };

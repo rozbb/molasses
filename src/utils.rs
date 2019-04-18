@@ -95,7 +95,7 @@ pub(crate) mod test_utils {
         crypto::{
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
             rng::CryptoRng,
-            sig::{SigSecretKey, SignatureScheme},
+            sig::{SigSecretKey, SignatureScheme, ED25519_IMPL},
         },
         group_state::GroupState,
         ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
@@ -215,6 +215,34 @@ pub(crate) mod test_utils {
         };
 
         (group_state, identity_keys)
+    }
+
+    // Returns a randomly-generated Credential along with its corresponding identity key
+    pub(crate) fn random_basic_credential<R: rand::Rng + CryptoRng>(
+        rng: &mut R,
+    ) -> (Credential, SigSecretKey) {
+        // Make a random identity
+        let identity = {
+            let mut buf = [0u8; 16];
+            rng.fill_bytes(&mut buf);
+            credential::Identity(buf.to_vec())
+        };
+
+        // TODO: Expand the number of available ciphersuites once more are available
+        let signature_schemes = [&ED25519_IMPL];
+        let signature_scheme = *signature_schemes.choose(rng).unwrap();
+
+        // Generate a random keypair
+        let identity_key = signature_scheme.secret_key_from_random(rng).unwrap();
+        let public_key = signature_scheme.public_key_from_secret_key(&identity_key);
+
+        let cred = Credential::Basic(BasicCredential {
+            identity,
+            signature_scheme,
+            public_key,
+        });
+
+        (cred, identity_key)
     }
 
     // Returns a new GroupState where the roster index is changed to the given `new_index` and the
