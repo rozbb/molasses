@@ -838,6 +838,7 @@ mod test {
 
     // Checks that
     // GroupState::from_welcome(Welcome::from_welcome_info(group.as_welcome_info())) == group
+    // TODO: Check this in conjunction with Adds as well
     #[quickcheck]
     fn welcome_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
@@ -878,9 +879,13 @@ mod test {
 
         // Creates a GroupState from the given Welcome object. This should be identical to the
         // starting group state, except maybe for the roster index, credential, and identity key.
-        let group_state2 =
-            GroupState::from_welcome(welcome, &init_key, &credential.get_identity(), identity_key)
-                .unwrap();
+        let group_state2 = GroupState::from_welcome(
+            welcome,
+            &init_key,
+            &new_credential.get_identity(),
+            new_identity_key,
+        )
+        .unwrap();
 
         // Now see if the resulting group states agree
         let (group1_bytes, group2_bytes) = (
