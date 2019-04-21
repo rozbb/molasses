@@ -43,11 +43,11 @@ where
     let res = if field.ends_with("__bound_u8") {
         Some(reader.read_u8()? as u64)
     } else if field.ends_with("__bound_u16") {
-        Some(dbg!(reader.read_u16::<BigEndian>()?) as u64)
+        Some(reader.read_u16::<BigEndian>()? as u64)
     } else if field.ends_with("__bound_u24") {
         Some(reader.read_u24::<BigEndian>()? as u64)
     } else if field.ends_with("__bound_u32") {
-        Some(dbg!(reader.read_u32::<BigEndian>()?) as u64)
+        Some(reader.read_u32::<BigEndian>()? as u64)
     } else if field.ends_with("__bound_u64") {
         Some(reader.read_u64::<BigEndian>()?)
     } else {
@@ -85,7 +85,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u8(dbg!(self.reader.read_u8()?))
+        visitor.visit_u8(self.reader.read_u8()?)
     }
 
     /// Hint that the `Deserialize` type is expecting a `u16` value.
@@ -93,7 +93,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u16(dbg!(self.reader.read_u16::<BigEndian>()?))
+        visitor.visit_u16(self.reader.read_u16::<BigEndian>()?)
     }
 
     /// Hint that the `Deserialize` type is expecting a `u32` value.
@@ -101,7 +101,7 @@ impl<'de, 'a, 'b, R: std::io::Read> Deserializer<'de> for &'b mut TlsDeserialize
     where
         V: Visitor<'de>,
     {
-        visitor.visit_u32(dbg!(self.reader.read_u32::<BigEndian>()?))
+        visitor.visit_u32(self.reader.read_u32::<BigEndian>()?)
     }
 
     /// Hint that the `Deserialize` type is expecting a `u64` value.
