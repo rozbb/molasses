@@ -210,7 +210,8 @@ pub(crate) mod test_utils {
             roster: roster,
             tree: tree,
             transcript_hash: transcript_hash,
-            roster_index: my_roster_idx,
+            roster_index: Some(my_roster_idx),
+            initializing_user_init_key: None,
             init_secret: init_secret,
         };
 
@@ -256,7 +257,7 @@ pub(crate) mod test_utils {
         assert!(new_index as usize <= group_state.roster.len());
 
         let mut new_group_state = group_state.clone();
-        new_group_state.roster_index = new_index;
+        new_group_state.roster_index = Some(new_index);
         new_group_state.identity_key = identity_keys[new_index as usize].clone();
 
         new_group_state

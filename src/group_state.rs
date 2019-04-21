@@ -1,5 +1,5 @@
 use crate::{
-    credential::{Credential, Identity, Roster},
+    credential::Roster,
     crypto::{
         ciphersuite::CipherSuite,
         ecies::{ecies_encrypt, EciesCiphertext},
@@ -14,6 +14,7 @@ use crate::{
     ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
     tls_de::TlsDeserializer,
     tls_ser, tree_math,
+    upcast::{self, CryptoUpcast},
 };
 
 use clear_on_drop::ClearOnDrop;
@@ -86,9 +87,17 @@ pub(crate) struct GroupState {
     #[serde(rename = "transcript_hash__bound_u8")]
     pub(crate) transcript_hash: Vec<u8>,
 
-    /// This participant's position in the roster. This is also known as `signer_index`.
+    /// The participant's position in the roster. This is also known as `signer_index`. It is
+    /// `None` iff this `GroupState` is in a preliminary state, i.e., iff it is between a `Welcome`
+    /// and `Add` operation.
     #[serde(skip)]
-    pub(crate) roster_index: u32,
+    pub(crate) roster_index: Option<u32>,
+
+    /// The `UserInitKey` used in the creation of this group from a `Welcome`. This is `Some` iff
+    /// this `GroupState` is in a preliminary state, i.e., if it is between a `Welcome` and `Add`
+    /// operation.
+    #[serde(skip)]
+    pub(crate) initializing_user_init_key: Option<UserInitKey>,
 
     /// The initial secret used to derive `application_secret` and `confirmation_key`
     #[serde(skip)]
@@ -99,30 +108,20 @@ pub(crate) struct GroupState {
 // transcript_hash is initialized to all zeros.
 
 impl GroupState {
-    /// Initializes a `GroupState` with the given `WelcomeInfo` information, this participant's
-    /// identity, and this participant's identity key
-    fn from_welcome_info(
+    /// Initializes a preliminary `GroupState` with the given `WelcomeInfo` information, this
+    /// this participant's identity key, and the `UserInitKey` used to encrypt the `Welcome` that
+    /// the `WelcomeInfo` came from.
+    ///
+    /// Returns: A `GroupState` in a "preliminary state", meaning that `roster_index` is `None` and
+    /// `initializing_user_init_key` is `Some`. The only thing to do with a preliminary
+    /// `GroupState` is give it an `Add` operation to add yourself to it.
+    pub(crate) fn from_welcome_info(
         cs: &'static CipherSuite,
         w: WelcomeInfo,
-        my_identity: &Identity,
         my_identity_key: SigSecretKey,
-    ) -> Result<GroupState, Error> {
-        // We're not told where we are in the roster, so we first find ourselves
-        let roster_index: u32 = {
-            let pos = w
-                .roster
-                .iter()
-                .position(|cred| match cred {
-                    Some(Credential::Basic(basic_cred)) => &basic_cred.identity == my_identity,
-                    None => false,
-                    Some(_) => unimplemented!("X.509 is not a thing yet"),
-                })
-                .ok_or(Error::ValidationError("Could not find myself in roster"))?;
-            assert!(pos <= std::u32::MAX as usize, "roster index out of range");
-            pos as u32
-        };
-
-        let g = GroupState {
+        initializing_user_init_key: UserInitKey,
+    ) -> GroupState {
+        GroupState {
             cs: cs,
             protocol_version: w.protocol_version,
             identity_key: my_identity_key,
@@ -131,46 +130,10 @@ impl GroupState {
             roster: w.roster,
             tree: w.tree,
             transcript_hash: w.transcript_hash,
-            roster_index: roster_index,
+            roster_index: None,
+            initializing_user_init_key: Some(initializing_user_init_key),
             init_secret: w.init_secret,
-        };
-        Ok(g)
-    }
-
-    /// Initializes a `GroupState` with the given `Welcome` message. This is an encrypted wrapper
-    /// around a `WelcomeInfo`, so a valid `UserInitKey` with known private keys, as well as
-    /// identity information are necessary to open and initialize this object.
-    fn from_welcome(
-        welcome: Welcome,
-        init_key: &UserInitKey,
-        my_identity: &Identity,
-        my_identity_key: SigSecretKey,
-    ) -> Result<GroupState, Error> {
-        // Verify the UserInitKey signature and validate its contents
-        init_key.verify_sig()?;
-        init_key.validate()?;
-        // Verifiy that the supplied UserInitKey is the one that the Welcome message references
-        if welcome.user_init_key_id != init_key.user_init_key_id {
-            return Err(Error::ValidationError("Supplied UserInitKey ID doesn't match Welcome's"));
         }
-        // Get the ciphersuite and private key we'll use to decrypt the wrapped WelcomeInfo
-        let cs = welcome.cipher_suite;
-        let dh_private_key = init_key
-            .get_private_key(cs)?
-            .ok_or(Error::ValidationError("Can't decrypt Welcome without a private key"))?;
-
-        // Decrypt the WelcomeInfo and pass it along to from_welcome_info
-        let welcome_info_bytes = crate::crypto::ecies::ecies_decrypt(
-            cs,
-            dh_private_key,
-            welcome.encrypted_welcome_info,
-        )?;
-        let welcome_info = {
-            let mut cursor = welcome_info_bytes.as_slice();
-            let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
-            WelcomeInfo::deserialize(&mut deserializer)
-        }?;
-        GroupState::from_welcome_info(cs, welcome_info, my_identity, my_identity_key)
     }
 
     /// Creates a `WelcomeInfo` object with all the current state information
@@ -366,7 +329,14 @@ impl GroupState {
         // Decrypt the path secret from the GroupUpdate and propagate it through our tree
         // Recall that roster_index is just another (IMO clearer) name for signer_index
         let num_leaves = tree_math::num_leaves_in_tree(self.tree.size());
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index)?;
+        let my_tree_idx = {
+            // Safely unwrap the roster index. A preliminary GroupState is one that has just been
+            // initialized with a Welcome message
+            let roster_index = self
+                .roster_index
+                .ok_or(Error::ValidationError("Cannot do an Update on a preliminary GroupState"))?;
+            GroupState::roster_index_to_tree_index(roster_index)?
+        };
         let (path_secret, common_ancestor) = self.tree.decrypt_direct_path_message(
             self.cs,
             &update.path,
@@ -414,7 +384,14 @@ impl GroupState {
     ) -> Result<UpdateSecret, Error> {
         // Find the entropy provided in remove.path that we'll use to update the tree before
         // blanking out the removed node
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index)?;
+        let my_tree_idx = {
+            // Safely unwrap the roster index. A preliminary GroupState is one that has just been
+            // initialized with a Welcome message
+            let roster_index = self
+                .roster_index
+                .ok_or(Error::ValidationError("Cannot do a Remove on a preliminary GroupState"))?;
+            GroupState::roster_index_to_tree_index(roster_index)?
+        };
         let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
             self.cs,
             &remove.path,
@@ -436,6 +413,10 @@ impl GroupState {
 
     /// Performs and validates an Add operation on the `GroupState`. Requires a `WelcomeInfo`
     /// representing the `GroupState` before this handshake was received.
+    ///
+    /// Requires: If the member being added is this member, then this `GroupState` must be
+    /// "preliminary", i.e., its `roster_index` must be `None`, i.e., it must have just been
+    /// created from a `Welcome`.
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
     /// necessary for generating new epoch secrets.
@@ -472,16 +453,41 @@ impl GroupState {
             return Err(Error::ValidationError("Invalid WelcomeInfo hash in Add operation"));
         }
 
-        // Verify the UserInitKey's signature, then validate its contents
+        // Check if we're a "preliminary" GroupState, i.e., whether or not we were just created by
+        // a Welcome. This is true iff self.roster_index is null and iff
+        // self.initializing_user_init_key is non-null.
+        let is_preliminary = self.roster_index.is_none();
+
+        // Check all the UserInitKeys involved
         add.init_key.verify_sig()?;
         add.init_key.validate()?;
+        self.initializing_user_init_key.as_ref().map(|uik| uik.verify_sig()).transpose()?;
+        self.initializing_user_init_key.as_ref().map(|uik| uik.validate()).transpose()?;
+
+        // If we just received a WelcomeInfo, we want to use the UserInitKey we created, since it
+        // contains the private key to our ratchet tree node
+        let init_key = if is_preliminary {
+            let uik = self.initializing_user_init_key.as_ref().ok_or(Error::ValidationError(
+                "Preliminary GroupState has no initializing UserInitKey",
+            ))?;
+            // If it's an initializing key, let's make sure that its ID matches that of the
+            // provided UserInitKey
+            if uik.user_init_key_id != add.init_key.user_init_key_id {
+                return Err(Error::ValidationError(
+                    "Add's UserInitKey and GroupState's initialized UserInitKey differ",
+                ));
+            }
+            uik
+        } else {
+            &add.init_key
+        };
 
         // Is this an appending Add or is it an in-place Add? If in-place, we have to make sure
         // we're not overwriting any existing members in the group
         let is_append = add_roster_index as usize == self.roster.len();
 
         // Update the roster
-        let new_credential = add.init_key.credential.clone();
+        let new_credential = init_key.credential.clone();
         if is_append {
             self.roster.push(Some(new_credential))
         } else {
@@ -506,22 +512,27 @@ impl GroupState {
         }
 
         let add_tree_index = GroupState::roster_index_to_tree_index(add_roster_index)?;
+        if is_preliminary {
+            // If we're one being Added, then this index is us
+            self.roster_index = Some(add_roster_index);
+        }
 
         // Propagate the blank up the tree before we overwrite the new leaf with the new
-        // participant's pubkey info
+        // member's pubkey info
         self.tree.propagate_blank(add_tree_index);
 
-        // Now find the public key and overwrite the node we found with the pubkey info. The public
-        // key we associate to the new participant is the one that corresponds to our current
+        // Now find the node keypair information and make our node in the ratchet tree. The keypair
+        // we associate to the new participant is the one that corresponds to our current
         // ciphersuite.
-        let public_key = add.init_key.get_public_key(self.cs)?.ok_or(Error::ValidationError(
+        let public_key = init_key.get_public_key(self.cs)?.ok_or(Error::ValidationError(
             "UserInitKey has no public keys for group's ciphersuite",
         ))?;
+        let private_key = init_key.get_private_key(self.cs)?.cloned();
 
         // The new node we add has the public key we found, and no known secrets
         let new_node = RatchetTreeNode::Filled {
             public_key: public_key.clone(),
-            private_key: None,
+            private_key: private_key,
             secret: None,
         };
 
@@ -534,11 +545,20 @@ impl GroupState {
         // Finally, do the overwrite
         *node_to_overwrite = new_node;
 
+        // Alright, we're done with the init_key. Make sure that we don't have our initializing
+        // UserInitKey hanging around after this
+        // TODO: Make this erasure secure
+        self.initializing_user_init_key = None;
+
         // "The update secret resulting from this change is an all-zero octet string of length
         // Hash.length."
         Ok(UpdateSecret::new(vec![0u8; self.cs.hash_alg.output_len]))
     }
 
+    /// Processes the given `Handshake` and, if successful, produces a new `GroupState`
+    ///
+    /// NOTE: This does not mutate the current `GroupState`. Instead, it returns the next version
+    /// of the `GroupState`, assuming that the `Handshake` is valid.
     // According to the spec, this is how we process handshakes:
     // 1. Verify that the prior_epoch field of the Handshake message is equal the epoch field of
     //    the current GroupState object.
@@ -554,7 +574,6 @@ impl GroupState {
     //    message, as described below, and verify that it is the same as the confirmation field.
     // 7. If the the above checks are successful, consider the updated GroupState object as the
     //    current state of the group.
-    /// Processes the given `Handshake` and, if successful, produces a new `GroupState`
     #[must_use]
     pub(crate) fn process_handshake(&self, handshake: &Handshake) -> Result<GroupState, Error> {
         if handshake.prior_epoch != self.epoch {
@@ -638,7 +657,14 @@ impl GroupState {
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
     ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
-        let my_tree_idx = GroupState::roster_index_to_tree_index(self.roster_index)?;
+        let my_tree_idx = {
+            // Safely unwrap the roster index. A preliminary GroupState is one that has just been
+            // initialized with a Welcome message
+            let roster_index = self.roster_index.ok_or(Error::ValidationError(
+                "Cannot make an Update from a preliminary GroupState",
+            ))?;
+            GroupState::roster_index_to_tree_index(roster_index)?
+        };
 
         // Do the update and increment the epoch
         let update_secret = self.apply_update(new_path_secret.clone(), my_tree_idx)?;
@@ -660,6 +686,40 @@ impl GroupState {
         Ok((op, application_secret, confirmation_key))
     }
 
+    /// Creates and applies a `GroupAdd` operation for a member at index `new_roster_index` with
+    /// the target `init_key`. This also returns the newly derived applications secret and
+    /// confirmation key.
+    // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
+    // consume the Add ops they produce (unlike Updates, for example). But for consistency with the
+    // other create_*_op functions, this should mutate the GroupState too.
+    pub(crate) fn create_add_op(
+        &mut self,
+        new_roster_index: u32,
+        init_key: UserInitKey,
+        prior_welcome_info: &WelcomeInfo,
+    ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
+        // Make the add op
+        let prior_welcome_info_hash = {
+            let serialized = tls_ser::serialize_to_bytes(prior_welcome_info)?;
+            ring::digest::digest(self.cs.hash_alg, &serialized).as_ref().to_vec()
+        };
+        let add = GroupAdd {
+            roster_index: new_roster_index,
+            init_key: init_key,
+            welcome_info_hash: prior_welcome_info_hash,
+        };
+
+        // Apply the Add, log the operation in the transcript hash, increment the epoch, and update
+        // the epoch secrets
+        let update_secret = self.process_add_op(&add, prior_welcome_info)?;
+        let op = GroupOperation::Add(add);
+        self.update_transcript_hash(&op)?;
+        self.increment_epoch()?;
+        let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+
+        Ok((op, application_secret, confirmation_key))
+    }
+
     /// Creates a `Handshake` message by packaging the given `GroupOperation`.
     ///
     /// NOTE: This is intended to be called only after `create_*_op` is called, where `*` is `add`
@@ -672,10 +732,9 @@ impl GroupState {
         // signature = Sign(identity_key, GroupState.transcript_hash)
         let signature = self.cs.sig_impl.sign(&self.identity_key, &self.transcript_hash);
 
-        let prior_epoch = self
-            .epoch
-            .checked_sub(1)
-            .expect("cannot create a handshake from a brand new GroupState");
+        let prior_epoch = self.epoch.checked_sub(1).ok_or(Error::ValidationError(
+            "Cannot create a handshake from a brand new GroupState",
+        ))?;
 
         // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
@@ -692,10 +751,16 @@ impl GroupState {
             ctx.sign()
         };
 
+        // Safely unwrap the roster index. A preliminary GroupState is one that has just been
+        // initialized with a Welcome message
+        let roster_index = self.roster_index.ok_or(Error::ValidationError(
+            "Cannot make a Handshake from a preliminary GroupState",
+        ))?;
+
         let handshake = Handshake {
             prior_epoch: prior_epoch,
             operation: operation,
-            signer_index: self.roster_index,
+            signer_index: roster_index,
             signature: signature,
             confirmation: confirmation.as_ref().to_vec(),
         };
@@ -705,7 +770,8 @@ impl GroupState {
 
 // TODO: Make this COW so we don't have to clone everything in GroupState::as_welcome_info
 
-/// Contains everything a new user needs to know to join a Group
+/// Contains everything a new user needs to know to join a group. This is always followed by an
+/// `Add` operation.
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct WelcomeInfo {
     // ProtocolVersion version;
@@ -755,7 +821,7 @@ pub(crate) struct Welcome {
 impl Welcome {
     /// Packages up a `WelcomeInfo` object with a preferred cipher suite, and encrypts it to the
     /// specified `UserInitKey` (under the appropriate public key)
-    fn from_welcome_info(
+    pub(crate) fn from_welcome_info(
         cs: &'static CipherSuite,
         init_key: &UserInitKey,
         welcome_info: &WelcomeInfo,
@@ -777,13 +843,51 @@ impl Welcome {
             encrypted_welcome_info: ciphertext,
         })
     }
+
+    /// Decrypts the `Welcome` with the given `UserInitKey` and returns the contained `WelcomeInfo`
+    ///
+    /// Requires: That the `init_key` is the `UserInitKey` that the `Welcome` was encrypted with
+    /// (i.e., `init_key.user_init_key_id == self.user_init_key_id`) and `init_key.private_keys`
+    /// is not `None`
+    pub(crate) fn into_welcome_info(self, init_key: &UserInitKey) -> Result<WelcomeInfo, Error> {
+        // Verify the UserInitKey signature and validate its contents
+        init_key.verify_sig()?;
+        init_key.validate()?;
+        // Verify that the supplied UserInitKey is the one that the Welcome message references
+        if self.user_init_key_id != init_key.user_init_key_id {
+            return Err(Error::ValidationError("Supplied UserInitKey ID doesn't match Welcome's"));
+        }
+        // Get the ciphersuite and private key we'll use to decrypt the wrapped WelcomeInfo
+        let cs = self.cipher_suite;
+        let dh_private_key = init_key
+            .get_private_key(cs)?
+            .ok_or(Error::ValidationError("Can't decrypt Welcome without a private key"))?;
+
+        // Decrypt the WelcomeInfo, deserialize it, and return it
+        let welcome_info_bytes =
+            crate::crypto::ecies::ecies_decrypt(cs, dh_private_key, self.encrypted_welcome_info)?;
+        let welcome_info = {
+            let mut cursor = welcome_info_bytes.as_slice();
+            let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
+            let mut w = WelcomeInfo::deserialize(&mut deserializer)?;
+
+            // Once it's deserialized, make it nice and typesafe
+            w.upcast_crypto_values(&upcast::CryptoCtx::new())?;
+            w
+        };
+
+        Ok(welcome_info)
+    }
 }
 
 #[cfg(test)]
 mod test {
     use crate::{
-        credential::{Credential, Roster},
-        crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        credential::Roster,
+        crypto::{
+            ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+            sig::SignatureScheme,
+        },
         error::Error,
         group_state::{GroupState, UpdateSecret, Welcome},
         handshake::{ProtocolVersion, UserInitKey},
@@ -793,75 +897,32 @@ mod test {
         utils::test_utils,
     };
 
-    use core::convert::TryFrom;
-
     use quickcheck_macros::quickcheck;
-    use rand::{Rng, RngCore, SeedableRng};
+    use rand::{RngCore, SeedableRng};
     use serde::de::Deserialize;
-
-    // Checks that GroupState::from_welcome_info(group.as_welcome_info()) == group
-    #[quickcheck]
-    fn welcome_info_correctness(rng_seed: u64) {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        // Make a starting group
-        let (group_state1, mut identity_keys) = test_utils::random_full_group_state(&mut rng);
-
-        // Get all the data that a new party would have
-        let cs = group_state1.cs;
-        let welcome_info = group_state1.as_welcome_info();
-
-        // Pick a roster position. We allow this to be the same as the first group's position
-        let new_roster_index = rng.gen_range(0, group_state1.roster.len());
-        // The new identity is the one in the roster. Remember the group is full so the roster has
-        // no blank entries
-        let new_identity = match group_state1.roster[new_roster_index] {
-            Some(Credential::Basic(ref basic_cred)) => basic_cred.identity.clone(),
-            Some(_) => unimplemented!("X.509 is not a thing yet"),
-            None => panic!("expected a full roster!"),
-        };
-        let new_identity_key = identity_keys.remove(new_roster_index);
-
-        // Make a group state from the first group state's WelcomeInfo. This should be identical to
-        // the first one, except for the roster_index and identity_key (since these are explicitly
-        // different).
-        let group_state2 =
-            GroupState::from_welcome_info(cs, welcome_info, &new_identity, new_identity_key)
-                .unwrap();
-
-        // Now see if the resulting group states agree
-        let (group1_bytes, group2_bytes) = (
-            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
-            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
-        );
-        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree Welcome round-trip");
-    }
 
     // Checks that
     // GroupState::from_welcome(Welcome::from_welcome_info(group.as_welcome_info())) == group
-    // TODO: Check this in conjunction with Adds as well
     #[quickcheck]
     fn welcome_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group
-        let (group_state1, mut identity_keys) = test_utils::random_full_group_state(&mut rng);
-
-        // Pick data for another member of this group
-        // Pick a roster position. We allow this to be the same as the first group's position
-        let new_roster_index = rng.gen_range(0, group_state1.roster.len());
-        let new_credential = group_state1.roster[new_roster_index].as_ref().unwrap().clone();
-        let new_identity_key = identity_keys.remove(new_roster_index);
+        let (group_state1, _) = test_utils::random_full_group_state(&mut rng);
 
         // Make the data necessary for a Welcome message
         let cipher_suites = vec![&X25519_SHA256_AES128GCM];
-        let supported_versions: Vec<ProtocolVersion> = vec![0u8; cipher_suites.len()];
+        let supported_versions: Vec<ProtocolVersion> = vec![0; cipher_suites.len()];
+        // These values really don't matter. They're only important if we do anything with the
+        // GroupStates after the Welcome
+        let (new_credential, new_identity_key) = test_utils::random_basic_credential(&mut rng);
         // Key ID is random
         let user_init_key_id = {
             let mut buf = [0u8; 16];
             rng.fill_bytes(&mut buf);
             buf.to_vec()
         };
-        // The UserInitKey has all the information necessary to add a new member to the group and
-        // Welcome them
+        // The UserInitKey has all the key / identity information necessary to add a new member to
+        // the group and Welcome them
         let init_key = UserInitKey::new_from_random(
             &new_identity_key,
             user_init_key_id,
@@ -873,26 +934,25 @@ mod test {
         .unwrap();
 
         // Make the welcome objects
-        let cs = group_state1.cs;
+        let cipher_suite = group_state1.cs;
         let welcome_info = group_state1.as_welcome_info();
-        let welcome = Welcome::from_welcome_info(cs, &init_key, &welcome_info, &mut rng).unwrap();
+        let welcome =
+            Welcome::from_welcome_info(cipher_suite, &init_key, &welcome_info, &mut rng).unwrap();
 
-        // Creates a GroupState from the given Welcome object. This should be identical to the
-        // starting group state, except maybe for the roster index, credential, and identity key.
-        let group_state2 = GroupState::from_welcome(
-            welcome,
-            &init_key,
-            &new_credential.get_identity(),
-            new_identity_key,
-        )
-        .unwrap();
+        // Now unwrap the Welcome back into a WelcomeInfo and create a GroupState from that. This
+        // should be identical to the starting group state, except maybe for the roster_index,
+        // credential, initiailizing UserInitKey, and identity key. None of those things are
+        // serialized though, since they are unique to each member's perspective
+        let welcome_info = welcome.into_welcome_info(&init_key).unwrap();
+        let group_state2 =
+            GroupState::from_welcome_info(cipher_suite, welcome_info, new_identity_key, init_key);
 
         // Now see if the resulting group states agree
         let (group1_bytes, group2_bytes) = (
             tls_ser::serialize_to_bytes(&group_state1).unwrap(),
             tls_ser::serialize_to_bytes(&group_state2).unwrap(),
         );
-        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree Welcome round-trip");
+        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree after a Welcome");
     }
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
@@ -930,7 +990,8 @@ mod test {
             roster: tgs.roster,
             tree: tgs.tree,
             transcript_hash: tgs.transcript_hash,
-            roster_index: 0,
+            roster_index: Some(0),
+            initializing_user_init_key: None,
             init_secret: Vec::new(),
         }
     }

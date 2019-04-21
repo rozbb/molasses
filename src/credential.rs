@@ -1,4 +1,4 @@
-use crate::crypto::sig::{SigPublicKey, SigSecretKey, SignatureScheme};
+use crate::crypto::sig::{SigPublicKey, SignatureScheme};
 
 // TODO: Decide whether we check the size on the lower end while (de)serializing
 
@@ -7,7 +7,7 @@ pub(crate) type Roster = Vec<Option<Credential>>;
 
 // opaque cert_data<1..2^24-1>;
 /// A bunch of bytes representing an X.509 certificate. This currently doesn't do anything.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "X509CertData__bound_u24")]
 pub(crate) struct X509CertData(Vec<u8>);
 
@@ -18,7 +18,7 @@ pub(crate) struct X509CertData(Vec<u8>);
 pub(crate) struct Identity(pub(crate) Vec<u8>);
 
 /// Defines a simple user credential
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct BasicCredential {
     /// This is a user ID
     pub(crate) identity: Identity,
@@ -31,7 +31,7 @@ pub(crate) struct BasicCredential {
 }
 
 /// A user credential, as defined in section 5.6 of the MLS spec
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "Credential__enum_u8")]
 pub(crate) enum Credential {
     Basic(BasicCredential),

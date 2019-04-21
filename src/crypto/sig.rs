@@ -9,13 +9,13 @@ pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
 
 // opaque SignaturePublicKey<1..2^16-1>
 /// This is the form that all `SigPublicKey`s take when being sent or received over the wire
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "SigPublicKeyRaw__bound_u16")]
 pub(crate) struct SigPublicKeyRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for a signature scheme's public key, depending on the underlying
 /// algorithm
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SigPublicKey {
     Ed25519PublicKey(ed25519_dalek::PublicKey),
     Raw(SigPublicKeyRaw),
@@ -57,13 +57,13 @@ impl core::fmt::Debug for SigSecretKey {
 
 // opaque UserInitKey::signature<0..2^16-1>
 /// This is the form that all `Signature`s take when being sent or received over the wire
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "SignatureRaw__bound_u16")]
 pub(crate) struct SignatureRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for a signature scheme's signature, depending on the underlying
 /// algorithm
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum Signature {
     Ed25519Signature(ed25519_dalek::Signature),
     Raw(SignatureRaw),
@@ -104,6 +104,14 @@ impl core::fmt::Debug for SignatureScheme {
         f.write_str(self.name())
     }
 }
+
+impl PartialEq for SignatureScheme {
+    fn eq(&self, other: &SignatureScheme) -> bool {
+        self.name() == other.name()
+    }
+}
+
+impl Eq for SignatureScheme {}
 
 /// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
 pub(crate) struct Ed25519;
