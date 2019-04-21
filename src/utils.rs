@@ -5,7 +5,7 @@ use crate::{
         hkdf,
     },
     error::Error,
-    ratchet_tree::PathSecret,
+    ratchet_tree::{NodeSecret, PathSecret},
 };
 
 /// Unwraps an enum into an expected variant. Panics if the supplied value is not of the expected
@@ -273,18 +273,18 @@ pub(crate) mod test_utils {
 pub(crate) fn derive_node_values(
     cs: &'static CipherSuite,
     mut path_secret: PathSecret,
-) -> Result<(DhPublicKey, DhPrivateKey, Vec<u8>, PathSecret), Error> {
+) -> Result<(DhPublicKey, DhPrivateKey, NodeSecret, PathSecret), Error> {
     assert_eq!(path_secret.0.len(), cs.hash_alg.output_len, "path secret length != Hash.length");
 
     let prk = hkdf::prk_from_bytes(cs.hash_alg, &*path_secret.0);
     // node_secret[n] = HKDF-Expand-Label(path_secret[n], "node", "", Hash.Length)
-    let mut node_secret = vec![0u8; cs.hash_alg.output_len];
-    hkdf::hkdf_expand_label(&prk, b"node", b"", node_secret.as_mut_slice());
+    let mut node_secret = NodeSecret(vec![0u8; cs.hash_alg.output_len]);
+    hkdf::hkdf_expand_label(&prk, b"node", b"", &mut *node_secret.0);
     // path_secret[n] = HKDF-Expand-Label(path_secret[n-1], "path", "", Hash.Length)
     hkdf::hkdf_expand_label(&prk, b"path", b"", &mut *path_secret.0);
 
     // Derive the private and public keys and assign them to the node
-    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret)?;
+    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret.0)?;
 
     Ok((node_public_key, node_private_key, node_secret, path_secret))
 }

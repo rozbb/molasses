@@ -13,6 +13,10 @@ use crate::{
 use clear_on_drop::ClearOnDrop;
 use subtle::ConstantTimeEq;
 
+/// This is called the "node secret" (section 5.2). If `Hash` is the current ciphersuite's hash
+/// algorithm, this MUST have length equal to `Hash.length`.
+pub(crate) struct NodeSecret(pub(crate) Vec<u8>);
+
 /// This is called the "path secret" (section 5.2). If `Hash` is the current ciphersuite's hash
 /// algorithm, this MUST have length equal to `Hash.length`.
 #[derive(Clone)]
@@ -40,8 +44,6 @@ pub(crate) enum RatchetTreeNode {
         public_key: DhPublicKey,
         #[serde(skip)]
         private_key: Option<DhPrivateKey>,
-        #[serde(skip)]
-        secret: Option<Vec<u8>>,
     },
 }
 
@@ -64,7 +66,6 @@ impl RatchetTreeNode {
                 *self = RatchetTreeNode::Filled {
                     public_key: new_public_key,
                     private_key: None,
-                    secret: None,
                 };
             }
             &mut RatchetTreeNode::Filled {
@@ -94,58 +95,9 @@ impl RatchetTreeNode {
             &mut RatchetTreeNode::Filled {
                 public_key: _,
                 ref mut private_key,
-                ..
             } => {
                 *private_key = Some(new_private_key);
             }
-        }
-    }
-
-    /// Updates the node's secret to the given one
-    ///
-    /// Panics: If the node is `Blank`
-    pub(crate) fn update_secret(&mut self, new_secret: Vec<u8>) {
-        match self {
-            &mut RatchetTreeNode::Blank => panic!("tried to update secret of blank node"),
-            &mut RatchetTreeNode::Filled {
-                public_key: _,
-                private_key: _,
-                ref mut secret,
-            } => {
-                *secret = Some(new_secret);
-            }
-        }
-    }
-
-    /// Returns a mutable reference to the contained node secret. If the node is `Filled` and
-    /// doesn't have a node secret, one with length `secret_len` is allocated. If the node is
-    /// `Blank`, then `None` is returned.
-    pub(crate) fn get_mut_node_secret(&mut self, secret_len: usize) -> Option<&mut [u8]> {
-        match self {
-            &mut RatchetTreeNode::Blank => None,
-            &mut RatchetTreeNode::Filled {
-                public_key: _,
-                private_key: _,
-                ref mut secret,
-            } => match secret {
-                Some(ref mut inner) => Some(inner.as_mut_slice()),
-                None => {
-                    *secret = Some(vec![0u8; secret_len]);
-                    secret.as_mut().map(|v| v.as_mut_slice())
-                }
-            },
-        }
-    }
-
-    /// Returns a reference to the contained node secret. If no secret exists, `None` is returned.
-    pub(crate) fn get_secret(&self) -> Option<&[u8]> {
-        match self {
-            &RatchetTreeNode::Blank => None,
-            &RatchetTreeNode::Filled {
-                public_key: _,
-                private_key: _,
-                ref secret,
-            } => secret.as_ref().map(|v| v.as_slice()),
         }
     }
 
@@ -156,7 +108,6 @@ impl RatchetTreeNode {
             &RatchetTreeNode::Filled {
                 public_key: _,
                 ref private_key,
-                ..
             } => private_key.as_ref(),
         }
     }
@@ -524,19 +475,23 @@ impl RatchetTree {
     /// Requires: `path_secret.len() == cs.hash_alg.output_len`
     ///
     /// Panics: If above condition is not satisfied
+    ///
+    /// Returns: `Ok(node_secret)` on success, where `node_secret` is the node secret of the root
+    /// node of the updated ratchet tree.
     pub(crate) fn propagate_new_path_secret(
         &mut self,
         cs: &'static CipherSuite,
         mut path_secret: PathSecret,
         start_idx: usize,
-    ) -> Result<(), Error> {
+    ) -> Result<NodeSecret, Error> {
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
         let root_node_idx = tree_math::root_idx(num_leaves);
 
         let mut current_node_idx = start_idx;
 
-        // Go up the tree, setting the node secrets and keypairs
-        loop {
+        // Go up the tree, setting the node secrets and keypairs. The last calculated node secret
+        // is that of the root. This is our return value
+        let root_node_secret = loop {
             let current_node =
                 self.get_mut(current_node_idx).expect("reached invalid node in secret propagation");
 
@@ -549,19 +504,18 @@ impl RatchetTree {
             // key (it must have a public key first)
             current_node.update_public_key(node_public_key);
             current_node.update_private_key(node_private_key);
-            current_node.update_secret(node_secret);
 
             if current_node_idx == root_node_idx {
                 // If we just updated the root, we're done
-                break;
+                break node_secret;
             } else {
                 // Otherwise, take one step up the tree
                 current_node_idx = tree_math::node_parent(current_node_idx, num_leaves);
                 path_secret = new_path_secret;
             }
-        }
+        };
 
-        Ok(())
+        Ok(root_node_secret)
     }
 }
 
@@ -731,7 +685,6 @@ mod test {
                     nodes.push(RatchetTreeNode::Filled {
                         public_key: DhPublicKey::Raw(DhPublicKeyRaw(Vec::new())),
                         private_key: None,
-                        secret: None,
                     });
                 }
                 bit_mask <<= 1;

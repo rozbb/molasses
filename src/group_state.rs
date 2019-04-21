@@ -234,15 +234,12 @@ impl GroupState {
         start_idx: usize,
     ) -> Result<UpdateSecret, Error> {
         // The main part of doing an update is updating node secrets, private keys, and public keys
-        self.tree.propagate_new_path_secret(self.cs, new_path_secret, start_idx)?;
+        let root_node_secret =
+            self.tree.propagate_new_path_secret(self.cs, new_path_secret, start_idx)?;
 
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree."
-        let root_node_secret = {
-            let root_node = self.tree.get_root_node().expect("tried to update empty tree");
-            root_node.get_secret().expect("root node has no secret").to_vec()
-        };
-        Ok(UpdateSecret::new(root_node_secret))
+        Ok(UpdateSecret::new(root_node_secret.0))
     }
 
     /// Performs a Remove operation on the `GroupState`, where `remove_roster_idx` is the roster
@@ -269,14 +266,12 @@ impl GroupState {
         //   removed leaf
 
         // Update the ratchet tree with the entropy provided in path_secret
-        self.tree.propagate_new_path_secret(self.cs, new_path_secret, update_path_start_idx)?;
+        let root_node_secret =
+            self.tree.propagate_new_path_secret(self.cs, new_path_secret, update_path_start_idx)?;
 
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree after the second step". This will be our return value.
-        let update_secret = {
-            let root_node = self.tree.get_root_node().expect("tried to update empty tree");
-            root_node.get_secret().expect("root node has no secret").to_vec()
-        };
+        let update_secret = UpdateSecret::new(root_node_secret.0);
 
         // Blank out the roster location
         self.roster
@@ -307,7 +302,7 @@ impl GroupState {
         // Truncate the tree in a similar fashion to the roster
         self.tree.truncate_to_last_nonblank();
 
-        Ok(UpdateSecret::new(update_secret))
+        Ok(update_secret)
     }
 
     /// Performs and validates an incoming (i.e., one we did not generate) Update operation on the
@@ -533,7 +528,6 @@ impl GroupState {
         let new_node = RatchetTreeNode::Filled {
             public_key: public_key.clone(),
             private_key: private_key,
-            secret: None,
         };
 
         // Check that we're only overwriting a Blank node.
