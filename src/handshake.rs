@@ -370,6 +370,8 @@ mod test {
         utils::test_utils,
     };
 
+    use std::io::Read;
+
     use quickcheck_macros::quickcheck;
     use rand::Rng;
     use rand_core::{RngCore, SeedableRng};
@@ -548,13 +550,17 @@ mod test {
     // being reserialized
     #[test]
     fn official_message_parsing_kat() {
-        // Read in and deserialize the input
-        let original_bytes = Vec::new();
+        // Read in the file. We'll use these bytes at the end to compare to the reserialization of
+        // the test vectors
+        let mut original_bytes = Vec::new();
         let mut f = std::fs::File::open("test_vectors/messages.bin").unwrap();
-        let mut deserializer = TlsDeserializer::from_reader(&mut f);
+        f.read_to_end(&mut original_bytes);
+
+        // Deserialize the file's contents
         let test_vec = {
+            let mut cursor = original_bytes.as_slice();
+            let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
             let raw = MessagesTestVectors::deserialize(&mut deserializer).unwrap();
-            //println!("{:#x?}", raw);
             // We can't do the upcasting here. The documentation lied when it said that
             // UserInitKeys are validly signed. They are [0xd6; 32], which is not a valid Ed25519
             // signature. So skip this step and call it a mission success.

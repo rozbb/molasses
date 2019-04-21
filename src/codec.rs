@@ -14,10 +14,6 @@ use serde::{
     ser::{Serialize, Serializer},
 };
 
-// TODO: These always return the 25519 impl, because I don't have P-256, and I need deserialization
-// to function correctly for testing. Doing what I'm doing here may significantly impact security.
-// This should be made correct ASAP
-
 const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)] = &[
     (&P256_SHA256_AES128GCM, "P256_SHA256_AES128GCM", 0x0000),
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
