@@ -223,8 +223,9 @@ impl GroupState {
             .ok_or(Error::ValidationError("roster/tree size invariant violated"))
     }
 
-    /// Performs an Update operation on the `GroupState`, where `new_path_secret` is the node
-    /// secret we will propagate starting at the index `start_idx`
+    /// Performs an update operation on the `GroupState`, where `new_path_secret` is the node
+    /// secret we will propagate starting at the index `start_idx`. This is the core updating logic
+    /// that is used in `process_incoming_update_op` and `create_and_apply_update_op`.
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
     /// necessary for generating new epoch secrets
@@ -240,69 +241,6 @@ impl GroupState {
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree."
         Ok(UpdateSecret::new(root_node_secret.0))
-    }
-
-    /// Performs a Remove operation on the `GroupState`, where `remove_roster_idx` is the roster
-    /// index of the participant we want to remove, `new_path_secret` is the new entropy added into
-    /// the group before the removal, and `update_path_start_idx` is the node we start at when
-    /// propagating the new path secret
-    ///
-    /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets
-    fn apply_remove(
-        &mut self,
-        remove_roster_idx: u32,
-        new_path_secret: PathSecret,
-        update_path_start_idx: usize,
-    ) -> Result<UpdateSecret, Error> {
-        // Game plan as per the spec:
-        // * Update the roster by setting the credential in the removed slot to the null optional
-        //   value
-        // * Update the ratchet tree by replacing nodes in the direct path from the removed leaf
-        //   using the information in the Remove message
-        // * Reduce the size of the roster and the tree until the rightmost element roster element
-        //   and leaf node are non-null
-        // * Update the ratchet tree by setting to blank all nodes in the direct path of the
-        //   removed leaf
-
-        // Update the ratchet tree with the entropy provided in path_secret
-        let root_node_secret =
-            self.tree.propagate_new_path_secret(self.cs, new_path_secret, update_path_start_idx)?;
-
-        // "The update secret resulting from this change is the secret for the root node of the
-        // ratchet tree after the second step". This will be our return value.
-        let update_secret = UpdateSecret::new(root_node_secret.0);
-
-        // Blank out the roster location
-        self.roster
-            .get_mut(remove_roster_idx as usize)
-            .map(|cred| *cred = None)
-            .ok_or(Error::ValidationError("Invalid roster index"))?;
-
-        // Truncate the roster to the last non-None credential
-        let mut last_nonempty_roster_entry = None;
-        for (i, entry) in self.roster.iter().rev().enumerate() {
-            if entry.is_some() {
-                last_nonempty_roster_entry = Some(i);
-            }
-        }
-        match last_nonempty_roster_entry {
-            // If there are no nonempty entries in the roster, clear it
-            None => self.roster.clear(),
-            Some(i) => {
-                // This can't fail, because i is an index
-                let num_elements_to_retain = i + 1;
-                self.roster.truncate(num_elements_to_retain)
-            }
-        }
-
-        // Blank out the direct path of remove_tree_idx
-        let remove_tree_idx = GroupState::roster_index_to_tree_index(remove_roster_idx)?;
-        self.tree.propagate_blank(remove_tree_idx);
-        // Truncate the tree in a similar fashion to the roster
-        self.tree.truncate_to_last_nonblank();
-
-        Ok(update_secret)
     }
 
     /// Performs and validates an incoming (i.e., one we did not generate) Update operation on the
@@ -344,39 +282,33 @@ impl GroupState {
         // ancestor, i.e., all the ones whose secret we don't know. Note that this step is not
         // performed in apply_update, because this only happens when we're not the ones who created
         // the Update operation.
-        let sender_direct_path = tree_math::node_direct_path(sender_tree_idx, num_leaves);
-        for (path_node_idx, node_msg) in sender_direct_path.zip(update.path.node_messages.iter()) {
-            if path_node_idx == common_ancestor {
-                // We reached the node whose secret we do know
-                break;
-            } else {
-                // This get_mut shouldn't fail. The bounds of sender_tree_idx are checked in
-                // process_handshake
-                let node = self.tree.get_mut(path_node_idx).expect("bad direct path node");
-                node.update_public_key(node_msg.public_key.clone());
-            }
-        }
+        let direct_path_public_keys =
+            update.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
+        self.tree.set_public_keys_with_bound(
+            sender_tree_idx,
+            common_ancestor,
+            direct_path_public_keys.clone(),
+        )?;
 
         // Make sure the public keys in the message match the ones we derived
-        let expected_public_keys =
-            update.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
-        self.tree.validate_direct_path_public_keys(sender_tree_idx, expected_public_keys)?;
+        self.tree.validate_direct_path_public_keys(sender_tree_idx, direct_path_public_keys)?;
 
         // All done
         Ok(update_secret)
     }
 
-    /// Performs and validates an incoming (i.e., one we did not generate) Remove operation on the
-    /// `GroupState`, where `sender_tree_idx` is the tree index of the sender of this operation
+    /// Performs and validates Remove operation on the `GroupState`. This will (necessarily) error
+    /// if this member is the one being removed.
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets.
+    /// necessary for generating new epoch secrets. Returns an `Error::Removed` iff this member is
+    /// the one who has been removed. Otherwise returns some other kind of `Error`.
+    // NOTE: There is no corresponding "apply_remove" method because the creator of a Remove is
+    // able to process the Remove, whereas the creator of an Update cannot process their own
+    // operation (this is because the creator's own path secret is never put into the
+    // DirectPathMessage).
     #[must_use]
-    fn process_incoming_remove_op(
-        &mut self,
-        remove: &GroupRemove,
-        sender_tree_idx: usize,
-    ) -> Result<UpdateSecret, Error> {
+    fn process_remove_op(&mut self, remove: &GroupRemove) -> Result<UpdateSecret, Error> {
         // Find the entropy provided in remove.path that we'll use to update the tree before
         // blanking out the removed node
         let my_tree_idx = {
@@ -387,22 +319,67 @@ impl GroupState {
                 .ok_or(Error::ValidationError("Cannot do a Remove on a preliminary GroupState"))?;
             GroupState::roster_index_to_tree_index(roster_index)?
         };
-        let (path_secret, ancestor_idx) = self.tree.decrypt_direct_path_message(
+        let remove_tree_idx = GroupState::roster_index_to_tree_index(remove.removed_roster_index)?;
+
+        if my_tree_idx == remove_tree_idx {
+            // Oh no, we've been kicked! May as well throw an error now, since the
+            // decrypt_direct_path_message below would throw an error anyway: you can't decrypt
+            // DirectPathMessages where you are the starting node.
+            return Err(Error::Removed);
+        }
+
+        // Get the new entropy for the tree
+        let (new_path_secret, common_ancestor) = self.tree.decrypt_direct_path_message(
             self.cs,
             &remove.path,
-            sender_tree_idx,
+            remove_tree_idx,
             my_tree_idx,
         )?;
-        // Do the remove operation
-        let update_secret =
-            self.apply_remove(remove.removed_roster_index, path_secret, ancestor_idx)?;
 
-        // Make sure the public keys in the message match the ones we derived
-        let expected_public_keys =
+        // Game plan as per the spec:
+        // * Update the roster by setting the credential in the removed slot to the null optional
+        //   value
+        // * Update the ratchet tree by replacing nodes in the direct path from the removed leaf
+        //   using the information in the Remove message
+        // * Reduce the size of the roster and the tree until the rightmost element roster element
+        //   and leaf node are non-null
+        // * Update the ratchet tree by setting to blank all nodes in the direct path of the
+        //   removed leaf
+
+        // Update the ratchet tree with the entropy provided in path_secret
+        let root_node_secret =
+            self.tree.propagate_new_path_secret(self.cs, new_path_secret, common_ancestor)?;
+        // Update the public keys whose path secret we don't know
+        let direct_path_public_keys =
             remove.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
-        self.tree.validate_direct_path_public_keys(sender_tree_idx, expected_public_keys)?;
+        self.tree.set_public_keys_with_bound(
+            remove_tree_idx,
+            common_ancestor,
+            direct_path_public_keys.clone(),
+        )?;
 
-        // All done
+        // "The update secret resulting from this change is the secret for the root node of the
+        // ratchet tree after the second step". This will be our return value.
+        let update_secret = UpdateSecret::new(root_node_secret.0);
+
+        // Before blank out the direct path of the removed node, check that all the public keys in
+        // the message match the ones we derived
+        self.tree.validate_direct_path_public_keys(remove_tree_idx, direct_path_public_keys)?;
+
+        // Blank out the roster location and prune the blanks from the end
+        self.roster
+            .0
+            .get_mut(remove.removed_roster_index as usize)
+            .map(|cred| *cred = None)
+            .ok_or(Error::ValidationError("Invalid roster index"))?;
+        self.roster.truncate_to_last_nonblank();
+
+        // Blank out the direct path of remove_tree_idx
+        self.tree.propagate_blank(remove_tree_idx);
+        // Truncate the tree in a similar fashion to the roster
+        self.tree.truncate_to_last_nonblank();
+
+        // And that's it
         Ok(update_secret)
     }
 
@@ -415,6 +392,9 @@ impl GroupState {
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
     /// necessary for generating new epoch secrets.
+    // NOTE: There is no corresponding "apply_add" method because the creator of an Add is able to
+    // process the Add, whereas the creator of an Update cannot process their own operation (this
+    // is because the creator's own path secret is never put into the DirectPathMessage).
     #[must_use]
     fn process_add_op(
         &mut self,
@@ -484,11 +464,12 @@ impl GroupState {
         // Update the roster
         let new_credential = init_key.credential.clone();
         if is_append {
-            self.roster.push(Some(new_credential))
+            self.roster.0.push(Some(new_credential))
         } else {
             // It's an in-place add. Check that we're only overwriting an empty roster entry
             let entry_to_update = self
                 .roster
+                .0
                 .get_mut(add_roster_index as usize)
                 .ok_or(Error::ValidationError("Out of bounds roster index"))?;
 
@@ -587,6 +568,7 @@ impl GroupState {
 
         let sender_credential = self
             .roster
+            .0
             .get(handshake.signer_index as usize)
             .ok_or(Error::ValidationError("Signer index is out of bounds"))?;
         let sender_public_key = sender_credential
@@ -600,9 +582,7 @@ impl GroupState {
             GroupOperation::Update(ref update) => {
                 new_state.process_incoming_update_op(update, sender_tree_idx)?
             }
-            GroupOperation::Remove(ref remove) => {
-                new_state.process_incoming_remove_op(remove, sender_tree_idx)?
-            }
+            GroupOperation::Remove(ref remove) => new_state.process_remove_op(remove)?,
             GroupOperation::Add(ref add) => {
                 let prior_welcome_info = self.as_welcome_info();
                 new_state.process_add_op(add, &prior_welcome_info)?
@@ -646,7 +626,7 @@ impl GroupState {
 
     /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This also
     /// returns the newly derived applications secret and confirmation key.
-    pub(crate) fn create_update_op(
+    pub(crate) fn create_and_apply_update_op(
         &mut self,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
@@ -684,9 +664,9 @@ impl GroupState {
     /// the target `init_key`. This also returns the newly derived applications secret and
     /// confirmation key.
     // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
-    // consume the Add ops they produce (unlike Updates, for example). But for consistency with the
-    // other create_*_op functions, this should mutate the GroupState too.
-    pub(crate) fn create_add_op(
+    // consume the Add ops they produce (unlike Updates). But for consistency with the other
+    // create_*_op functions, this should mutate the GroupState too.
+    pub(crate) fn create_and_apply_add_op(
         &mut self,
         new_roster_index: u32,
         init_key: UserInitKey,
@@ -707,6 +687,44 @@ impl GroupState {
         // the epoch secrets
         let update_secret = self.process_add_op(&add, prior_welcome_info)?;
         let op = GroupOperation::Add(add);
+        self.update_transcript_hash(&op)?;
+        self.increment_epoch()?;
+        let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+
+        Ok((op, application_secret, confirmation_key))
+    }
+
+    /// Creates and applies a `GroupRemove` operation for a member at roster index
+    /// `removed_roster_index` and introduces a new path secret `new_path_secret` at the removed
+    /// index.
+    // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
+    // consume the Remove ops they produce (unlike Updates). But for consistency with the other
+    // create_*_op functions, this should mutate the GroupState too.
+    pub(crate) fn create_and_apply_remove_op(
+        &mut self,
+        removed_roster_index: u32,
+        new_path_secret: PathSecret,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
+        let removed_tree_index = GroupState::roster_index_to_tree_index(removed_roster_index)?;
+        // Encrypt the new entropy for the tree
+        let direct_path_msg = self.tree.encrypt_direct_path_secrets(
+            self.cs,
+            removed_tree_index,
+            new_path_secret,
+            csprng,
+        )?;
+
+        // Make the remove
+        let remove = GroupRemove {
+            removed_roster_index: removed_roster_index,
+            path: direct_path_msg,
+        };
+
+        // Apply the Remove, log the operation in the transcript hash, increment the epoch, and
+        // update the epoch secrets
+        let update_secret = self.process_remove_op(&remove)?;
+        let op = GroupOperation::Remove(remove);
         self.update_transcript_hash(&op)?;
         self.increment_epoch()?;
         let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;

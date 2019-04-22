@@ -343,8 +343,7 @@ mod test {
 
     use quickcheck::TestResult;
     use quickcheck_macros::quickcheck;
-    use rand::Rng;
-    use rand_core::SeedableRng;
+    use rand::{Rng, SeedableRng};
     use serde::de::Deserialize;
 
     #[test]

@@ -14,7 +14,7 @@
 //! it.
 
 use crate::{
-    credential::Credential,
+    credential::{self, Credential},
     crypto::{
         ciphersuite::CipherSuite,
         dh::DhPublicKey,
@@ -81,6 +81,12 @@ impl<T: CryptoUpcast> CryptoUpcast for Vec<T> {
             item.upcast_crypto_values(ctx)?;
         }
         Ok(())
+    }
+}
+
+impl CryptoUpcast for credential::Roster {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
+        self.0.upcast_crypto_values(ctx)
     }
 }
 
@@ -155,7 +161,7 @@ impl CryptoUpcast for Credential {
 
 impl CryptoUpcast for crate::group_state::WelcomeInfo {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<(), Error> {
-        for cred_opt in self.roster.iter_mut() {
+        for cred_opt in self.roster.0.iter_mut() {
             if let Some(cred) = cred_opt.as_mut() {
                 cred.upcast_crypto_values(ctx)?;
             }

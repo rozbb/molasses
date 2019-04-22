@@ -91,7 +91,7 @@ macro_rules! make_enum_u8_discriminant {
 #[cfg(test)]
 pub(crate) mod test_utils {
     use crate::{
-        credential::{self, BasicCredential, Credential},
+        credential::{self, BasicCredential, Credential, Roster},
         crypto::{
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
             rng::CryptoRng,
@@ -102,7 +102,30 @@ pub(crate) mod test_utils {
         tree_math,
     };
 
+    use core::convert::TryFrom;
+
     use rand::seq::SliceRandom;
+
+    pub(crate) fn random_path_secret<R: rand::Rng>(group: &GroupState, rng: &mut R) -> PathSecret {
+        let mut buf = vec![0u8; group.cs.hash_alg.output_len];
+        rng.fill_bytes(buf.as_mut_slice());
+        PathSecret::new(buf)
+    }
+
+    // Generates a random roster index within the given bounds, and guarantees that the output is
+    // not `cannot_choose`
+    pub(crate) fn random_roster_index_with_exception<R: rand::Rng>(
+        roster_size: usize,
+        cannot_choose: usize,
+        rng: &mut R,
+    ) -> u32 {
+        loop {
+            let idx = rng.gen_range(0, roster_size);
+            if idx != cannot_choose as usize {
+                return u32::try_from(idx).unwrap();
+            }
+        }
+    }
 
     // Generates a random BasicCredential with the given SignatureScheme
     fn random_credential<R: rand::Rng + CryptoRng>(
@@ -171,11 +194,11 @@ pub(crate) mod test_utils {
         let my_roster_idx: u32 = rng.gen_range(0, group_size);
 
         // Make a full roster (no empty slots) of random creds and store the identity keys
-        let mut roster = Vec::new();
+        let mut roster = Roster(Vec::new());
         let mut identity_keys = Vec::new();
         for _ in 0..group_size {
             let (cred, secret) = random_credential(rng, cs.sig_impl);
-            roster.push(Some(cred));
+            roster.0.push(Some(cred));
             identity_keys.push(secret);
         }
         let my_identity_key = identity_keys[my_roster_idx as usize].clone();

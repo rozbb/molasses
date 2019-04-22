@@ -263,7 +263,7 @@ mod test {
     use super::*;
 
     use quickcheck_macros::quickcheck;
-    use rand_core::{RngCore, SeedableRng};
+    use rand::{RngCore, SeedableRng};
 
     // Test vectors are from
     // https://git.gnupg.org/cgi-bin/gitweb.cgi?p=libgcrypt.git;a=blob;f=tests/t-ed25519.inp;h=e13566f826321eece65e02c593bc7d885b3dbe23;hb=refs/heads/master%3E

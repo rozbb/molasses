@@ -200,7 +200,7 @@ mod test {
     use super::*;
 
     use quickcheck_macros::quickcheck;
-    use rand_core::{RngCore, SeedableRng};
+    use rand::{RngCore, SeedableRng};
 
     // Diffie Hellman test vectors from https://tools.ietf.org/html/rfc7748#section-6.1
     #[test]

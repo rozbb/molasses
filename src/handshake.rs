@@ -374,8 +374,7 @@ mod test {
     use std::io::Read;
 
     use quickcheck_macros::quickcheck;
-    use rand::Rng;
-    use rand_core::{RngCore, SeedableRng};
+    use rand::{RngCore, SeedableRng};
     use serde::Deserialize;
 
     // Check that Update operations are consistent
@@ -387,24 +386,18 @@ mod test {
 
         // Make a copy of this group, but from another perspective. That is, we want the same group
         // but with a different roster index
-        let new_index = loop {
-            let idx = rng.gen_range(0, group_state1.roster.len());
-            if idx != group_state1.roster_index.unwrap() as usize {
-                assert!(idx <= core::u32::MAX as usize);
-                break idx as u32;
-            }
-        };
+        let new_index = test_utils::random_roster_index_with_exception(
+            group_state1.roster.len(),
+            group_state1.roster_index.unwrap() as usize,
+            &mut rng,
+        );
         let group_state2 = test_utils::change_self_index(&group_state1, &identity_keys, new_index);
 
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
-        let new_path_secret = {
-            let mut buf = vec![0u8; group_state1.cs.hash_alg.output_len];
-            rng.fill_bytes(buf.as_mut_slice());
-            PathSecret::new(buf)
-        };
+        let new_path_secret = test_utils::random_path_secret(&group_state1, &mut rng);
         let (update_op, _, conf_key) =
-            group_state1.create_update_op(new_path_secret, &mut rng).unwrap();
+            group_state1.create_and_apply_update_op(new_path_secret, &mut rng).unwrap();
         let handshake = group_state1.create_handshake(update_op, conf_key).unwrap();
 
         // Apply the Handshake to the clone of the first group
@@ -417,6 +410,64 @@ mod test {
             tls_ser::serialize_to_bytes(&group_state2).unwrap(),
         );
         assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree after Update");
+    }
+
+    // Check that Remove operations are consistent
+    #[quickcheck]
+    fn remove_correctness(rng_seed: u64) {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        // Make a starting group
+        let (mut starting_group, identity_keys) = test_utils::random_full_group_state(&mut rng);
+
+        // Let's remove someone from the group who isn't us. Pick the roster index of the removed
+        // member here
+        let remove_roster_idx = test_utils::random_roster_index_with_exception(
+            starting_group.roster.len(),
+            starting_group.roster_index.unwrap() as usize,
+            &mut rng,
+        );
+        // Let's also make a new group that isn't the removed party. Pick their roster index here.
+        let other_roster_idx = test_utils::random_roster_index_with_exception(
+            starting_group.roster.len(),
+            remove_roster_idx as usize,
+            &mut rng,
+        );
+
+        // Make a group from the perspective of the removed person and a group from the perspective
+        // of that other person
+        let removed_group =
+            test_utils::change_self_index(&starting_group, &identity_keys, remove_roster_idx);
+        let other_group =
+            test_utils::change_self_index(&starting_group, &identity_keys, other_roster_idx);
+
+        // Make a new path secret and make an Update object out of it and then make a Handshake
+        // object out of that Update
+        let new_path_secret = test_utils::random_path_secret(&starting_group, &mut rng);
+
+        let (remove_op, _, conf_key) = starting_group
+            .create_and_apply_remove_op(remove_roster_idx, new_path_secret, &mut rng)
+            .expect("failed to create/apply remove op");
+        let handshake =
+            starting_group.create_handshake(remove_op, conf_key).expect("failed to make handshake");
+
+        // Apply the Handshake to the removed group. Since this is the party that got removed, this
+        // should give an Error::Removed
+        let res = removed_group.process_handshake(&handshake);
+        match res {
+            Ok(_) => panic!("Removed party didn't give an error"),
+            Err(Error::Removed) => (),
+            Err(e) => panic!("Removed party didn't give an Error::Removed, instead got {}", e),
+        }
+
+        // Apply the Handshake to the other non-removed group. This should not error
+        let other_group = other_group.process_handshake(&handshake).unwrap();
+
+        // Now see if the non-removed group states agree
+        let (starting_group_bytes, other_group_bytes) = (
+            tls_ser::serialize_to_bytes(&starting_group).unwrap(),
+            tls_ser::serialize_to_bytes(&other_group).unwrap(),
+        );
+        assert_eq!(starting_group_bytes, other_group_bytes, "GroupStates disagree after Remove");
     }
 
     // Checks that
@@ -437,13 +488,13 @@ mod test {
         let (mut group_state1, _) = test_utils::random_full_group_state(&mut rng);
 
         // Pick data for a new member of this group. The new member's roster index cannot be the
-        // same as that of the current member's
-        let new_roster_index = loop {
-            let idx = rng.gen_range(0, group_state1.roster.len() + 1);
-            if idx != group_state1.roster_index.unwrap() as usize {
-                break idx;
-            }
-        };
+        // same as that of the current member's. The index can also be equal to the roster size,
+        // which signifies an appending Add.
+        let new_roster_index = test_utils::random_roster_index_with_exception(
+            group_state1.roster.len() + 1,
+            group_state1.roster_index.unwrap() as usize,
+            &mut rng,
+        ) as usize;
         let (new_credential, new_identity_key) = test_utils::random_basic_credential(&mut rng);
 
         // Quick modification: if we're gonna do an in-place Add, the node we overwrite to better
@@ -454,7 +505,7 @@ mod test {
                 GroupState::roster_index_to_tree_index(u32::try_from(new_roster_index).unwrap())
                     .unwrap();
             group_state1.tree.propagate_blank(new_tree_index);
-            group_state1.roster[new_roster_index] = None;
+            group_state1.roster.0[new_roster_index] = None;
         }
 
         // Make the data necessary for a Welcome message
@@ -486,7 +537,7 @@ mod test {
 
         // Make and apply the add op on group 1
         let (add_op, _, confirmation_key) = group_state1
-            .create_add_op(
+            .create_and_apply_add_op(
                 u32::try_from(new_roster_index).unwrap(),
                 init_key.clone(),
                 &welcome_info,
