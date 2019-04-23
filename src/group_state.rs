@@ -1,4 +1,5 @@
 use crate::{
+    application::ApplicationKeyChain,
     credential::Roster,
     crypto::{
         ciphersuite::CipherSuite,
@@ -21,7 +22,7 @@ use clear_on_drop::ClearOnDrop;
 use serde::de::Deserialize;
 
 /// This is called the `application_secret` in the MLS key schedule (section 5.9)
-pub(crate) struct ApplicationSecret(ClearOnDrop<Vec<u8>>);
+pub(crate) struct ApplicationSecret(pub(crate) ClearOnDrop<Vec<u8>>);
 
 impl ApplicationSecret {
     fn new(v: Vec<u8>) -> ApplicationSecret {
@@ -530,7 +531,8 @@ impl GroupState {
         Ok(UpdateSecret::new(vec![0u8; self.cs.hash_alg.output_len]))
     }
 
-    /// Processes the given `Handshake` and, if successful, produces a new `GroupState`
+    /// Processes the given `Handshake` and, if successful, produces a new `GroupState` and
+    /// associated `ApplicationKeyChain`
     ///
     /// NOTE: This does not mutate the current `GroupState`. Instead, it returns the next version
     /// of the `GroupState`, assuming that the `Handshake` is valid.
@@ -550,7 +552,10 @@ impl GroupState {
     // 7. If the the above checks are successful, consider the updated GroupState object as the
     //    current state of the group.
     #[must_use]
-    pub(crate) fn process_handshake(&self, handshake: &Handshake) -> Result<GroupState, Error> {
+    pub(crate) fn process_handshake(
+        &self,
+        handshake: &Handshake,
+    ) -> Result<(GroupState, ApplicationKeyChain), Error> {
         if handshake.prior_epoch != self.epoch {
             return Err(Error::ValidationError("Handshake's prior epoch isn't the current epoch"));
         }
@@ -590,8 +595,7 @@ impl GroupState {
             GroupOperation::Init(_) => unimplemented!(),
         };
 
-        // TODO: Use application_secret for application key schedule
-        let (application_secret, confirmation_key_bytes) =
+        let (app_secret, confirmation_key_bytes) =
             new_state.update_epoch_secrets(&update_secret)?;
 
         //
@@ -620,8 +624,10 @@ impl GroupState {
         ring::hmac::verify(&confirmation_key, &confirmation_data, &handshake.confirmation)
             .map_err(|_| Error::SignatureError("Handshake confirmation is invalid"))?;
 
-        // All is well
-        Ok(new_state)
+        // All is well. Make the new application key chain and send it along
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
+        Ok((new_state, app_key_chain))
     }
 
     /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This also
@@ -630,7 +636,7 @@ impl GroupState {
         &mut self,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
-    ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
+    ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
         let my_tree_idx = {
             // Safely unwrap the roster index. A preliminary GroupState is one that has just been
             // initialized with a Welcome message
@@ -654,10 +660,12 @@ impl GroupState {
 
         self.update_transcript_hash(&op)?;
 
-        // Final modification: update my epoch secrets
-        let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+        // Final modification: update my epoch secrets and make the new ApplicationKeyChain
+        let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
 
-        Ok((op, application_secret, confirmation_key))
+        Ok((op, app_key_chain, confirmation_key))
     }
 
     /// Creates and applies a `GroupAdd` operation for a member at index `new_roster_index` with
@@ -671,7 +679,7 @@ impl GroupState {
         new_roster_index: u32,
         init_key: UserInitKey,
         prior_welcome_info: &WelcomeInfo,
-    ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
+    ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
         // Make the add op
         let prior_welcome_info_hash = {
             let serialized = tls_ser::serialize_to_bytes(prior_welcome_info)?;
@@ -683,15 +691,17 @@ impl GroupState {
             welcome_info_hash: prior_welcome_info_hash,
         };
 
-        // Apply the Add, log the operation in the transcript hash, increment the epoch, and update
-        // the epoch secrets
+        // Apply the Add, log the operation in the transcript hash, increment the epoch, update
+        // the epoch secrets, and make the new ApplicationKeyChain
         let update_secret = self.process_add_op(&add, prior_welcome_info)?;
         let op = GroupOperation::Add(add);
         self.update_transcript_hash(&op)?;
         self.increment_epoch()?;
-        let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+        let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
 
-        Ok((op, application_secret, confirmation_key))
+        Ok((op, app_key_chain, confirmation_key))
     }
 
     /// Creates and applies a `GroupRemove` operation for a member at roster index
@@ -705,7 +715,7 @@ impl GroupState {
         removed_roster_index: u32,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
-    ) -> Result<(GroupOperation, ApplicationSecret, ConfirmationKey), Error> {
+    ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
         let removed_tree_index = GroupState::roster_index_to_tree_index(removed_roster_index)?;
         // Encrypt the new entropy for the tree
         let direct_path_msg = self.tree.encrypt_direct_path_secrets(
@@ -721,15 +731,17 @@ impl GroupState {
             path: direct_path_msg,
         };
 
-        // Apply the Remove, log the operation in the transcript hash, increment the epoch, and
-        // update the epoch secrets
+        // Apply the Remove, log the operation in the transcript hash, increment the epoch, update
+        // the epoch secrets, and make the new ApplicationKeyChain
         let update_secret = self.process_remove_op(&remove)?;
         let op = GroupOperation::Remove(remove);
         self.update_transcript_hash(&op)?;
         self.increment_epoch()?;
-        let (application_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+        let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
 
-        Ok((op, application_secret, confirmation_key))
+        Ok((op, app_key_chain, confirmation_key))
     }
 
     /// Creates a `Handshake` message by packaging the given `GroupOperation`.

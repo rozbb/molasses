@@ -401,7 +401,7 @@ mod test {
         let handshake = group_state1.create_handshake(update_op, conf_key).unwrap();
 
         // Apply the Handshake to the clone of the first group
-        let new_group_state2 = group_state2.process_handshake(&handshake).unwrap();
+        let (new_group_state2, _) = group_state2.process_handshake(&handshake).unwrap();
         let group_state2 = new_group_state2;
 
         // Now see if the group states agree
@@ -460,7 +460,7 @@ mod test {
         }
 
         // Apply the Handshake to the other non-removed group. This should not error
-        let other_group = other_group.process_handshake(&handshake).unwrap();
+        let (other_group, _) = other_group.process_handshake(&handshake).unwrap();
 
         // Now see if the non-removed group states agree
         let (starting_group_bytes, other_group_bytes) = (
@@ -554,7 +554,7 @@ mod test {
             GroupState::from_welcome_info(cipher_suite, welcome_info, new_identity_key, init_key);
 
         // Apply the Add operation on group 2
-        let new_group_state2 = group_state2.process_handshake(&add_handshake).unwrap();
+        let (new_group_state2, _) = group_state2.process_handshake(&add_handshake).unwrap();
         let group_state2 = new_group_state2;
 
         // Now see if the resulting group states agree
