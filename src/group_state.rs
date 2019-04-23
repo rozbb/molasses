@@ -50,7 +50,7 @@ impl UpdateSecret {
 
 /// Contains all group state
 #[derive(Clone, Serialize)]
-pub(crate) struct GroupState {
+pub struct GroupState {
     /// You can think of this as a context variable. It helps us implement crypto ops and
     /// disambiguate serialized data structures
     #[serde(skip)]
@@ -625,8 +625,7 @@ impl GroupState {
             .map_err(|_| Error::SignatureError("Handshake confirmation is invalid"))?;
 
         // All is well. Make the new application key chain and send it along
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
+        let app_key_chain = ApplicationKeyChain::from_application_secret(&new_state, app_secret);
         Ok((new_state, app_key_chain))
     }
 
@@ -662,8 +661,7 @@ impl GroupState {
 
         // Final modification: update my epoch secrets and make the new ApplicationKeyChain
         let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
+        let app_key_chain = ApplicationKeyChain::from_application_secret(self, app_secret);
 
         Ok((op, app_key_chain, confirmation_key))
     }
@@ -698,8 +696,7 @@ impl GroupState {
         self.update_transcript_hash(&op)?;
         self.increment_epoch()?;
         let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
+        let app_key_chain = ApplicationKeyChain::from_application_secret(self, app_secret);
 
         Ok((op, app_key_chain, confirmation_key))
     }
@@ -738,8 +735,7 @@ impl GroupState {
         self.update_transcript_hash(&op)?;
         self.increment_epoch()?;
         let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(self.cs, app_secret, self.roster.len());
+        let app_key_chain = ApplicationKeyChain::from_application_secret(self, app_secret);
 
         Ok((op, app_key_chain, confirmation_key))
     }

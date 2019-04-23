@@ -6,7 +6,7 @@ extern crate serde;
 #[macro_use]
 mod utils;
 
-mod application;
+pub mod application;
 mod codec;
 mod credential;
 pub mod crypto;
