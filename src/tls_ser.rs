@@ -333,6 +333,11 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         Ok(self)
     }
 
+    /// `TlsSerializer` is also a `SerializeTuple` (see impl below)
+    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
+        Ok(self)
+    }
+
     //
     // Unimplemented stuff
     //
@@ -368,9 +373,6 @@ impl<'a> Serializer for &'a mut TlsSerializer {
         unimplemented!()
     }
     fn serialize_unit_struct(self, _name: &'static str) -> Result<Self::Ok, Self::Error> {
-        unimplemented!()
-    }
-    fn serialize_tuple(self, _len: usize) -> Result<Self::SerializeTuple, Self::Error> {
         unimplemented!()
     }
     fn serialize_map(self, _len: Option<usize>) -> Result<Self::SerializeMap, Self::Error> {
@@ -432,24 +434,25 @@ impl<'a> serde::ser::SerializeStruct for &'a mut TlsSerializer {
     }
 }
 
-//
-// More unimplemented stuff
-//
-
+/// Serializes tuples. this does the same thing as `TlsSerializer as SerializeSeq`
 impl<'a> serde::ser::SerializeTuple for &'a mut TlsSerializer {
     type Ok = ();
     type Error = Error;
 
-    fn serialize_element<T>(&mut self, _value: &T) -> Result<Self::Ok, Self::Error>
+    fn serialize_element<T: ?Sized>(&mut self, value: &T) -> Result<(), Self::Error>
     where
-        T: ?Sized + Serialize,
+        T: Serialize,
     {
-        unimplemented!();
+        value.serialize(&mut **self)
     }
     fn end(self) -> Result<Self::Ok, Self::Error> {
-        unimplemented!();
+        Ok(())
     }
 }
+
+//
+// More unimplemented stuff
+//
 
 impl<'a> serde::ser::SerializeTupleStruct for &'a mut TlsSerializer {
     type Ok = ();
@@ -562,7 +565,7 @@ pub(crate) mod test {
     #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
     pub(crate) struct Biff {
         a: u32,
-        b: u32,
+        b: [u8; 3],
         c: u8,
         #[serde(rename = "d__bound_u16")]
         d: Vec<Fan>,
@@ -575,7 +578,7 @@ pub(crate) mod test {
     #[rustfmt::skip]
     pub(crate) const BIFF_BYTES: &'static [u8] = &[
         0x01, 0x00, 0x00, 0x00,          // u32
-        0x00, 0x00, 0x00, 0x01,          // u32
+        0x0a, 0x0b, 0x0c,                // [u8; 3]
         0xff,                            // u8
         0x00, 0x20,                      // 32 bytes of Vec<Fan>
             0x0c,                        //   12 bytes of Vec<u32>
@@ -604,7 +607,7 @@ pub(crate) mod test {
     pub(crate) fn make_biff() -> Biff {
         Biff {
             a: 0x01000000,
-            b: 0x00000001,
+            b: [0x0a, 0x0b, 0x0c],
             c: 0xff,
             d: vec![
                 Fan {
