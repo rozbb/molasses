@@ -363,10 +363,9 @@ mod test {
         },
         error::Error,
         group_state::{GroupState, Welcome, WelcomeInfo},
-        ratchet_tree::PathSecret,
         tls_de::TlsDeserializer,
         tls_ser,
-        upcast::CryptoUpcast,
+        upcast::{CryptoCtx, CryptoUpcast},
         utils::test_utils,
     };
 
@@ -639,7 +638,7 @@ mod test {
     }
 
     impl CryptoUpcast for MessagesCase {
-        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
+        fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
             let new_ctx =
                 ctx.set_cipher_suite(self.cipher_suite).set_signature_scheme(self.signature_scheme);
             self.user_init_key.upcast_crypto_values(&new_ctx)?;
@@ -648,7 +647,8 @@ mod test {
             self.add.upcast_crypto_values(&new_ctx)?;
             self.update.upcast_crypto_values(&new_ctx)?;
             self.remove.upcast_crypto_values(&new_ctx)?;
-            Ok(())
+
+            Ok(*ctx)
         }
     }
 
@@ -678,17 +678,17 @@ mod test {
     }
 
     impl CryptoUpcast for MessagesTestVectors {
-        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
-            let ctx = ctx.set_signature_scheme(self.uik_all_scheme);
-            self.user_init_key_all.upcast_crypto_values(&ctx)?;
+        fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+            let new_ctx = ctx.set_signature_scheme(self.uik_all_scheme);
+            self.user_init_key_all.upcast_crypto_values(&new_ctx)?;
 
-            let ctx = ctx.set_cipher_suite(&P256_SHA256_AES128GCM);
-            self.case_p256_p256.upcast_crypto_values(&ctx)?;
+            let new_ctx = ctx.set_cipher_suite(&P256_SHA256_AES128GCM);
+            self.case_p256_p256.upcast_crypto_values(&new_ctx)?;
 
-            let ctx = ctx.set_cipher_suite(&X25519_SHA256_AES128GCM);
-            self.case_x25519_ed25519.upcast_crypto_values(&ctx)?;
+            let new_ctx = ctx.set_cipher_suite(&X25519_SHA256_AES128GCM);
+            self.case_x25519_ed25519.upcast_crypto_values(&new_ctx)?;
 
-            Ok(())
+            Ok(*ctx)
         }
     }
 

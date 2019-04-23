@@ -14,8 +14,8 @@ use crate::{
     },
     ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
     tls_de::TlsDeserializer,
-    tls_ser, tree_math,
-    upcast::{self, CryptoUpcast},
+    tls_ser,
+    upcast::{CryptoCtx, CryptoUpcast},
 };
 
 use clear_on_drop::ClearOnDrop;
@@ -262,7 +262,6 @@ impl GroupState {
 
         // Decrypt the path secret from the GroupUpdate and propagate it through our tree
         // Recall that roster_index is just another (IMO clearer) name for signer_index
-        let num_leaves = tree_math::num_leaves_in_tree(self.tree.size());
         let my_tree_idx = {
             // Safely unwrap the roster index. A preliminary GroupState is one that has just been
             // initialized with a Welcome message
@@ -815,7 +814,7 @@ pub(crate) struct WelcomeInfo {
     // optional<PublicKey> tree<1..2^32-1>;
     /// The tree field contains the public keys corresponding to the nodes of the ratchet tree for
     /// this group. The number of leaves in this tree MUST be equal to the length of `roster`
-    tree: RatchetTree,
+    pub(crate) tree: RatchetTree,
 
     // opaque transcript_hash<0..255>;
     /// Contains a running hash of `GroupOperation` messages that led to this state
@@ -892,7 +891,8 @@ impl Welcome {
             let mut w = WelcomeInfo::deserialize(&mut deserializer)?;
 
             // Once it's deserialized, make it nice and typesafe
-            w.upcast_crypto_values(&upcast::CryptoCtx::new())?;
+            let ctx = CryptoCtx::new().set_cipher_suite(cs);
+            w.upcast_crypto_values(&ctx)?;
             w
         };
 
@@ -914,6 +914,7 @@ mod test {
         ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
         tls_ser,
+        upcast::{CryptoCtx, CryptoUpcast},
         utils::test_utils,
     };
 
@@ -992,8 +993,8 @@ mod test {
         pub(crate) transcript_hash: Vec<u8>,
     }
 
-    impl crate::upcast::CryptoUpcast for TestGroupState {
-        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
+    impl CryptoUpcast for TestGroupState {
+        fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
             self.roster.upcast_crypto_values(ctx)
         }
     }

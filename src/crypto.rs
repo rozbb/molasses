@@ -18,7 +18,7 @@ mod test {
         error::Error,
         tls_de::TlsDeserializer,
         tls_ser::serialize_to_bytes,
-        upcast::CryptoUpcast,
+        upcast::{CryptoCtx, CryptoUpcast},
     };
 
     use serde::de::Deserialize;
@@ -82,10 +82,10 @@ mod test {
     }
 
     impl CryptoUpcast for CryptoCase {
-        fn upcast_crypto_values(&mut self, ctx: &crate::upcast::CryptoCtx) -> Result<(), Error> {
+        fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
             self.derive_key_pair_pub.upcast_crypto_values(ctx)?;
             self.ecies_out.upcast_crypto_values(ctx)?;
-            Ok(())
+            Ok(*ctx)
         }
     }
 

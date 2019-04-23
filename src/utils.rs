@@ -21,6 +21,17 @@ macro_rules! enum_variant {
     };
 }
 
+/// Like `enum_variant!` but with a custom message
+#[macro_export]
+macro_rules! enum_variant_msg {
+    ($val:expr, $variant:path, $msg:literal) => {
+        match $val {
+            $variant(x) => x,
+            _ => panic!($msg),
+        }
+    };
+}
+
 // This was taken and modified from https://serde.rs/enum-number.html
 /// This takes a definition of an enum of only unit variants and makes it serializable and
 /// deserializable according to its discriminant values
