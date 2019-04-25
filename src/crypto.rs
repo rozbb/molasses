@@ -1,10 +1,10 @@
 pub(crate) mod aead;
-pub(crate) mod ciphersuite;
+pub mod ciphersuite;
 pub(crate) mod dh;
 pub(crate) mod ecies;
 pub(crate) mod hkdf;
-pub(crate) mod rng;
-pub(crate) mod sig;
+pub mod rng;
+pub mod sig;
 
 #[cfg(test)]
 mod test {

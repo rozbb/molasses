@@ -172,20 +172,20 @@ where
 /// This implements some subset of the TLS wire format. I still don't have a good source on the
 /// format, but it seems as though the idea is "concat everything, and specify length in the
 /// prefix". The output of this is verified against known serializations.
-pub(crate) struct TlsSerializer {
+pub struct TlsSerializer {
     buf: std::io::Cursor<Vec<u8>>,
 }
 
 impl TlsSerializer {
     /// Makes a new empty `TlsSerializer` object
-    pub(crate) fn new() -> TlsSerializer {
+    pub fn new() -> TlsSerializer {
         TlsSerializer {
             buf: std::io::Cursor::new(Vec::new()),
         }
     }
 
     /// Returns this objects internal buffer
-    pub(crate) fn into_vec(self) -> Vec<u8> {
+    pub fn into_vec(self) -> Vec<u8> {
         self.buf.into_inner()
     }
 }

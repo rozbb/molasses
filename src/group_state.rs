@@ -1,8 +1,9 @@
 use crate::{
     application::ApplicationKeyChain,
-    credential::Roster,
+    credential::{Credential, Roster},
     crypto::{
         ciphersuite::CipherSuite,
+        dh::DhPrivateKey,
         ecies::{ecies_encrypt, EciesCiphertext},
         hkdf,
         rng::CryptoRng,
@@ -109,6 +110,71 @@ pub struct GroupState {
 // transcript_hash is initialized to all zeros.
 
 impl GroupState {
+    /// Creates a new one-person `GroupState` from this member's information and some group
+    /// information
+    ///
+    /// Returns: `Ok(group_state)` on success. If there was an issue creating an ephemeral private
+    /// key, returns some sort of `Error`.
+    pub fn new_singleton_group(
+        cs: &'static CipherSuite,
+        protocol_version: ProtocolVersion,
+        identity_key: SigSecretKey,
+        group_id: Vec<u8>,
+        my_credential: Credential,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<GroupState, Error> {
+        // Turn the credential into a singleton roster
+        let roster = Roster(vec![Some(my_credential)]);
+        let my_roster_index = 0u32;
+
+        // Make an ephemeral keypair and turn it into a tree
+        let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
+        let my_node = RatchetTreeNode::new_from_private_key(cs, my_ephemeral_secret);
+        let tree = RatchetTree {
+            nodes: vec![my_node],
+        };
+
+        // Now make the GroupState normally
+        Ok(GroupState::new_from_parts(
+            cs,
+            protocol_version,
+            identity_key,
+            group_id,
+            roster,
+            my_roster_index,
+            tree,
+        ))
+    }
+
+    /// Creates a new `GroupState` from its constituent parts
+    fn new_from_parts(
+        cs: &'static CipherSuite,
+        protocol_version: ProtocolVersion,
+        identity_key: SigSecretKey,
+        group_id: Vec<u8>,
+        roster: Roster,
+        roster_index: u32,
+        tree: RatchetTree,
+    ) -> GroupState {
+        // Transcript hash and init secrets are both zeros to begin with
+        let transcript_hash = vec![0u8; cs.hash_alg.output_len];
+        let init_secret = vec![0u8; cs.hash_alg.output_len];
+
+        GroupState {
+            cs: cs,
+            protocol_version: protocol_version,
+            identity_key: identity_key,
+            group_id: group_id,
+            epoch: 0,
+            roster: roster,
+            tree: tree,
+            transcript_hash: transcript_hash,
+            roster_index: Some(roster_index),
+            initializing_user_init_key: None,
+            init_secret: init_secret,
+        }
+    }
+
     /// Initializes a preliminary `GroupState` with the given `WelcomeInfo` information, this
     /// this participant's identity key, and the `UserInitKey` used to encrypt the `Welcome` that
     /// the `WelcomeInfo` came from.
@@ -116,6 +182,8 @@ impl GroupState {
     /// Returns: A `GroupState` in a "preliminary state", meaning that `roster_index` is `None` and
     /// `initializing_user_init_key` is `Some`. The only thing to do with a preliminary
     /// `GroupState` is give it an `Add` operation to add yourself to it.
+    // This is different from new_from_parts in that the epoch is not 0, the transcript hash is not
+    // 0, the init secret is not 0, and the roster index is None
     pub(crate) fn from_welcome_info(
         cs: &'static CipherSuite,
         w: WelcomeInfo,
@@ -137,8 +205,33 @@ impl GroupState {
         }
     }
 
+    /// Creates a new `GroupState` from a `Welcome` message, this member's identity key, and the
+    /// `UserInitKey` this member used to introduce themselves to the group
+    ///
+    /// Requires: That the `init_key` is the `UserInitKey` that the `Welcome` was encrypted with
+    /// (i.e., `init_key.user_init_key_id == self.user_init_key_id`) and `init_key.private_keys`
+    /// is not `None`
+    // This is just a convenient wrapper around welcome.into_welcome_info_cipher_suite and
+    // GroupState::from_welcome_info
+    pub fn from_welcome(
+        welcome: Welcome,
+        identity_secret_key: SigSecretKey,
+        init_key: UserInitKey,
+    ) -> Result<GroupState, Error> {
+        // Decrypt the `WelcomeInfo` and make a group out of it
+        let (welcome_info, cipher_suite) = welcome.into_welcome_info_cipher_suite(&init_key)?;
+        let group_state = GroupState::from_welcome_info(
+            cipher_suite,
+            welcome_info,
+            identity_secret_key,
+            init_key,
+        );
+
+        Ok(group_state)
+    }
+
     /// Creates a `WelcomeInfo` object with all the current state information
-    pub(crate) fn as_welcome_info(&self) -> WelcomeInfo {
+    fn as_welcome_info(&self) -> WelcomeInfo {
         WelcomeInfo {
             protocol_version: self.protocol_version,
             group_id: self.group_id.clone(),
@@ -399,7 +492,7 @@ impl GroupState {
     fn process_add_op(
         &mut self,
         add: &GroupAdd,
-        prior_welcome_info: &WelcomeInfo,
+        prior_welcome_info_hash: &WelcomeInfoHash,
     ) -> Result<UpdateSecret, Error> {
         // What we have to do, in order
         // 1. If the index value is equal to the size of the group, increment the size of the
@@ -419,12 +512,7 @@ impl GroupState {
             return Err(Error::ValidationError("Invalid insertion index in Add operation"));
         }
 
-        // Check the WelcomeInfo hash
-        let my_prior_welcome_info_hash = {
-            let serialized = tls_ser::serialize_to_bytes(&prior_welcome_info)?;
-            ring::digest::digest(self.cs.hash_alg, &serialized)
-        };
-        if my_prior_welcome_info_hash.as_ref() != add.welcome_info_hash.as_slice() {
+        if prior_welcome_info_hash.0.as_ref() != add.welcome_info_hash.as_slice() {
             return Err(Error::ValidationError("Invalid WelcomeInfo hash in Add operation"));
         }
 
@@ -551,7 +639,7 @@ impl GroupState {
     // 7. If the the above checks are successful, consider the updated GroupState object as the
     //    current state of the group.
     #[must_use]
-    pub(crate) fn process_handshake(
+    pub fn process_handshake(
         &self,
         handshake: &Handshake,
     ) -> Result<(GroupState, ApplicationKeyChain), Error> {
@@ -588,8 +676,15 @@ impl GroupState {
             }
             GroupOperation::Remove(ref remove) => new_state.process_remove_op(remove)?,
             GroupOperation::Add(ref add) => {
-                let prior_welcome_info = self.as_welcome_info();
-                new_state.process_add_op(add, &prior_welcome_info)?
+                // Compute the hash of the welcome_info that created this group, which is
+                // just the state of this group
+                let prior_welcome_info_hash = {
+                    let prior_welcome_info = self.as_welcome_info();
+                    let serialized = tls_ser::serialize_to_bytes(&prior_welcome_info)?;
+                    let digest = ring::digest::digest(self.cs.hash_alg, &serialized);
+                    WelcomeInfoHash(digest)
+                };
+                new_state.process_add_op(add, &prior_welcome_info_hash)?
             }
             GroupOperation::Init(_) => unimplemented!(),
         };
@@ -628,8 +723,8 @@ impl GroupState {
         Ok((new_state, app_key_chain))
     }
 
-    /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This also
-    /// returns the newly derived applications secret and confirmation key.
+    /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This mutates
+    /// the `GroupState`.
     pub(crate) fn create_and_apply_update_op(
         &mut self,
         new_path_secret: PathSecret,
@@ -675,22 +770,17 @@ impl GroupState {
         &mut self,
         new_roster_index: u32,
         init_key: UserInitKey,
-        prior_welcome_info: &WelcomeInfo,
+        prior_welcome_info_hash: &WelcomeInfoHash,
     ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
-        // Make the add op
-        let prior_welcome_info_hash = {
-            let serialized = tls_ser::serialize_to_bytes(prior_welcome_info)?;
-            ring::digest::digest(self.cs.hash_alg, &serialized).as_ref().to_vec()
-        };
+        // Make the Add op
         let add = GroupAdd {
             roster_index: new_roster_index,
             init_key: init_key,
-            welcome_info_hash: prior_welcome_info_hash,
+            welcome_info_hash: prior_welcome_info_hash.0.as_ref().to_vec(),
         };
-
         // Apply the Add, log the operation in the transcript hash, increment the epoch, update
         // the epoch secrets, and make the new ApplicationKeyChain
-        let update_secret = self.process_add_op(&add, prior_welcome_info)?;
+        let update_secret = self.process_add_op(&add, prior_welcome_info_hash)?;
         let op = GroupOperation::Add(add);
         self.update_transcript_hash(&op)?;
         self.increment_epoch()?;
@@ -743,7 +833,7 @@ impl GroupState {
     ///
     /// NOTE: This is intended to be called only after `create_*_op` is called, where `*` is `add`
     /// or `update` or `remove`. This makes no sense otherwise.
-    pub(crate) fn create_handshake(
+    fn create_handshake(
         &self,
         operation: GroupOperation,
         confirmation_key: ConfirmationKey,
@@ -787,6 +877,69 @@ impl GroupState {
     }
 }
 
+// Implement public API for Handshake creation
+
+impl GroupState {
+    /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This mutates
+    /// the `GroupState`.
+    ///
+    /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
+    /// message representing the specified update operation, and `app_key_chain` is the newly
+    /// derived application key schedule object.
+    // This is just a wrapper around self.create_and_apply_update_op and self.create_handshake
+    pub fn create_and_apply_update_handshake(
+        &mut self,
+        new_path_secret: PathSecret,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<(Handshake, ApplicationKeyChain), Error> {
+        let (update_op, app_key_chain, conf_key) =
+            self.create_and_apply_update_op(new_path_secret, csprng)?;
+        let handshake = self.create_handshake(update_op, conf_key)?;
+
+        Ok((handshake, app_key_chain))
+    }
+
+    /// Creates and applies a `GroupAdd` operation, determined by the given inputs. This mutates
+    /// the `GroupState`.
+    ///
+    /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
+    /// message representing the specified add operation, and `app_key_chain` is the newly derived
+    /// application key schedule object.
+    // This is just a wrapper around self.create_and_apply_add_op and self.create_handshake
+    pub fn create_and_apply_add_handshake(
+        &mut self,
+        new_roster_index: u32,
+        init_key: UserInitKey,
+        prior_welcome_info_hash: &WelcomeInfoHash,
+    ) -> Result<(Handshake, ApplicationKeyChain), Error> {
+        let (add_op, app_key_chain, conf_key) =
+            self.create_and_apply_add_op(new_roster_index, init_key, prior_welcome_info_hash)?;
+        let handshake = self.create_handshake(add_op, conf_key)?;
+
+        Ok((handshake, app_key_chain))
+    }
+
+    /// Creates and applies a `GroupRemove` operation, determined by the given inputs. This mutates
+    /// the `GroupState`.
+    ///
+    /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
+    /// message representing the specified remove operation, and `app_key_chain` is the newly
+    /// derived application key schedule object.
+    // This is just a wrapper around self.create_and_apply_remove_op and self.create_handshake
+    pub fn create_and_apply_remove_handshake(
+        &mut self,
+        removed_roster_index: u32,
+        new_path_secret: PathSecret,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<(Handshake, ApplicationKeyChain), Error> {
+        let (remove_op, app_key_chain, conf_key) =
+            self.create_and_apply_remove_op(removed_roster_index, new_path_secret, csprng)?;
+        let handshake = self.create_handshake(remove_op, conf_key)?;
+
+        Ok((handshake, app_key_chain))
+    }
+}
+
 // TODO: Make this COW so we don't have to clone everything in GroupState::as_welcome_info
 
 /// Contains everything a new user needs to know to join a group. This is always followed by an
@@ -827,9 +980,13 @@ pub(crate) struct WelcomeInfo {
     init_secret: Vec<u8>,
 }
 
-/// This contains the encrypted `WelcomeInfo` for new group participants
+/// Represents the hash of a `WelcomeInfo` object
+// This is public-facing
+pub struct WelcomeInfoHash(ring::digest::Digest);
+
+/// This contains an encrypted `WelcomeInfo` for new group participants
 #[derive(Debug, Deserialize, Serialize)]
-pub(crate) struct Welcome {
+pub struct Welcome {
     // opaque user_init_key_id<0..255>;
     #[serde(rename = "user_init_key_id__bound_u8")]
     user_init_key_id: Vec<u8>,
@@ -840,7 +997,7 @@ pub(crate) struct Welcome {
 impl Welcome {
     /// Packages up a `WelcomeInfo` object with a preferred cipher suite, and encrypts it to the
     /// specified `UserInitKey` (under the appropriate public key)
-    pub(crate) fn from_welcome_info(
+    fn from_welcome_info(
         cs: &'static CipherSuite,
         init_key: &UserInitKey,
         welcome_info: &WelcomeInfo,
@@ -863,12 +1020,49 @@ impl Welcome {
         })
     }
 
-    /// Decrypts the `Welcome` with the given `UserInitKey` and returns the contained `WelcomeInfo`
+    /// Creates a `Welcome` object for the target `UserInitKey`. The `Welcome` contains all the
+    /// current state information. This operation ordinarily precedes an `Add`.
+    ///
+    /// Returns: `Ok((welcome, welcome_info_hash))` on success where `welcome` is a `Welcome`
+    /// message representing the group's current state, and `welcome_info_hash` is the hash of the
+    /// underlying `WelcomeInfo` object. The hash is relevant for `Add` operations.
+    // This is a convenient wrapper around GroupState::as_welcome_info and
+    // Welcome::from_welcome_info
+    pub fn from_group_state(
+        group_state: &GroupState,
+        init_key: &UserInitKey,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<(Welcome, WelcomeInfoHash), Error> {
+        // Make a WelcomeInfo from the group
+        let welcome_info = group_state.as_welcome_info();
+
+        // Take the hash of the WelcomeInfo. This is necessary if the caller wants to make an Add.
+        // The caller can't derive it themselves, because we wrap the WelcomeInfo in a Welcome in
+        // the next step.
+        let welcome_info_hash = {
+            let serialized = tls_ser::serialize_to_bytes(&welcome_info)?;
+            let digest = ring::digest::digest(group_state.cs.hash_alg, &serialized);
+            WelcomeInfoHash(digest)
+        };
+
+        // Encrypt it up
+        let welcome = Welcome::from_welcome_info(&group_state.cs, init_key, &welcome_info, csprng)?;
+
+        Ok((welcome, welcome_info_hash))
+    }
+
+    /// Decrypts the `Welcome` with the given `UserInitKey`
     ///
     /// Requires: That the `init_key` is the `UserInitKey` that the `Welcome` was encrypted with
     /// (i.e., `init_key.user_init_key_id == self.user_init_key_id`) and `init_key.private_keys`
     /// is not `None`
-    pub(crate) fn into_welcome_info(self, init_key: &UserInitKey) -> Result<WelcomeInfo, Error> {
+    ///
+    /// Returns: `Ok((welcome_info, cs))` on success, where `welcome_info` is the decrypted
+    /// `WelcomeInfo` that this `Welcome` contained, and `cs` is this group's cipher suite
+    fn into_welcome_info_cipher_suite(
+        self,
+        init_key: &UserInitKey,
+    ) -> Result<(WelcomeInfo, &'static CipherSuite), Error> {
         // Verify the UserInitKey signature and validate its contents
         init_key.verify_sig()?;
         init_key.validate()?;
@@ -882,7 +1076,7 @@ impl Welcome {
             .get_private_key(cs)?
             .ok_or(Error::ValidationError("Can't decrypt Welcome without a private key"))?;
 
-        // Decrypt the WelcomeInfo, deserialize it, and return it
+        // Decrypt the WelcomeInfo, deserialize it, upcast it, and return it
         let welcome_info_bytes =
             crate::crypto::ecies::ecies_decrypt(cs, dh_private_key, self.encrypted_welcome_info)?;
         let welcome_info = {
@@ -896,7 +1090,24 @@ impl Welcome {
             w
         };
 
-        Ok(welcome_info)
+        // TODO: Figure out if a versioning scheme should accept versions that are less than the
+        // requested one.
+
+        // Check that the WelcomeInfo has precisely the supported version. We can unwrap here
+        // because we already found the private key corresponding to this ciphersuite above.
+        let supported_version = init_key.get_supported_version(cs)?.unwrap();
+        if welcome_info.protocol_version != supported_version {
+            return Err(Error::ValidationError(
+                "WelcomeInfo's supported protocol version does not match the UserInitKey's",
+            ));
+        }
+
+        Ok((welcome_info, cs))
+    }
+
+    /// Returns the `user_init_key_id` associated with this `Welcome`
+    pub fn get_user_init_key_id(&self) -> &[u8] {
+        self.user_init_key_id.as_slice()
     }
 }
 
@@ -904,13 +1115,10 @@ impl Welcome {
 mod test {
     use crate::{
         credential::Roster,
-        crypto::{
-            ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
-            sig::SignatureScheme,
-        },
+        crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         error::Error,
         group_state::{GroupState, UpdateSecret, Welcome},
-        handshake::{ProtocolVersion, UserInitKey},
+        handshake::{ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
         ratchet_tree::RatchetTree,
         tls_de::TlsDeserializer,
         tls_ser,
@@ -932,7 +1140,7 @@ mod test {
 
         // Make the data necessary for a Welcome message
         let cipher_suites = vec![&X25519_SHA256_AES128GCM];
-        let supported_versions: Vec<ProtocolVersion> = vec![0; cipher_suites.len()];
+        let supported_versions: Vec<ProtocolVersion> = vec![MLS_DUMMY_VERSION; cipher_suites.len()];
         // These values really don't matter. They're only important if we do anything with the
         // GroupStates after the Welcome
         let (new_credential, new_identity_key) = test_utils::random_basic_credential(&mut rng);
@@ -955,18 +1163,16 @@ mod test {
         .unwrap();
 
         // Make the welcome objects
-        let cipher_suite = group_state1.cs;
         let welcome_info = group_state1.as_welcome_info();
         let welcome =
-            Welcome::from_welcome_info(cipher_suite, &init_key, &welcome_info, &mut rng).unwrap();
+            Welcome::from_welcome_info(group_state1.cs, &init_key, &welcome_info, &mut rng)
+                .unwrap();
 
-        // Now unwrap the Welcome back into a WelcomeInfo and create a GroupState from that. This
-        // should be identical to the starting group state, except maybe for the roster_index,
-        // credential, initiailizing UserInitKey, and identity key. None of those things are
-        // serialized though, since they are unique to each member's perspective
-        let welcome_info = welcome.into_welcome_info(&init_key).unwrap();
-        let group_state2 =
-            GroupState::from_welcome_info(cipher_suite, welcome_info, new_identity_key, init_key);
+        // Now unwrap the Welcome back into a GroupState. This should be identical to the starting
+        // group state, except maybe for the roster_index, credential, initiailizing UserInitKey,
+        // and identity key. None of those things are serialized though, since they are unique to
+        // each member's perspective
+        let group_state2 = GroupState::from_welcome(welcome, new_identity_key, init_key).unwrap();
 
         // Now see if the resulting group states agree
         let (group1_bytes, group2_bytes) = (
@@ -1004,7 +1210,7 @@ mod test {
         let cs = &X25519_SHA256_AES128GCM;
         GroupState {
             cs: cs,
-            protocol_version: 0,
+            protocol_version: MLS_DUMMY_VERSION,
             identity_key: cs.sig_impl.secret_key_from_bytes(&[0u8; 32]).unwrap(),
             group_id: tgs.group_id,
             epoch: tgs.epoch,

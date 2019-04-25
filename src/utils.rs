@@ -109,6 +109,7 @@ pub(crate) mod test_utils {
             sig::{SigSecretKey, SignatureScheme, ED25519_IMPL},
         },
         group_state::GroupState,
+        handshake::MLS_DUMMY_VERSION,
         ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
         tree_math,
     };
@@ -237,7 +238,7 @@ pub(crate) mod test_utils {
 
         let group_state = GroupState {
             cs: cs,
-            protocol_version: 0,
+            protocol_version: MLS_DUMMY_VERSION,
             identity_key: my_identity_key,
             group_id: group_id.to_vec(),
             epoch: rng.gen(),

@@ -3,7 +3,7 @@ use crate::error::Error;
 use std::io::Read;
 
 use byteorder::{BigEndian, ReadBytesExt};
-use serde::de::{Deserializer, IntoDeserializer, Visitor};
+use serde::de::{Deserialize, Deserializer, IntoDeserializer, Visitor};
 
 // TODO: Make this parser more conservative in what it accepts. Currently, it will happily return
 // incomplete vectors (i.e., it'll read a length, get to the end of a buffer that's too short, and
@@ -60,13 +60,13 @@ where
 /// This implements some subset of the TLS wire format. I still don't have a good source on the
 /// format, but it seems as though the idea is "concat everything, and specify length in the
 /// prefix".
-pub(crate) struct TlsDeserializer<'a, R: std::io::Read> {
+pub struct TlsDeserializer<'a, R: std::io::Read> {
     reader: &'a mut R,
 }
 
 impl<'a, R: std::io::Read> TlsDeserializer<'a, R> {
     /// Makes a new `TlsDeserializer` from the given byte reader
-    pub(crate) fn from_reader(reader: &'a mut R) -> TlsDeserializer<R> {
+    pub fn from_reader(reader: &'a mut R) -> TlsDeserializer<R> {
         TlsDeserializer {
             reader: reader,
         }

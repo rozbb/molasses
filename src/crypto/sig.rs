@@ -3,7 +3,7 @@ use crate::error::Error;
 
 /// The canonical instantiation of the `Ed25519` unit struct. Things that use this algorithm should
 /// use `&'static` references to this.
-pub(crate) const ED25519_IMPL: Ed25519 = Ed25519;
+pub const ED25519_IMPL: Ed25519 = Ed25519;
 
 pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
 
@@ -11,12 +11,12 @@ pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
 /// This is the form that all `SigPublicKey`s take when being sent or received over the wire
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "SigPublicKeyRaw__bound_u16")]
-pub(crate) struct SigPublicKeyRaw(pub(crate) Vec<u8>);
+pub struct SigPublicKeyRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for a signature scheme's public key, depending on the underlying
 /// algorithm
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum SigPublicKey {
+pub enum SigPublicKey {
     Ed25519PublicKey(ed25519_dalek::PublicKey),
     Raw(SigPublicKeyRaw),
 }
@@ -32,7 +32,7 @@ impl SigPublicKey {
 
 /// An enum of possible types for a signature scheme's secret key, depending on the underlying
 /// algorithm
-pub(crate) enum SigSecretKey {
+pub enum SigSecretKey {
     Ed25519SecretKey(ed25519_dalek::SecretKey),
 }
 
@@ -59,12 +59,12 @@ impl core::fmt::Debug for SigSecretKey {
 /// This is the form that all `Signature`s take when being sent or received over the wire
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "SignatureRaw__bound_u16")]
-pub(crate) struct SignatureRaw(pub(crate) Vec<u8>);
+pub struct SignatureRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for a signature scheme's signature, depending on the underlying
 /// algorithm
 #[derive(Clone, Debug)]
-pub(crate) enum Signature {
+pub enum Signature {
     Ed25519Signature(ed25519_dalek::Signature),
     Raw(SignatureRaw),
 }
@@ -79,15 +79,24 @@ impl Signature {
     }
 }
 
+// TODO: Do not expose this. We can avoid &'static dyn SignatureSchemes everywhere by having
+//     struct SignatureSchemeHandle {
+//         my_impl: &'static dyn SignatureScheme
+//     }
+//     pub const ED25519_IMPL: SignatureSchemeHandle = SignatureSchemeHandle {
+//         my_impl: &'static Ed25519
+//     }
+//     ...etc
+// This would also let us get away with not exposing the SignatureScheme trait directly, instead
+// taking &'static SignatureSchemeHandle
 /// A trait representing any signature scheme
-pub(crate) trait SignatureScheme {
+pub trait SignatureScheme {
     fn name(&self) -> &'static str;
 
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error>;
 
     fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<SigPublicKey, Error>;
 
-    #[cfg(test)]
     fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey;
 
     fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error>;
@@ -114,7 +123,7 @@ impl PartialEq for SignatureScheme {
 impl Eq for SignatureScheme {}
 
 /// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
-pub(crate) struct Ed25519;
+pub struct Ed25519;
 
 // This implementation is for Ed25519 only, currently. In the future, we should wrap Ed25519 with
 // a trait, and use the same trait for other signature implementations
@@ -129,8 +138,6 @@ impl SignatureScheme for Ed25519 {
     /// Returns: `Ok(signature)` on success. If anything goes wrong, returns an
     /// `Error::SignatureError`.
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error> {
-        println!("got {} many signature bytes", bytes.len());
-        println!("signature is {:x?}", bytes);
         match ed25519_dalek::Signature::from_bytes(bytes) {
             Ok(sig) => Ok(Signature::Ed25519Signature(sig)),
             Err(_) => Err(Error::SignatureError("Invalid signature bytes")),
@@ -148,9 +155,7 @@ impl SignatureScheme for Ed25519 {
         }
     }
 
-    /// This is just for testing purposes. This should be the `SigPublicKey` form of whatever we do
-    /// in the `sign` function to derive a public key from a secret key.
-    #[cfg(test)]
+    /// Derives the public key corresponding to the given secret key
     fn public_key_from_secret_key(&self, secret: &SigSecretKey) -> SigPublicKey {
         let secret = enum_variant!(secret, SigSecretKey::Ed25519SecretKey);
 
@@ -231,7 +236,6 @@ impl SignatureScheme for DummyEcdsaP256 {
         }
     }
 
-    #[cfg(test)]
     fn public_key_from_secret_key(&self, _secret: &SigSecretKey) -> SigPublicKey {
         unimplemented!()
     }

@@ -382,9 +382,8 @@ mod test {
     ) -> (ApplicationKeyChain, ApplicationKeyChain) {
         let new_path_secret = test_utils::random_path_secret(&group1, rng);
         // This mutates group1
-        let (update_op, keychain1, conf_key) =
-            group1.create_and_apply_update_op(new_path_secret, rng).unwrap();
-        let handshake = group1.create_handshake(update_op, conf_key).unwrap();
+        let (handshake, keychain1) =
+            group1.create_and_apply_update_handshake(new_path_secret, rng).unwrap();
 
         // Process the handshake and update group2
         let (new_group2, keychain2) = group2.process_handshake(&handshake).unwrap();

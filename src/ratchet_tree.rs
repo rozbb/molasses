@@ -20,12 +20,19 @@ pub(crate) struct NodeSecret(pub(crate) Vec<u8>);
 /// This is called the "path secret" (section 5.2). If `Hash` is the current ciphersuite's hash
 /// algorithm, this MUST have length equal to `Hash.length`.
 #[derive(Clone)]
-pub(crate) struct PathSecret(pub(crate) ClearOnDrop<Vec<u8>>);
+pub struct PathSecret(pub(crate) ClearOnDrop<Vec<u8>>);
 
 impl PathSecret {
     /// Wraps a `Vec<u8>` with a `ClearOnDrop` and makes it a `PathSecret`
     pub(crate) fn new(v: Vec<u8>) -> PathSecret {
         PathSecret(ClearOnDrop::new(v))
+    }
+
+    /// Generates a random `PathSecret` of the appropriate length
+    pub fn new_from_random(cs: &'static CipherSuite, csprng: &mut dyn CryptoRng) -> PathSecret {
+        let mut buf = vec![0u8; cs.hash_alg.output_len];
+        csprng.fill_bytes(&mut buf);
+        PathSecret(ClearOnDrop::new(buf))
     }
 }
 
@@ -48,6 +55,19 @@ pub(crate) enum RatchetTreeNode {
 }
 
 impl RatchetTreeNode {
+    /// Makes a new node with a known keypair, given the private key
+    pub(crate) fn new_from_private_key(
+        cs: &'static CipherSuite,
+        private_key: DhPrivateKey,
+    ) -> RatchetTreeNode {
+        // Derive the pubkey and stick it in the node
+        let pubkey = cs.dh_impl.derive_public_key(&private_key);
+        RatchetTreeNode::Filled {
+            public_key: pubkey,
+            private_key: Some(private_key),
+        }
+    }
+
     /// Returns `true` iff this is the `Filled` variant
     #[rustfmt::skip]
     pub(crate) fn is_filled(&self) -> bool {

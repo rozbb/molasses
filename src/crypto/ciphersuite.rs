@@ -8,7 +8,7 @@ use crate::{
 };
 
 /// This represents the X25519-SHA256-AES128GCM ciphersuite. Notably, it implements `CipherSuite`.
-pub(crate) const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
+pub const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
@@ -26,7 +26,7 @@ pub(crate) const P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
 
 /// Represents the contents of an MLS ciphersuite: a DH-like key-agreement protocol, a
 /// hashing algorithm, and an authenticated encryption algorithm.
-pub(crate) struct CipherSuite {
+pub struct CipherSuite {
     /// The name of this cipher suite
     pub(crate) name: &'static str,
     /// The trait object that implements our key exchange functionality

@@ -27,7 +27,7 @@ use crate::{
 /// The context necessary for a `CryptoUpcast`. This specifies the ambient ciphersuite and
 /// signature scheme.
 #[derive(Clone, Copy)]
-pub(crate) struct CryptoCtx {
+pub struct CryptoCtx {
     cs: Option<&'static CipherSuite>,
     ss: Option<&'static dyn SignatureScheme>,
 }
@@ -35,28 +35,26 @@ pub(crate) struct CryptoCtx {
 // TODO: Figure out when to check for coherence in ciphersuites
 
 impl CryptoCtx {
+    /// Makes a new empty `CryptoCtx`
+    pub fn new() -> CryptoCtx {
+        CryptoCtx {
+            cs: None,
+            ss: None,
+        }
+    }
+
     /// Returns a new `CryptoCtx` object with the specified cipher suite
-    pub(crate) fn set_cipher_suite(&self, cs: &'static CipherSuite) -> CryptoCtx {
+    pub fn set_cipher_suite(&self, cs: &'static CipherSuite) -> CryptoCtx {
         let mut new_ctx = *self;
         new_ctx.cs = Some(cs);
         new_ctx
     }
 
     /// Returns a new `CryptoCtx` object with the specified signature scheme
-    pub(crate) fn set_signature_scheme(&self, ss: &'static SignatureScheme) -> CryptoCtx {
+    pub fn set_signature_scheme(&self, ss: &'static SignatureScheme) -> CryptoCtx {
         let mut new_ctx = *self;
         new_ctx.ss = Some(ss);
         new_ctx
-    }
-}
-
-impl CryptoCtx {
-    /// Makes a new empty `CryptoCtx`
-    pub(crate) fn new() -> CryptoCtx {
-        CryptoCtx {
-            cs: None,
-            ss: None,
-        }
     }
 }
 
@@ -67,7 +65,7 @@ impl CryptoCtx {
 /// one field of the struct is determined by the signature scheme of the other (namely, in the case
 /// of `UserInitKey::signature` and `UserInitKey::credential::signature_scheme`). We need a way to
 /// propogate that information, so we send it back up to the caller.
-pub(crate) trait CryptoUpcast {
+pub trait CryptoUpcast {
     #[must_use]
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error>;
 }
@@ -301,6 +299,13 @@ impl CryptoUpcast for crate::handshake::Handshake {
         self.operation.upcast_crypto_values(ctx)?;
         self.signature.upcast_crypto_values(ctx)?;
         // No change to context
+        Ok(*ctx)
+    }
+}
+
+impl CryptoUpcast for crate::application::ApplicationMessage {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        // No-op
         Ok(*ctx)
     }
 }
