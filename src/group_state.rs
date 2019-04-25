@@ -3,7 +3,6 @@ use crate::{
     credential::{Credential, Roster},
     crypto::{
         ciphersuite::CipherSuite,
-        dh::DhPrivateKey,
         ecies::{ecies_encrypt, EciesCiphertext},
         hkdf,
         rng::CryptoRng,
@@ -619,10 +618,9 @@ impl GroupState {
     }
 
     /// Processes the given `Handshake` and, if successful, produces a new `GroupState` and
-    /// associated `ApplicationKeyChain`
-    ///
-    /// NOTE: This does not mutate the current `GroupState`. Instead, it returns the next version
-    /// of the `GroupState`, assuming that the `Handshake` is valid.
+    /// associated `ApplicationKeyChain` This does not mutate the current `GroupState`. Instead, it
+    /// returns the next version of the `GroupState`, where the operation contained by the
+    /// `Handshake` has been applied.
     // According to the spec, this is how we process handshakes:
     // 1. Verify that the prior_epoch field of the Handshake message is equal the epoch field of
     //    the current GroupState object.
@@ -723,55 +721,82 @@ impl GroupState {
         Ok((new_state, app_key_chain))
     }
 
-    /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This mutates
-    /// the `GroupState`.
+    /// Creates and applies a `GroupUpdate` operation with the given path secret information. This
+    /// method does not mutate this `GroupState`, the operation is rather applied to the returned
+    /// `GroupState`.
+    ///
+    /// Returns: `Ok((group_state, app_key_chain, group_op, confirmation_key))` on success, where
+    /// `group_state` is the group state after having applied the update operation, `app_key_chain`
+    /// is the resulting application key chain (again, after having applied the update operation),
+    /// `group_op` is the raw `GroupOperation` object, and `confirmation_key` is the derived
+    /// confirmation key we'll use to compute the MAC in the `Handshake` that will end up
+    /// containing the `GroupOperation`.
     pub(crate) fn create_and_apply_update_op(
-        &mut self,
+        &self,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
-    ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
+    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
+        // Ugh, a full group state clone, I know
+        let mut new_group_state = self.clone();
+
         let my_tree_idx = {
             // Safely unwrap the roster index. A preliminary GroupState is one that has just been
             // initialized with a Welcome message
-            let roster_index = self.roster_index.ok_or(Error::ValidationError(
+            let roster_index = new_group_state.roster_index.ok_or(Error::ValidationError(
                 "Cannot make an Update from a preliminary GroupState",
             ))?;
             GroupState::roster_index_to_tree_index(roster_index)?
         };
 
         // Do the update and increment the epoch
-        let update_secret = self.apply_update(new_path_secret.clone(), my_tree_idx)?;
-        self.increment_epoch()?;
+        let update_secret = new_group_state.apply_update(new_path_secret.clone(), my_tree_idx)?;
+        new_group_state.increment_epoch()?;
 
         // Now package the update into a GroupUpdate structure
-        let direct_path_msg =
-            self.tree.encrypt_direct_path_secrets(self.cs, my_tree_idx, new_path_secret, csprng)?;
+        let direct_path_msg = new_group_state.tree.encrypt_direct_path_secrets(
+            new_group_state.cs,
+            my_tree_idx,
+            new_path_secret,
+            csprng,
+        )?;
         let update = GroupUpdate {
             path: direct_path_msg,
         };
         let op = GroupOperation::Update(update);
 
-        self.update_transcript_hash(&op)?;
+        new_group_state.update_transcript_hash(&op)?;
 
         // Final modification: update my epoch secrets and make the new ApplicationKeyChain
-        let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
-        let app_key_chain = ApplicationKeyChain::from_application_secret(self, app_secret);
+        let (app_secret, confirmation_key) =
+            new_group_state.update_epoch_secrets(&update_secret)?;
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(&new_group_state, app_secret);
 
-        Ok((op, app_key_chain, confirmation_key))
+        Ok((new_group_state, app_key_chain, op, confirmation_key))
     }
 
     /// Creates and applies a `GroupAdd` operation for a member at index `new_roster_index` with
-    /// the target `init_key`. This also returns the newly derived applications secret and
-    /// confirmation key.
+    /// the target `init_key`. This method does not mutate this `GroupState`, the operation is
+    /// rather applied to the returned `GroupState`.
+    ///
+    /// Returns: `Ok((group_state, app_key_chain, group_op, confirmation_key))` on success, where
+    /// `group_state` is the group state after having applied the add operation, `app_key_chain`
+    /// is the resulting application key chain (again, after having applied the add operation),
+    /// `group_op` is the raw `GroupOperation` object, and `confirmation_key` is the derived
+    /// confirmation key we'll use to compute the MAC in the `Handshake` that will end up
+    /// containing the `GroupOperation`.
     // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
     // consume the Add ops they produce (unlike Updates). But for consistency with the other
     // create_*_op functions, this should mutate the GroupState too.
     pub(crate) fn create_and_apply_add_op(
-        &mut self,
+        &self,
         new_roster_index: u32,
         init_key: UserInitKey,
         prior_welcome_info_hash: &WelcomeInfoHash,
-    ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
+    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
+        // Ugh, a full group state clone, I know
+        let mut new_group_state = self.clone();
+
         // Make the Add op
         let add = GroupAdd {
             roster_index: new_roster_index,
@@ -780,32 +805,45 @@ impl GroupState {
         };
         // Apply the Add, log the operation in the transcript hash, increment the epoch, update
         // the epoch secrets, and make the new ApplicationKeyChain
-        let update_secret = self.process_add_op(&add, prior_welcome_info_hash)?;
+        let update_secret = new_group_state.process_add_op(&add, prior_welcome_info_hash)?;
         let op = GroupOperation::Add(add);
-        self.update_transcript_hash(&op)?;
-        self.increment_epoch()?;
-        let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
-        let app_key_chain = ApplicationKeyChain::from_application_secret(self, app_secret);
+        new_group_state.update_transcript_hash(&op)?;
+        new_group_state.increment_epoch()?;
+        let (app_secret, confirmation_key) =
+            new_group_state.update_epoch_secrets(&update_secret)?;
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(&new_group_state, app_secret);
 
-        Ok((op, app_key_chain, confirmation_key))
+        Ok((new_group_state, app_key_chain, op, confirmation_key))
     }
 
     /// Creates and applies a `GroupRemove` operation for a member at roster index
     /// `removed_roster_index` and introduces a new path secret `new_path_secret` at the removed
-    /// index.
+    /// index. This method does not mutate this `GroupState`, the operation is rather applied to
+    /// the returned `GroupState`.
+    ///
+    /// Returns: `Ok((group_state, app_key_chain, group_op, confirmation_key))` on success, where
+    /// `group_state` is the group state after having applied the add operation, `app_key_chain`
+    /// is the resulting application key chain (again, after having applied the add operation),
+    /// `group_op` is the raw `GroupOperation` object, and `confirmation_key` is the derived
+    /// confirmation key we'll use to compute the MAC in the `Handshake` that will end up
+    /// containing the `GroupOperation`.
     // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
     // consume the Remove ops they produce (unlike Updates). But for consistency with the other
     // create_*_op functions, this should mutate the GroupState too.
     pub(crate) fn create_and_apply_remove_op(
-        &mut self,
+        &self,
         removed_roster_index: u32,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
-    ) -> Result<(GroupOperation, ApplicationKeyChain, ConfirmationKey), Error> {
+    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
+        // Ugh, a full group state clone, I know
+        let mut new_group_state = self.clone();
+
         let removed_tree_index = GroupState::roster_index_to_tree_index(removed_roster_index)?;
         // Encrypt the new entropy for the tree
-        let direct_path_msg = self.tree.encrypt_direct_path_secrets(
-            self.cs,
+        let direct_path_msg = new_group_state.tree.encrypt_direct_path_secrets(
+            new_group_state.cs,
             removed_tree_index,
             new_path_secret,
             csprng,
@@ -819,14 +857,16 @@ impl GroupState {
 
         // Apply the Remove, log the operation in the transcript hash, increment the epoch, update
         // the epoch secrets, and make the new ApplicationKeyChain
-        let update_secret = self.process_remove_op(&remove)?;
+        let update_secret = new_group_state.process_remove_op(&remove)?;
         let op = GroupOperation::Remove(remove);
-        self.update_transcript_hash(&op)?;
-        self.increment_epoch()?;
-        let (app_secret, confirmation_key) = self.update_epoch_secrets(&update_secret)?;
-        let app_key_chain = ApplicationKeyChain::from_application_secret(self, app_secret);
+        new_group_state.update_transcript_hash(&op)?;
+        new_group_state.increment_epoch()?;
+        let (app_secret, confirmation_key) =
+            new_group_state.update_epoch_secrets(&update_secret)?;
+        let app_key_chain =
+            ApplicationKeyChain::from_application_secret(&new_group_state, app_secret);
 
-        Ok((op, app_key_chain, confirmation_key))
+        Ok((new_group_state, app_key_chain, op, confirmation_key))
     }
 
     /// Creates a `Handshake` message by packaging the given `GroupOperation`.
@@ -880,47 +920,53 @@ impl GroupState {
 // Implement public API for Handshake creation
 
 impl GroupState {
-    /// Creates and applies a `GroupUpdate` operation, determined by the given inputs. This mutates
-    /// the `GroupState`.
+    /// Creates and applies a `GroupUpdate` operation with the given path secret information. This
+    /// method does not mutate this `GroupState`, the operation is rather applied to the returned
+    /// `GroupState`.
     ///
-    /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
-    /// message representing the specified update operation, and `app_key_chain` is the newly
-    /// derived application key schedule object.
+    /// Returns: `Ok((handshake, group_state, app_key_chain))` on success, where `handshake` is the
+    /// `Handshake` message representing the specified update operation, `group_state` is the new
+    /// group state after the update has been applied, `app_key_chain` is the newly derived
+    /// application key schedule object
     // This is just a wrapper around self.create_and_apply_update_op and self.create_handshake
     pub fn create_and_apply_update_handshake(
-        &mut self,
+        &self,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
-    ) -> Result<(Handshake, ApplicationKeyChain), Error> {
-        let (update_op, app_key_chain, conf_key) =
+    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
+        let (new_group_state, app_key_chain, update_op, conf_key) =
             self.create_and_apply_update_op(new_path_secret, csprng)?;
-        let handshake = self.create_handshake(update_op, conf_key)?;
+        let handshake = new_group_state.create_handshake(update_op, conf_key)?;
 
-        Ok((handshake, app_key_chain))
+        Ok((handshake, new_group_state, app_key_chain))
     }
 
-    /// Creates and applies a `GroupAdd` operation, determined by the given inputs. This mutates
-    /// the `GroupState`.
+    /// Creates and applies a `GroupAdd` operation for a member at index `new_roster_index` with
+    /// the target `init_key`. This method does not mutate this `GroupState`, the operation is
+    /// rather applied to the returned `GroupState`.
     ///
-    /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
-    /// message representing the specified add operation, and `app_key_chain` is the newly derived
-    /// application key schedule object.
+    /// Returns: `Ok((handshake, group_state, app_key_chain))` on success, where `handshake` is the
+    /// `Handshake` message representing the specified add operation, `group_state` is the new
+    /// group state after the add has been applied, `app_key_chain` is the newly derived
+    /// application key schedule object
     // This is just a wrapper around self.create_and_apply_add_op and self.create_handshake
     pub fn create_and_apply_add_handshake(
-        &mut self,
+        &self,
         new_roster_index: u32,
         init_key: UserInitKey,
         prior_welcome_info_hash: &WelcomeInfoHash,
-    ) -> Result<(Handshake, ApplicationKeyChain), Error> {
-        let (add_op, app_key_chain, conf_key) =
+    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
+        let (new_group_state, app_key_chain, add_op, conf_key) =
             self.create_and_apply_add_op(new_roster_index, init_key, prior_welcome_info_hash)?;
-        let handshake = self.create_handshake(add_op, conf_key)?;
+        let handshake = new_group_state.create_handshake(add_op, conf_key)?;
 
-        Ok((handshake, app_key_chain))
+        Ok((handshake, new_group_state, app_key_chain))
     }
 
-    /// Creates and applies a `GroupRemove` operation, determined by the given inputs. This mutates
-    /// the `GroupState`.
+    /// Creates and applies a `GroupRemove` operation for a member at roster index
+    /// `removed_roster_index` and introduces a new path secret `new_path_secret` at the removed
+    /// index. This method does not mutate this `GroupState`, the operation is rather applied to
+    /// the returned `GroupState`.
     ///
     /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
     /// message representing the specified remove operation, and `app_key_chain` is the newly
@@ -931,12 +977,12 @@ impl GroupState {
         removed_roster_index: u32,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
-    ) -> Result<(Handshake, ApplicationKeyChain), Error> {
-        let (remove_op, app_key_chain, conf_key) =
+    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
+        let (new_group_state, app_key_chain, remove_op, conf_key) =
             self.create_and_apply_remove_op(removed_roster_index, new_path_secret, csprng)?;
-        let handshake = self.create_handshake(remove_op, conf_key)?;
+        let handshake = new_group_state.create_handshake(remove_op, conf_key)?;
 
-        Ok((handshake, app_key_chain))
+        Ok((handshake, new_group_state, app_key_chain))
     }
 }
 

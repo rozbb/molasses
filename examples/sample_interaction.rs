@@ -177,7 +177,7 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
         let basic_cred = BasicCredential::new(identity, COMMON_SIG_SCHEME, identity_public_key);
         Credential::Basic(basic_cred)
     };
-    let mut group_state = GroupState::new_singleton_group(
+    let group_state = GroupState::new_singleton_group(
         COMMON_CIPHER_SUITE,
         COMMON_PROTOCOL_VERSION,
         identity_secret_key,
@@ -197,10 +197,10 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     tx.send(serialize(&welcome)).unwrap();
     println!("ALICE SEND Welcome");
 
-    // Then make and send an Add Handshake
-    // Bob will have roster index 1. Recall Alice is at roster index 0
+    // Then make an Add Handshake, letting the resulting group state be the new group state.
+    // Bob will have roster index 1. Recall Alice is at roster index 0.
     let bob_roster_idx = 1;
-    let (add_handshake, mut app_key_chain) = group_state
+    let (add_handshake, group_state, mut app_key_chain) = group_state
         .create_and_apply_add_handshake(bob_roster_idx, bob_user_init_key, &welcome_info_hash)
         .unwrap();
     tx.send(serialize(&add_handshake)).unwrap();
@@ -237,9 +237,9 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     tx.send(serialize(&welcome)).unwrap();
     println!("ALICE SEND Welcome");
 
-    // Then make and send an Add Handshake
+    // Then make an Add Handshake, letting the resulting group state be the new group state.
     let carol_roster_idx = 2;
-    let (add_handshake, mut app_key_chain) = group_state
+    let (add_handshake, group_state, mut app_key_chain) = group_state
         .create_and_apply_add_handshake(carol_roster_idx, carol_user_init_key, &welcome_info_hash)
         .unwrap();
     tx.send(serialize(&add_handshake)).unwrap();

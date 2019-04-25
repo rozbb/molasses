@@ -11,6 +11,7 @@ use crate::{
     tls_ser,
 };
 
+/// Represents a version of the MLS protocol
 // uint8 ProtocolVersion;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProtocolVersion(u8);
@@ -187,7 +188,7 @@ impl UserInitKey {
     // uniquely identifies a given UserInitKey object among the set of UserInitKeys created by this
     // client."
 
-    /// Validates the invariants that `UserInitKey` must satisfy, as in section 6 of the MLS spec
+    /// Validates the invariants that `UserInitKey` must satisfy, as in section 7 of the MLS spec
     #[must_use]
     pub(crate) fn validate(&self) -> Result<(), Error> {
         // All three of supported_versions, cipher_suites, and init_keys MUST have the same length.
@@ -320,7 +321,7 @@ impl UserInitKey {
     }
 }
 
-/// This is currently not defined by the spec. See open issue in section 7.1
+/// This is currently not defined by the spec. See open issue in section 8.1
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupInit;
 
@@ -370,7 +371,7 @@ pub(crate) enum GroupOperation {
 
 // TODO: Make confirmation a Mac enum for more type safety
 
-/// A `Handshake` message, as defined in section 7 of the MLS spec
+/// A `Handshake` message, as defined in section 8 of the MLS spec
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Handshake {
     /// This is equal to the epoch of the current `GroupState`
@@ -419,7 +420,7 @@ mod test {
     fn update_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group
-        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
+        let (group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
 
         // Make a copy of this group, but from another perspective. That is, we want the same group
         // but with a different roster index
@@ -433,12 +434,11 @@ mod test {
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
         let new_path_secret = test_utils::random_path_secret(&group_state1, &mut rng);
-        let (handshake, _) =
+        let (handshake, group_state1, _) =
             group_state1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
         // Apply the Handshake to the clone of the first group
-        let (new_group_state2, _) = group_state2.process_handshake(&handshake).unwrap();
-        let group_state2 = new_group_state2;
+        let (group_state2, _) = group_state2.process_handshake(&handshake).unwrap();
 
         // Now see if the group states agree
         let (group1_bytes, group2_bytes) = (
@@ -480,7 +480,8 @@ mod test {
         // object out of that Update
         let new_path_secret = test_utils::random_path_secret(&starting_group, &mut rng);
 
-        let (handshake, _) = starting_group
+        // Make a Remove handshake and let starting_group reflect the change
+        let (handshake, starting_group, _) = starting_group
             .create_and_apply_remove_handshake(remove_roster_idx, new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
 
@@ -567,8 +568,8 @@ mod test {
         let (welcome, welcome_info_hash) =
             Welcome::from_group_state(&group_state1, &init_key, &mut rng).unwrap();
 
-        // Make and apply the add op on group 1
-        let (add_handshake, _) = group_state1
+        // Make the add op and use the new group state
+        let (add_handshake, group_state1, _) = group_state1
             .create_and_apply_add_handshake(
                 u32::try_from(new_roster_index).unwrap(),
                 init_key.clone(),

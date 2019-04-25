@@ -7,7 +7,7 @@ use crate::{
     error::Error,
 };
 
-/// This represents the X25519-SHA256-AES128GCM ciphersuite. Notably, it implements `CipherSuite`.
+/// This represents the X25519-SHA256-AES128GCM ciphersuite
 pub const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,

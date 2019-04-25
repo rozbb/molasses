@@ -31,6 +31,9 @@ impl WriteSecret {
 /// Contains the secrets for every member of the group. These are called "application_secrets" in
 /// the spec, but that's kinda confusing since "application_secret" is also something that the
 /// `GroupState` creates and uses to seed this struct.
+///
+/// This is intended to be used with the `encrypt_application_message` and
+/// `decrypt_application_message` functions.
 pub struct ApplicationKeyChain {
     /// Contains write secrets and their respective generations, starting at 0
     write_secrets_and_gens: Vec<(WriteSecret, u32)>,
@@ -375,15 +378,17 @@ mod test {
     use quickcheck_macros::quickcheck;
     use rand::{self, SeedableRng};
 
+    // Does an update operation on the two given groups and returns the resulting key chains
     fn do_update_op<R: CryptoRng>(
         group1: &mut GroupState,
         group2: &mut GroupState,
         rng: &mut R,
     ) -> (ApplicationKeyChain, ApplicationKeyChain) {
         let new_path_secret = test_utils::random_path_secret(&group1, rng);
-        // This mutates group1
-        let (handshake, keychain1) =
+        // Make a handshake and update group1
+        let (handshake, new_group1, keychain1) =
             group1.create_and_apply_update_handshake(new_path_secret, rng).unwrap();
+        *group1 = new_group1;
 
         // Process the handshake and update group2
         let (new_group2, keychain2) = group2.process_handshake(&handshake).unwrap();

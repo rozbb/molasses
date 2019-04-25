@@ -3,7 +3,7 @@ use crate::error::Error;
 use std::io::Read;
 
 use byteorder::{BigEndian, ReadBytesExt};
-use serde::de::{Deserialize, Deserializer, IntoDeserializer, Visitor};
+use serde::de::{Deserializer, IntoDeserializer, Visitor};
 
 // TODO: Make this parser more conservative in what it accepts. Currently, it will happily return
 // incomplete vectors (i.e., it'll read a length, get to the end of a buffer that's too short, and
