@@ -4,7 +4,20 @@ Molasses
 An extremely early implementation of the [Message Layer Security](https://mlswg.github.io/) group
 messaging protocol. This repo is based on
 [draft 4](https://datatracker.ietf.org/doc/draft-ietf-mls-protocol/04/) of the MLS protocol
-specification.
+specification. To build internal docs, do
+
+```
+cargo doc --document-private-items
+```
+
+Example Usage
+-------------
+See [examples/sample_interaction.rs](examples/sample_interaction.rs) for an example of how to use
+this crate. To run the example, do
+
+```
+cargo run --example sample_interaction
+```
 
 Warning
 -------
