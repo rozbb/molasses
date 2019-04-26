@@ -869,21 +869,21 @@ impl GroupState {
         Ok((new_group_state, app_key_chain, op, confirmation_key))
     }
 
-    /// Creates a `Handshake` message by packaging the given `GroupOperation`.
+    /// Creates a `Handshake` message by packaging the given `GroupOperation`
     ///
-    /// NOTE: This is intended to be called only after `create_*_op` is called, where `*` is `add`
-    /// or `update` or `remove`. This makes no sense otherwise.
+    /// Requires: For correctness, that the given `GroupOperation` has already been applied to this
+    /// `GroupState`.
+    ///
+    /// NOTE: This is intended to be called only on objects returned from `create_and_apply_*_op`,
+    /// where `*` is `add` or `update` or `remove`. This makes no sense otherwise.
     fn create_handshake(
         &self,
+        prior_epoch: u32,
         operation: GroupOperation,
         confirmation_key: ConfirmationKey,
     ) -> Result<Handshake, Error> {
         // signature = Sign(identity_key, GroupState.transcript_hash)
         let signature = self.cs.sig_impl.sign(&self.identity_key, &self.transcript_hash);
-
-        let prior_epoch = self.epoch.checked_sub(1).ok_or(Error::ValidationError(
-            "Cannot create a handshake from a brand new GroupState",
-        ))?;
 
         // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
@@ -936,7 +936,8 @@ impl GroupState {
     ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
         let (new_group_state, app_key_chain, update_op, conf_key) =
             self.create_and_apply_update_op(new_path_secret, csprng)?;
-        let handshake = new_group_state.create_handshake(update_op, conf_key)?;
+        let prior_epoch = self.epoch;
+        let handshake = new_group_state.create_handshake(prior_epoch, update_op, conf_key)?;
 
         Ok((handshake, new_group_state, app_key_chain))
     }
@@ -958,7 +959,8 @@ impl GroupState {
     ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
         let (new_group_state, app_key_chain, add_op, conf_key) =
             self.create_and_apply_add_op(new_roster_index, init_key, prior_welcome_info_hash)?;
-        let handshake = new_group_state.create_handshake(add_op, conf_key)?;
+        let prior_epoch = self.epoch;
+        let handshake = new_group_state.create_handshake(prior_epoch, add_op, conf_key)?;
 
         Ok((handshake, new_group_state, app_key_chain))
     }
@@ -980,7 +982,8 @@ impl GroupState {
     ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
         let (new_group_state, app_key_chain, remove_op, conf_key) =
             self.create_and_apply_remove_op(removed_roster_index, new_path_secret, csprng)?;
-        let handshake = new_group_state.create_handshake(remove_op, conf_key)?;
+        let prior_epoch = self.epoch;
+        let handshake = new_group_state.create_handshake(prior_epoch, remove_op, conf_key)?;
 
         Ok((handshake, new_group_state, app_key_chain))
     }
