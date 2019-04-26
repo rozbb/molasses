@@ -74,9 +74,6 @@ pub(crate) struct Aes128GcmKey {
     sealing_key: ring::aead::SealingKey,
 }
 
-/// A nonce for use with the `Aes128Gcm` algorithm
-pub(crate) struct Aes128GcmNonce(ring::aead::Nonce);
-
 impl AuthenticatedEncryption for Aes128Gcm {
     /// Returns `AES_128_GCM_KEY_SIZE`
     fn key_size(&self) -> usize {

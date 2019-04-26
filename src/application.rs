@@ -14,6 +14,8 @@ use crate::{
     tls_ser,
 };
 
+use core::convert::TryFrom;
+
 use clear_on_drop::ClearOnDrop;
 use serde::de::Deserialize;
 
@@ -56,24 +58,29 @@ impl ApplicationKeyChain {
         group_state: &GroupState,
         app_secret: ApplicationSecret,
     ) -> ApplicationKeyChain {
+        // Remember that roster indices are u32. This fact matters when we serialize it in the
+        // calculation of write_secret_[sender].
+        let roster_len =
+            u32::try_from(group_state.roster.len()).expect("roster length exceeds u32::MAX");
+
         // Make a write secret for every roster entry, and let its generation be 0
-        let write_secrets_and_gens = (0..group_state.roster.len())
-            .map(|roster_idx| {
+        let write_secrets_and_gens = (0u32..roster_len)
+            .map(|roster_idx: u32| {
                 // write_secret_[sender] =
                 //     HKDF-Expand-Label(application_secret, "app sender", sender, Hash.length)
-                //  where sender is serialized as usual
-                let secret = hkdf::prk_from_bytes(group_state.cs.hash_alg, &app_secret.0);
-                let mut buf = vec![0u8; group_state.cs.hash_alg.output_len];
+                //  where sender is serialized as usual as a u32
+                let prk = hkdf::prk_from_bytes(group_state.cs.hash_alg, &app_secret.0);
+                let mut write_secret_buf = vec![0u8; group_state.cs.hash_alg.output_len];
                 let serialized_roster_idx = tls_ser::serialize_to_bytes(&roster_idx).unwrap();
                 hkdf_expand_label(
-                    &secret,
+                    &prk,
                     b"app sender",
                     &serialized_roster_idx,
-                    buf.as_mut_slice(),
+                    write_secret_buf.as_mut_slice(),
                 );
 
                 // (write_secret, generation=0)
-                (WriteSecret::new(buf), 0)
+                (WriteSecret::new(write_secret_buf), 0)
             })
             .collect();
 
@@ -142,6 +149,8 @@ impl ApplicationKeyChain {
         let current_secret = write_secret.clone();
 
         // Ratchet the write secret, using its current value as a key
+        let roster_idx = u32::try_from(roster_idx)
+            .map_err(|_| Error::ValidationError("Roster index exceeds u32::MAX"))?;
         let serialized_roster_idx = tls_ser::serialize_to_bytes(&roster_idx).unwrap();
         let prk = hkdf::prk_from_bytes(self.group_cs.hash_alg, &current_secret.0);
         hkdf_expand_label(&prk, b"app sender", &serialized_roster_idx, &mut *write_secret.0);
@@ -370,13 +379,23 @@ mod test {
         application::{
             decrypt_application_message, encrypt_application_message, ApplicationKeyChain,
         },
-        crypto::rng::CryptoRng,
-        group_state::GroupState,
+        credential::Roster,
+        crypto::{
+            ciphersuite::X25519_SHA256_AES128GCM,
+            rng::CryptoRng,
+            sig::{SignatureScheme, ED25519_IMPL},
+        },
+        group_state::{ApplicationSecret, GroupState},
+        handshake::MLS_DUMMY_VERSION,
+        ratchet_tree::{RatchetTree, RatchetTreeNode},
+        tls_de::TlsDeserializer,
+        tree_math,
         utils::test_utils,
     };
 
     use quickcheck_macros::quickcheck;
     use rand::{self, SeedableRng};
+    use serde::de::Deserialize;
 
     // Does an update operation on the two given groups and returns the resulting key chains
     fn do_update_op<R: CryptoRng>(
@@ -444,6 +463,188 @@ mod test {
 
         // Make sure they agree
         assert_eq!(plaintext, orig_msg);
+    }
+
+    // The following test vector is from a not-yet-published source
+    //
+    // File: app_key_schedule.bin
+    //
+    // struct {
+    //   opaque secret<0..255>;
+    //   opaque key<0..255>;
+    //   opaque nonce<0..255>;
+    // } AppKeyStep;
+    //
+    // AppKeyScheduleStep AppKeySequence<0..2^32-1>;
+    // KeySequence AppKeyScheduleCase<0..2^32-1>;
+    //
+    // struct {
+    //   uint32_t n_members;
+    //   uint32_t n_generations;
+    //   opaque application_secret<0..255>;
+    //
+    //   AppKeyScheduleCase case_p256;
+    //   AppKeyScheduleCase case_x25519;
+    // } AppKeyScheduleTestVectors;
+    //
+    // For each ciphersuite, the AppKeyScheduleTestVectors struct provides an AppKeyScheduleCase
+    // that describes the outputs of the MLS application key schedule, for each participant in a
+    // group over several generations.
+    //
+    // * The n_members field specifies the number of members in the group. Each AppKeyScheduleCase
+    //   vector should have this many entries. The entry case[j] represents the vector of
+    //   application keys for participant j.
+    // * The n_generations field specifies the number of generations of application keys that are
+    //   generated per participant. Each vector case[j] should have this many entries. The entry
+    //   case[j][k] represents the values at generation k for participant j.
+    // * The application_secret field represents the root application secret for this epoch (the
+    //   one derived from the epoch_secret).
+    // * For a given participant and generation, the AppKeyStep, the fields in the AppKeyStep
+    //   object represent the following values:
+    //   * secret represents application_secret_[j]_[k]
+    //   * key represents write_key_[j]_[k]
+    //   * nonce represents write_nonce_[j]_[k]
+    //
+    // Given the inputs as described above, your implementation should replicate the outputs of the
+    // key schedule for each participant and generation.
+
+    #[derive(Debug, Deserialize)]
+    struct AppKeyStep {
+        #[serde(rename = "secret__bound_u8")]
+        secret: Vec<u8>,
+        #[serde(rename = "key__bound_u8")]
+        key: Vec<u8>,
+        #[serde(rename = "nonce__bound_u8")]
+        nonce: Vec<u8>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename = "AppKeySequence__bound_u32")]
+    struct AppKeySequence(Vec<AppKeyStep>);
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename = "AppKeyScheduleCase__bound_u32")]
+    struct AppKeyScheduleCase(Vec<AppKeySequence>);
+
+    #[derive(Debug, Deserialize)]
+    struct AppKeyScheduleVectors {
+        num_members: u32,
+        num_generations: u32,
+        #[serde(rename = "application_secret__bound_u8")]
+        application_secret: Vec<u8>,
+        case_p256: AppKeyScheduleCase,
+        case_x25519: AppKeyScheduleCase,
+    }
+
+    #[test]
+    fn application_key_schedule_kat() {
+        // There's no need to make this a quickcheck test, since it's pretty much impossible for
+        // this to succeed due to random chance. But still, the test should be deterministic, so
+        // just seed the rng with 0.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0);
+
+        // Deserialize the test vectors (no need to upcast, there's nothing but vectors here)
+        let mut f = std::fs::File::open("test_vectors/app_key_schedule.bin").unwrap();
+        let mut deserializer = TlsDeserializer::from_reader(&mut f);
+        let test_vecs = AppKeyScheduleVectors::deserialize(&mut deserializer).unwrap();
+
+        // These values hold for all test vectors
+        let num_members = test_vecs.num_members as usize;
+        let app_secret = ApplicationSecret::new(test_vecs.application_secret);
+
+        // Test the X25519 case
+        // TODO: Test P256 when it's ready
+        let case = test_vecs.case_x25519;
+
+        // The ciphersuite and signature scheme for this test case
+        let cs = &X25519_SHA256_AES128GCM;
+        let ss = &ED25519_IMPL;
+
+        // Make a dummy GroupState, just so we can pass it to
+        // ApplicationKeyChain::from_application_secret. The only things that matter are the length
+        // of the roster and the number of leaves in the tree.
+        let dummy_group_state = {
+            // Dummy identity
+            let identity_key = ss.secret_key_from_random(&mut rng).unwrap();
+            // Dummy ID
+            let group_id = b"dummygroup".to_vec();
+            // Dummy roster of the correct length, filled with blanks
+            let roster = Roster(vec![None; num_members]);
+            // Dummy roster index; the sender_index is what matters in the application key chain
+            let roster_index = 0;
+            // Dummy tree with the correct number of leaves
+            let tree = {
+                let num_nodes = tree_math::num_nodes_in_tree(num_members);
+                RatchetTree {
+                    nodes: vec![RatchetTreeNode::Blank; num_nodes],
+                }
+            };
+            GroupState::new_from_parts(
+                cs,
+                MLS_DUMMY_VERSION,
+                identity_key,
+                group_id,
+                roster,
+                roster_index,
+                tree,
+            )
+        };
+        // Finally make the application key chain with the given application secret and correct
+        // number of members
+        let mut app_key_chain =
+            ApplicationKeyChain::from_application_secret(&dummy_group_state, app_secret);
+
+        // The element at index i of this vector is a sequence of write_secrets belonging to member
+        // i of the group. The sequence goes in generational order, starting at 0.
+        let member_key_sequences = case.0;
+        // Check that the number of members is what the test vector says it is
+        assert_eq!(member_key_sequences.len(), num_members);
+
+        // Go through each member in the group
+        for (roster_idx, member_key_seq) in member_key_sequences.into_iter().enumerate() {
+            // Check that the number of generations we're checking is  what the test vector says
+            assert_eq!(member_key_seq.0.len(), test_vecs.num_generations as usize);
+
+            // Go through each generation of this members write_secret/write_key/write_nonce
+            for key_step in member_key_seq.0.into_iter() {
+                // We don't test write_secret directly, because we don't actually expose that
+                // anywhere. Instead, we test the key and nonce values. This ought to be enough
+                // because the key and nonce are derived from the write_secret.
+                let given_key = cs.aead_impl.key_from_bytes(&key_step.key).unwrap();
+                let given_nonce = cs.aead_impl.nonce_from_bytes(&key_step.nonce).unwrap();
+
+                // Ok so we don't actually test equality of keys or nonces, because I've wrapped
+                // them in a bunch of opaque types. So let's do a sample encryption/decryption
+                // instead. That should be enough, right? Right?!
+
+                let orig_msg = b"No future, no future, no future for you";
+
+                // The given key/nonce will be used to encrypt
+                let mut ciphertext = {
+                    // Make room for the tag
+                    let mut plaintext = orig_msg.to_vec();
+                    plaintext.extend(vec![0u8; cs.aead_impl.tag_size()]);
+
+                    // Encrypt the thing in-place and return the mutated plaintext
+                    cs.aead_impl.seal(&given_key, given_nonce, &mut plaintext).unwrap();
+                    plaintext
+                };
+
+                // We'll use the derived key/nonce will decrypt it. The unwrap() inside this block
+                // should fail if the key/nonce aren't the ones used above.
+                let plaintext = {
+                    let (derived_key, derived_nonce, _) =
+                        app_key_chain.get_key_nonce_gen(roster_idx).unwrap();
+                    cs.aead_impl.open(&derived_key, derived_nonce, &mut ciphertext).unwrap()
+                };
+
+                // Make sure the decrypted ciphertext is equal to the original message
+                assert_eq!(plaintext, &orig_msg[..]);
+
+                // Ratchet forward this member's secrets
+                app_key_chain.ratchet(roster_idx).unwrap();
+            }
+        }
     }
 
     //

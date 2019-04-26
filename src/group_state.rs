@@ -25,7 +25,7 @@ use serde::de::Deserialize;
 pub(crate) struct ApplicationSecret(pub(crate) ClearOnDrop<Vec<u8>>);
 
 impl ApplicationSecret {
-    fn new(v: Vec<u8>) -> ApplicationSecret {
+    pub(crate) fn new(v: Vec<u8>) -> ApplicationSecret {
         ApplicationSecret(ClearOnDrop::new(v))
     }
 }
@@ -146,7 +146,7 @@ impl GroupState {
     }
 
     /// Creates a new `GroupState` from its constituent parts
-    fn new_from_parts(
+    pub(crate) fn new_from_parts(
         cs: &'static CipherSuite,
         protocol_version: ProtocolVersion,
         identity_key: SigSecretKey,
