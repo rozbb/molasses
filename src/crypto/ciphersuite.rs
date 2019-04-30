@@ -2,7 +2,6 @@ use crate::{
     crypto::{
         aead::{AuthenticatedEncryption, AES128GCM_IMPL},
         dh::{DhPrivateKey, DhPublicKey, DiffieHellman, P256_IMPL, X25519_IMPL},
-        sig::{SignatureScheme, ECDSA_P256_IMPL, ED25519_IMPL},
     },
     error::Error,
 };
@@ -12,7 +11,6 @@ pub const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
-    sig_impl: &ED25519_IMPL,
     hash_alg: &ring::digest::SHA256,
 };
 
@@ -20,7 +18,6 @@ pub(crate) const P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "P256_SHA256_AES128GCM",
     dh_impl: &P256_IMPL,
     aead_impl: &AES128GCM_IMPL,
-    sig_impl: &ECDSA_P256_IMPL,
     hash_alg: &ring::digest::SHA256,
 };
 
@@ -29,12 +26,13 @@ pub(crate) const P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
 pub struct CipherSuite {
     /// The name of this cipher suite
     pub(crate) name: &'static str,
+
     /// The trait object that implements our key exchange functionality
     pub(crate) dh_impl: &'static dyn DiffieHellman,
+
     /// The trait object that implements our authenticated encryption functionality
     pub(crate) aead_impl: &'static dyn AuthenticatedEncryption,
-    /// The object that implements our signature scheme
-    pub(crate) sig_impl: &'static dyn SignatureScheme,
+
     /// The `ring::digest::Algorithm` that implements our hashing functionality
     // We're gonna have to break the mold here. Originally this was Hash: digest::Digest. But to
     // define HKDF and HMAC over a generic Digest, one needs the following constraints:

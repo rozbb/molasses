@@ -2,7 +2,6 @@
 //! application-level messages
 
 use crate::{
-    credential::Credential,
     crypto::{
         aead::{AeadKey, AeadNonce},
         ciphersuite::CipherSuite,
@@ -162,6 +161,24 @@ impl ApplicationKeyChain {
 
         Ok(())
     }
+
+    /// Validates that this `ApplicationKeyChain` is created from the given `GroupState` and has
+    /// sane values
+    #[must_use]
+    fn validate_against_group_state(&self, group_state: &GroupState) -> Result<(), Error> {
+        // Check ownership
+        if group_state.group_id != self.group_id {
+            return Err(Error::ValidationError("Key chain does not belong to this group state"));
+        }
+        // This shouldn't happen. The key chain should inherit the ciphersuite it was created from
+        if group_state.cs != self.group_cs {
+            return Err(Error::ValidationError(
+                "Key chain and GroupState aren't on the same ciphersuite",
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 //
@@ -221,18 +238,15 @@ pub fn encrypt_application_message(
     group_state: &GroupState,
     app_key_chain: &mut ApplicationKeyChain,
 ) -> Result<ApplicationMessage, Error> {
-    // Check ownership first
-    if group_state.group_id != app_key_chain.group_id {
-        return Err(Error::ValidationError("Key chain does not belong to this group state"));
-    }
-    // This shouldn't happen. The app_key_chain should inherit the ciphersuite it was created from
-    if group_state.cs != app_key_chain.group_cs {
-        return Err(Error::ValidationError(
-            "Key chain and GroupState aren't on the same ciphersuite",
-        ));
-    }
+    // Check that this key chain really does belong to this group_state
+    app_key_chain.validate_against_group_state(group_state)?;
+
+    // The validation above ensures these values are the same for the key chain as for the group
     let group_id = &group_state.group_id;
     let cs = group_state.cs;
+
+    // Get the signature scheme from this member of the group_state
+    let ss = group_state.ss;
 
     // This really really shouldn't be able to happen. A preliminary GroupState couldn't even
     // produce an ApplicationSecret to make this key chain in the first place.
@@ -253,7 +267,7 @@ pub fn encrypt_application_message(
     };
     let serialized_signature_content = tls_ser::serialize_to_bytes(&signature_content)?;
     let hashed_signature_content = ring::digest::digest(cs.hash_alg, &serialized_signature_content);
-    let sig = cs.sig_impl.sign(&group_state.identity_key, hashed_signature_content.as_ref());
+    let sig = ss.sign(&group_state.identity_key, hashed_signature_content.as_ref());
 
     // Pack the plaintext and signature together and encrypt it
     let message_content = ApplicationMessageContent {
@@ -294,16 +308,12 @@ pub fn decrypt_application_message(
     group_state: &GroupState,
     app_key_chain: &mut ApplicationKeyChain,
 ) -> Result<Vec<u8>, Error> {
-    // Check ownership first
-    if group_state.group_id != app_key_chain.group_id {
-        return Err(Error::ValidationError("Key chain does not belong to this group"));
-    }
-    // Check that the ciphersuites match
-    if group_state.cs != app_key_chain.group_cs {
-        return Err(Error::ValidationError("Key chain's ciphersuite differs from the group's"));
-    }
-    let cs = group_state.cs;
+    // Check that this key chain really does belong to this group_state
+    app_key_chain.validate_against_group_state(group_state)?;
+
+    // The validation above ensures these values are the same for the key chain as for the group
     let group_id = &group_state.group_id;
+    let cs = group_state.cs;
 
     // Check that the message was for this group
     if &app_message.group_id != group_id {
@@ -331,6 +341,19 @@ pub fn decrypt_application_message(
         ));
     }
 
+    // Get the sender's public key and preferred signature scheme from the roster. There are two
+    // things that can go wrong here: either the sender index is bad, or the index is good but the
+    // roster entry is empty.
+    let sender_credential = group_state
+        .roster
+        .0
+        .get(app_message.sender as usize)
+        .ok_or(Error::ValidationError("Application message's sender index is out of bounds"))?
+        .as_ref()
+        .ok_or(Error::ValidationError("Application message's sender credential is empty"))?;
+    let sender_pubkey = sender_credential.get_public_key();
+    let sender_ss = sender_credential.get_signature_scheme();
+
     // Reconstruct the content of the message as well as its signature
     let serialized_message_content =
         cs.aead_impl.open(&key, nonce, &mut app_message.encrypted_content)?;
@@ -340,19 +363,7 @@ pub fn decrypt_application_message(
         ApplicationMessageContent::deserialize(&mut deserializer)?
     };
     let plaintext = message_content.content;
-    let signature = cs.sig_impl.signature_from_bytes(&message_content.signature)?;
-
-    // Get the sender's public key from the roster. There are two things that can go wrong here:
-    // either the sender index is phony, or the index is real but the roster entry is empty.
-    let sender_opt: &Option<Credential> = group_state
-        .roster
-        .0
-        .get(app_message.sender as usize)
-        .ok_or(Error::ValidationError("Application message's sender index is out of bounds"))?;
-    let sender_pubkey = sender_opt
-        .as_ref()
-        .ok_or(Error::ValidationError("Application message's sender is blank"))?
-        .get_public_key();
+    let signature = sender_ss.signature_from_bytes(&message_content.signature)?;
 
     // Create the stuff that the signature is over, then verify the signature. See above for why we
     // use group_epoch_at_creation
@@ -365,7 +376,7 @@ pub fn decrypt_application_message(
     };
     let serialized_signature_content = tls_ser::serialize_to_bytes(&signature_content)?;
     let hashed_signature_content = ring::digest::digest(cs.hash_alg, &serialized_signature_content);
-    cs.sig_impl.verify(sender_pubkey, hashed_signature_content.as_ref(), &signature)?;
+    sender_ss.verify(sender_pubkey, hashed_signature_content.as_ref(), &signature)?;
 
     // All good. Now ratchet the write secret forward
     app_key_chain.ratchet(app_message.sender as usize)?;
@@ -465,7 +476,8 @@ mod test {
         assert_eq!(plaintext, orig_msg);
     }
 
-    // The following test vector is from a not-yet-published source
+    // The following test vector is from
+    // https://github.com/mlswg/mls-implementations/tree/68d1cf562d6e489c3025a4b6d0e4e18725674349/test_vectors
     //
     // File: app_key_schedule.bin
     //
@@ -581,6 +593,7 @@ mod test {
             };
             GroupState::new_from_parts(
                 cs,
+                ss,
                 MLS_DUMMY_VERSION,
                 identity_key,
                 group_id,

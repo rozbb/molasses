@@ -6,7 +6,7 @@ use crate::{
         ecies::{ecies_encrypt, EciesCiphertext},
         hkdf,
         rng::CryptoRng,
-        sig::SigSecretKey,
+        sig::{SigSecretKey, SignatureScheme},
     },
     error::Error,
     handshake::{
@@ -51,16 +51,21 @@ impl UpdateSecret {
 /// Contains all group state
 #[derive(Clone, Serialize)]
 pub struct GroupState {
-    /// You can think of this as a context variable. It helps us implement crypto ops and
-    /// disambiguate serialized data structures
+    /// The ciphersuite of this group. You can think of this as a context variable. It helps us
+    /// implement crypto ops and disambiguate serialized data structures
     #[serde(skip)]
     pub(crate) cs: &'static CipherSuite,
+
+    /// The signature scheme that this member is using. You can think of this as a context
+    /// variable. It helps us implement crypto ops and disambiguate serialized data structures
+    #[serde(skip)]
+    pub(crate) ss: &'static dyn SignatureScheme,
 
     /// Version info
     #[serde(skip)]
     pub(crate) protocol_version: ProtocolVersion,
 
-    /// A long-lived signing key used to authenticate the sender of a message
+    /// This member's long-lived signing key, used to authenticate the sender of a message
     #[serde(skip)]
     pub(crate) identity_key: SigSecretKey,
 
@@ -122,6 +127,9 @@ impl GroupState {
         my_credential: Credential,
         csprng: &mut dyn CryptoRng,
     ) -> Result<GroupState, Error> {
+        // Get my preferred signature scheme from my credential
+        let ss = my_credential.get_signature_scheme();
+
         // Turn the credential into a singleton roster
         let roster = Roster(vec![Some(my_credential)]);
         let my_roster_index = 0u32;
@@ -136,6 +144,7 @@ impl GroupState {
         // Now make the GroupState normally
         Ok(GroupState::new_from_parts(
             cs,
+            ss,
             protocol_version,
             identity_key,
             group_id,
@@ -148,6 +157,7 @@ impl GroupState {
     /// Creates a new `GroupState` from its constituent parts
     pub(crate) fn new_from_parts(
         cs: &'static CipherSuite,
+        ss: &'static dyn SignatureScheme,
         protocol_version: ProtocolVersion,
         identity_key: SigSecretKey,
         group_id: Vec<u8>,
@@ -161,6 +171,7 @@ impl GroupState {
 
         GroupState {
             cs: cs,
+            ss: ss,
             protocol_version: protocol_version,
             identity_key: identity_key,
             group_id: group_id,
@@ -189,8 +200,14 @@ impl GroupState {
         my_identity_key: SigSecretKey,
         initializing_user_init_key: UserInitKey,
     ) -> GroupState {
+        // Get the signature scheme from the credential
+        let my_ss = initializing_user_init_key.credential.get_signature_scheme();
+
+        // Make a new preliminary group (notice how roster is None and initializing_user_init_key
+        // is Some)
         GroupState {
             cs: cs,
+            ss: my_ss,
             protocol_version: w.protocol_version,
             identity_key: my_identity_key,
             group_id: w.group_id,
@@ -656,15 +673,18 @@ impl GroupState {
         new_state.update_transcript_hash(&handshake.operation)?;
         new_state.increment_epoch()?;
 
+        // Get the sender's public key and preferred signature scheme from the roster. There are
+        // two things that can go wrong here: either the sender index is bad, or the index is good
+        // but the roster entry is empty.
         let sender_credential = self
             .roster
             .0
             .get(handshake.signer_index as usize)
-            .ok_or(Error::ValidationError("Signer index is out of bounds"))?;
-        let sender_public_key = sender_credential
+            .ok_or(Error::ValidationError("Handshake's signer index is out of bounds"))?
             .as_ref()
-            .ok_or(Error::ValidationError("Credential at signer's index is empty"))?
-            .get_public_key();
+            .ok_or(Error::ValidationError("Handshake's signer credential is empty"))?;
+        let sender_public_key = sender_credential.get_public_key();
+        let sender_ss = sender_credential.get_signature_scheme();
 
         // Do the handshake operation on the preliminary new state. This returns an update secret
         // that the new epoch secrets are derived from.
@@ -701,7 +721,7 @@ impl GroupState {
         // signature_data = GroupState.transcript_hash
         // Handshake.signature = Sign(identity_key, signature_data)
         let sig_data = &new_state.transcript_hash;
-        new_state.cs.sig_impl.verify(sender_public_key, sig_data, &handshake.signature)?;
+        sender_ss.verify(sender_public_key, sig_data, &handshake.signature)?;
 
         // Check the MAC. From section 7 of the spec:
         // confirmation_data = GroupState.transcript_hash || Handshake.signature
@@ -883,7 +903,7 @@ impl GroupState {
         confirmation_key: ConfirmationKey,
     ) -> Result<Handshake, Error> {
         // signature = Sign(identity_key, GroupState.transcript_hash)
-        let signature = self.cs.sig_impl.sign(&self.identity_key, &self.transcript_hash);
+        let signature = self.ss.sign(&self.identity_key, &self.transcript_hash);
 
         // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
@@ -1164,7 +1184,10 @@ impl Welcome {
 mod test {
     use crate::{
         credential::Roster,
-        crypto::ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        crypto::{
+            ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+            sig::{SignatureScheme, ED25519_IMPL},
+        },
         error::Error,
         group_state::{GroupState, UpdateSecret, Welcome},
         handshake::{ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
@@ -1257,10 +1280,12 @@ mod test {
     // Makes a mostly empty GroupState from a recently-deserialized TestGroupState
     pub(crate) fn group_from_test_group(tgs: TestGroupState) -> GroupState {
         let cs = &X25519_SHA256_AES128GCM;
+        let ss = &ED25519_IMPL;
         GroupState {
             cs: cs,
+            ss: ss,
             protocol_version: MLS_DUMMY_VERSION,
-            identity_key: cs.sig_impl.secret_key_from_bytes(&[0u8; 32]).unwrap(),
+            identity_key: ss.secret_key_from_bytes(&[0u8; 32]).unwrap(),
             group_id: tgs.group_id,
             epoch: tgs.epoch,
             roster: tgs.roster,

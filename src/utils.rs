@@ -199,7 +199,10 @@ pub(crate) mod test_utils {
     ) -> (GroupState, Vec<SigSecretKey>) {
         // TODO: Expand the number of available ciphersuites once more are available
         let cipher_suites = &[X25519_SHA256_AES128GCM];
+        let sig_schemes = &[ED25519_IMPL];
+
         let cs = cipher_suites.choose(rng).unwrap();
+        let ss = sig_schemes.choose(rng).unwrap();
 
         // Group size and position in group are random
         let group_size: u32 = rng.gen_range(2, 50);
@@ -209,7 +212,7 @@ pub(crate) mod test_utils {
         let mut roster = Roster(Vec::new());
         let mut identity_keys = Vec::new();
         for _ in 0..group_size {
-            let (cred, secret) = random_credential(rng, cs.sig_impl);
+            let (cred, secret) = random_credential(rng, ss);
             roster.0.push(Some(cred));
             identity_keys.push(secret);
         }
@@ -238,6 +241,7 @@ pub(crate) mod test_utils {
 
         let group_state = GroupState {
             cs: cs,
+            ss: ss,
             protocol_version: MLS_DUMMY_VERSION,
             identity_key: my_identity_key,
             group_id: group_id.to_vec(),
