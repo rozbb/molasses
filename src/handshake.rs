@@ -393,7 +393,6 @@ pub struct Handshake {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use crate::{
         crypto::{
             ciphersuite::{CipherSuite, P256_SHA256_AES128GCM, X25519_SHA256_AES128GCM},
@@ -401,11 +400,12 @@ mod test {
         },
         error::Error,
         group_state::{GroupState, Welcome, WelcomeInfo},
-        handshake::MLS_DUMMY_VERSION,
+        handshake::{Handshake, ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
+        ratchet_tree::PathSecret,
+        test_utils,
         tls_de::TlsDeserializer,
         tls_ser,
         upcast::{CryptoCtx, CryptoUpcast},
-        utils::test_utils,
     };
 
     use core::convert::TryFrom;
@@ -419,21 +419,21 @@ mod test {
     #[quickcheck]
     fn update_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        // Make a starting group
-        let (group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
+        // Make a starting group of at least 2 people
+        let (group_state1, identity_keys) = test_utils::random_full_group_state(2, &mut rng);
 
         // Make a copy of this group, but from another perspective. That is, we want the same group
         // but with a different roster index
-        let new_index = test_utils::random_roster_index_with_exception(
+        let new_index = test_utils::random_roster_index_with_exceptions(
             group_state1.roster.len(),
-            group_state1.roster_index.unwrap() as usize,
+            &[group_state1.roster_index.unwrap() as usize],
             &mut rng,
         );
         let group_state2 = test_utils::change_self_index(&group_state1, &identity_keys, new_index);
 
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
-        let new_path_secret = test_utils::random_path_secret(&group_state1, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(group_state1.cs, &mut rng);
         let (handshake, group_state1, _) =
             group_state1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
@@ -441,31 +441,28 @@ mod test {
         let (group_state2, _) = group_state2.process_handshake(&handshake).unwrap();
 
         // Now see if the group states agree
-        let (group1_bytes, group2_bytes) = (
-            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
-            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
-        );
-        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree after Update");
+        assert_serialized_eq!(group_state1, group_state2, "GroupStates disagree after Update");
     }
 
     // Check that Remove operations are consistent
     #[quickcheck]
     fn remove_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        // Make a starting group
-        let (mut starting_group, identity_keys) = test_utils::random_full_group_state(&mut rng);
+        // Make a starting group of at least 3 members
+        let (starting_group, identity_keys) = test_utils::random_full_group_state(3, &mut rng);
 
         // Let's remove someone from the group who isn't us. Pick the roster index of the removed
         // member here
-        let remove_roster_idx = test_utils::random_roster_index_with_exception(
+        let remove_roster_idx = test_utils::random_roster_index_with_exceptions(
             starting_group.roster.len(),
-            starting_group.roster_index.unwrap() as usize,
+            &[starting_group.roster_index.unwrap() as usize],
             &mut rng,
         );
-        // Let's also make a new group that isn't the removed party. Pick their roster index here.
-        let other_roster_idx = test_utils::random_roster_index_with_exception(
+        // Let's also make a new group that isn't the removed party and isn't the starting party.
+        // Pick their roster index here.
+        let other_roster_idx = test_utils::random_roster_index_with_exceptions(
             starting_group.roster.len(),
-            remove_roster_idx as usize,
+            &[starting_group.roster_index.unwrap() as usize, remove_roster_idx as usize],
             &mut rng,
         );
 
@@ -478,16 +475,16 @@ mod test {
 
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
-        let new_path_secret = test_utils::random_path_secret(&starting_group, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(&starting_group.cs, &mut rng);
 
         // Make a Remove handshake and let starting_group reflect the change
-        let (handshake, starting_group, _) = starting_group
+        let (remove_handshake, starting_group, _) = starting_group
             .create_and_apply_remove_handshake(remove_roster_idx, new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
 
         // Apply the Handshake to the removed group. Since this is the party that got removed, this
         // should give an Error::Removed
-        let res = removed_group.process_handshake(&handshake);
+        let res = removed_group.process_handshake(&remove_handshake);
         match res {
             Ok(_) => panic!("Removed party didn't give an error"),
             Err(Error::Removed) => (),
@@ -495,14 +492,95 @@ mod test {
         }
 
         // Apply the Handshake to the other non-removed group. This should not error
-        let (other_group, _) = other_group.process_handshake(&handshake).unwrap();
+        let (other_group, _) = other_group.process_handshake(&remove_handshake).unwrap();
 
-        // Now see if the non-removed group states agree
-        let (starting_group_bytes, other_group_bytes) = (
-            tls_ser::serialize_to_bytes(&starting_group).unwrap(),
-            tls_ser::serialize_to_bytes(&other_group).unwrap(),
+        // See if the non-removed group states agree after the remove
+        assert_serialized_eq!(starting_group, other_group, "GroupStates disagree after Remove");
+
+        // Now run an update on the non-removed groups just to make sure everything is working
+        let new_path_secret = PathSecret::new_from_random(starting_group.cs, &mut rng);
+        let (update_handshake, starting_group, _) = starting_group
+            .create_and_apply_update_handshake(new_path_secret, &mut rng)
+            .expect("failed to create/apply remove op");
+        let (other_group, _) = other_group.process_handshake(&update_handshake).unwrap();
+
+        // See if the non-removed group states agree after the update
+        assert_serialized_eq!(
+            starting_group,
+            other_group,
+            "GroupStates disagree after post-Remove Update"
         );
-        assert_eq!(starting_group_bytes, other_group_bytes, "GroupStates disagree after Remove");
+    }
+
+    // Check that multiple consecutive Remove operations are processed correctly
+    #[quickcheck]
+    fn multi_remove_correctness(rng_seed: u64) {
+        // Our goal with this test is to force a large truncation to happen
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+
+        // Make a starting group of at least 3 members
+        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(3, &mut rng);
+
+        // Designate another person in the group to be someone we care about. We won't remove them.
+        let non_removed_member_idx = test_utils::random_roster_index_with_exceptions(
+            group_state1.roster.len(),
+            &[group_state1.roster_index.unwrap() as usize],
+            &mut rng,
+        );
+        let mut group_state2 =
+            test_utils::change_self_index(&group_state1, &identity_keys, non_removed_member_idx);
+
+        // The maximum (i.e., rightmost) of the two roster indices we have. We will remove everyone
+        // to the right of this person
+        let max_roster_idx =
+            core::cmp::max(group_state1.roster_index.unwrap(), group_state2.roster_index.unwrap());
+
+        // Starting after max(person1, person2), remove members from the group 1 by 1
+        for remove_idx in (max_roster_idx as usize + 1)..(group_state1.roster.len()) {
+            // Remove the member at the current index
+            let remove_idx = u32::try_from(remove_idx).unwrap();
+            let new_path_secret = PathSecret::new_from_random(group_state1.cs, &mut rng);
+
+            // Create the handshake and apply it to both groups
+            let (remove_handshake, new_group_state1, _) = group_state1
+                .create_and_apply_remove_handshake(remove_idx, new_path_secret, &mut rng)
+                .unwrap();
+            let (new_group_state2, _) = group_state2.process_handshake(&remove_handshake).unwrap();
+
+            // Update the groups (remember, the above methods are non-mutating)
+            group_state1 = new_group_state1;
+            group_state2 = new_group_state2;
+        }
+
+        // See if the group states agree after the removals
+        assert_serialized_eq!(
+            group_state1,
+            group_state2,
+            "GroupStates disagree after multiple Removes"
+        );
+
+        // The last removal should've truncated the roster down to max(person1, person2). Check
+        // that this is true
+        assert_eq!(group_state1.roster.len(), max_roster_idx as usize + 1);
+
+        // It also should've truncated the tree down to the max(person1, person2)
+        let max_tree_idx = GroupState::roster_index_to_tree_index(max_roster_idx).unwrap();
+        assert_eq!(group_state1.tree.size(), max_tree_idx + 1);
+
+        // Now run an update on the non-removed groups just to make sure everything is working
+        let new_path_secret = PathSecret::new_from_random(group_state1.cs, &mut rng);
+        let (update_handshake, group_state1, _) = group_state1
+            .create_and_apply_update_handshake(new_path_secret, &mut rng)
+            .expect("failed to create/apply remove op");
+        let (group_state2, _) = group_state2.process_handshake(&update_handshake).unwrap();
+
+        // See if our group states agree after the update
+        assert_serialized_eq!(
+            group_state1,
+            group_state2,
+            "GroupStates disagree after post-Remove Update"
+        );
     }
 
     // Checks that
@@ -519,15 +597,15 @@ mod test {
     #[quickcheck]
     fn add_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        // Make a starting group and a corresponding Welcome for a new group member
-        let (mut group_state1, _) = test_utils::random_full_group_state(&mut rng);
+        // Make a starting group of at least 1 person
+        let (mut group_state1, _) = test_utils::random_full_group_state(1, &mut rng);
 
         // Pick data for a new member of this group. The new member's roster index cannot be the
         // same as that of the current member's. The index can also be equal to the roster size,
         // which signifies an appending Add.
-        let new_roster_index = test_utils::random_roster_index_with_exception(
+        let new_roster_index = test_utils::random_roster_index_with_exceptions(
             group_state1.roster.len() + 1,
-            group_state1.roster_index.unwrap() as usize,
+            &[group_state1.roster_index.unwrap() as usize],
             &mut rng,
         ) as usize;
         let (new_credential, new_identity_key) = test_utils::random_basic_credential(&mut rng);
@@ -588,11 +666,7 @@ mod test {
         let group_state2 = new_group_state2;
 
         // Now see if the resulting group states agree
-        let (group1_bytes, group2_bytes) = (
-            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
-            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
-        );
-        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree after Add");
+        assert_serialized_eq!(group_state1, group_state2, "GroupStates disagree after Add");
     }
 
     // File: messages.bin

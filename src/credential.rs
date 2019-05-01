@@ -12,9 +12,10 @@ impl Roster {
     pub(crate) fn truncate_to_last_nonblank(&mut self) {
         // Truncate the roster to the last non-None credential
         let mut last_nonempty_roster_entry = None;
-        for (i, entry) in self.0.iter().rev().enumerate() {
+        for (i, entry) in self.0.iter().enumerate().rev() {
             if entry.is_some() {
                 last_nonempty_roster_entry = Some(i);
+                break;
             }
         }
         match last_nonempty_roster_entry {

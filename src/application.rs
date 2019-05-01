@@ -246,7 +246,7 @@ pub fn encrypt_application_message(
     let cs = group_state.cs;
 
     // Get the signature scheme from this member of the group_state
-    let ss = group_state.ss;
+    let ss = group_state.get_signature_scheme();
 
     // This really really shouldn't be able to happen. A preliminary GroupState couldn't even
     // produce an ApplicationSecret to make this key chain in the first place.
@@ -398,10 +398,10 @@ mod test {
         },
         group_state::{ApplicationSecret, GroupState},
         handshake::MLS_DUMMY_VERSION,
-        ratchet_tree::{RatchetTree, RatchetTreeNode},
+        ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
+        test_utils,
         tls_de::TlsDeserializer,
         tree_math,
-        utils::test_utils,
     };
 
     use quickcheck_macros::quickcheck;
@@ -414,7 +414,7 @@ mod test {
         group2: &mut GroupState,
         rng: &mut R,
     ) -> (ApplicationKeyChain, ApplicationKeyChain) {
-        let new_path_secret = test_utils::random_path_secret(&group1, rng);
+        let new_path_secret = PathSecret::new_from_random(group1.cs, rng);
         // Make a handshake and update group1
         let (handshake, new_group1, keychain1) =
             group1.create_and_apply_update_handshake(new_path_secret, rng).unwrap();
@@ -436,15 +436,15 @@ mod test {
     fn app_key_schedule_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
-        // Make a starting group
-        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
+        // Make a starting group of at least 2 people
+        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(2, &mut rng);
         let index1 = group_state1.roster_index.unwrap();
 
         // Make a copy of this group, but from another perspective. That is, we want the same group
         // but with a different roster index
-        let index2 = test_utils::random_roster_index_with_exception(
+        let index2 = test_utils::random_roster_index_with_exceptions(
             group_state1.roster.len(),
-            group_state1.roster_index.unwrap() as usize,
+            &[group_state1.roster_index.unwrap() as usize],
             &mut rng,
         );
         let mut group_state2 = test_utils::change_self_index(&group_state1, &identity_keys, index2);
@@ -572,7 +572,7 @@ mod test {
         let cs = &X25519_SHA256_AES128GCM;
         let ss = &ED25519_IMPL;
 
-        // Make a dummy GroupState, just so we can pass it to
+        // Make a dummy (read: invalid) GroupState, just so we can pass it to
         // ApplicationKeyChain::from_application_secret. The only things that matter are the length
         // of the roster and the number of leaves in the tree.
         let dummy_group_state = {
@@ -593,7 +593,6 @@ mod test {
             };
             GroupState::new_from_parts(
                 cs,
-                ss,
                 MLS_DUMMY_VERSION,
                 identity_key,
                 group_id,
@@ -687,14 +686,14 @@ mod test {
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
-        // Make a starting group
-        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
+        // Make a starting group of at least 2 people
+        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(2, &mut rng);
 
         // Make a copy of this group, but from another perspective. That is, we want the same group
         // but with a different roster index
-        let new_roster_idx = test_utils::random_roster_index_with_exception(
+        let new_roster_idx = test_utils::random_roster_index_with_exceptions(
             group_state1.roster.len(),
-            group_state1.roster_index.unwrap() as usize,
+            &[group_state1.roster_index.unwrap() as usize],
             &mut rng,
         );
         let mut group_state2 =
@@ -786,10 +785,11 @@ mod test {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
         // Make two perspectives of the same group
-        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(&mut rng);
-        let new_roster_idx = test_utils::random_roster_index_with_exception(
+        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(2, &mut rng);
+        // The second perspective cannot be the same as the first
+        let new_roster_idx = test_utils::random_roster_index_with_exceptions(
             group_state1.roster.len(),
-            group_state1.roster_index.unwrap() as usize,
+            &[group_state1.roster_index.unwrap() as usize],
             &mut rng,
         );
         let mut group_state2 =
@@ -824,7 +824,7 @@ mod test {
 
         // Some rando group tries to decrypt it with Group2's keychain. This should error, since
         // this new group's ID won't match the key chain's
-        let (rando_group, _) = test_utils::random_full_group_state(&mut rng);
+        let (rando_group, _) = test_utils::random_full_group_state(1, &mut rng);
         assert!(decrypt_application_message(
             app_message.clone(),
             &rando_group,

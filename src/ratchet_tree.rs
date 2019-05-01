@@ -224,6 +224,7 @@ impl RatchetTree {
         for idx in tree_math::tree_leaves(num_leaves).rev() {
             if self.nodes[idx].is_filled() {
                 last_nonblank_leaf = Some(idx);
+                break;
             }
         }
 

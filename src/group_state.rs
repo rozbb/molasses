@@ -56,11 +56,6 @@ pub struct GroupState {
     #[serde(skip)]
     pub(crate) cs: &'static CipherSuite,
 
-    /// The signature scheme that this member is using. You can think of this as a context
-    /// variable. It helps us implement crypto ops and disambiguate serialized data structures
-    #[serde(skip)]
-    pub(crate) ss: &'static dyn SignatureScheme,
-
     /// Version info
     #[serde(skip)]
     pub(crate) protocol_version: ProtocolVersion,
@@ -127,9 +122,6 @@ impl GroupState {
         my_credential: Credential,
         csprng: &mut dyn CryptoRng,
     ) -> Result<GroupState, Error> {
-        // Get my preferred signature scheme from my credential
-        let ss = my_credential.get_signature_scheme();
-
         // Turn the credential into a singleton roster
         let roster = Roster(vec![Some(my_credential)]);
         let my_roster_index = 0u32;
@@ -144,7 +136,6 @@ impl GroupState {
         // Now make the GroupState normally
         Ok(GroupState::new_from_parts(
             cs,
-            ss,
             protocol_version,
             identity_key,
             group_id,
@@ -157,7 +148,6 @@ impl GroupState {
     /// Creates a new `GroupState` from its constituent parts
     pub(crate) fn new_from_parts(
         cs: &'static CipherSuite,
-        ss: &'static dyn SignatureScheme,
         protocol_version: ProtocolVersion,
         identity_key: SigSecretKey,
         group_id: Vec<u8>,
@@ -171,7 +161,6 @@ impl GroupState {
 
         GroupState {
             cs: cs,
-            ss: ss,
             protocol_version: protocol_version,
             identity_key: identity_key,
             group_id: group_id,
@@ -200,14 +189,10 @@ impl GroupState {
         my_identity_key: SigSecretKey,
         initializing_user_init_key: UserInitKey,
     ) -> GroupState {
-        // Get the signature scheme from the credential
-        let my_ss = initializing_user_init_key.credential.get_signature_scheme();
-
         // Make a new preliminary group (notice how roster is None and initializing_user_init_key
         // is Some)
         GroupState {
             cs: cs,
-            ss: my_ss,
             protocol_version: w.protocol_version,
             identity_key: my_identity_key,
             group_id: w.group_id,
@@ -257,6 +242,39 @@ impl GroupState {
             transcript_hash: self.transcript_hash.clone(),
             init_secret: self.init_secret.clone(),
         }
+    }
+
+    /// Returns the signature scheme of this member of the group. This is determined by the
+    /// signature scheme of this member's credential.
+    pub(crate) fn get_signature_scheme(&self) -> &'static dyn SignatureScheme {
+        // We look for our credential first, since this contains our signature scheme. If this is a
+        // preliminary group, i.e., if this group was just created from a WelcomeInfo, then we
+        // don't know our roster index, so we can't get our credential from the roster. In this
+        // case, we look in the initializing UserInitKey for our credential. For any valid
+        // GroupState, precisely one of these has to happen, so this function is always
+        // well-defined.
+
+        let my_credential = if let Some(roster_idx) = self.roster_index {
+            // My own entry in the roster. This better be in range, otherwise this a very broken
+            // GroupState, and does not merit a nice Error
+            let my_roster_entry: Option<&Credential> = self
+                .roster
+                .0
+                .get(roster_idx as usize)
+                .expect("this member's roster index is out of bounds")
+                .as_ref();
+            // My own credential. This also better exist.
+            my_roster_entry.expect("this member's roster entry is empty")
+        } else {
+            // initializing_user_init_key is Some iff self.roster_index is None
+            let uik = self
+                .initializing_user_init_key
+                .as_ref()
+                .expect("group has no roster index or initializing user init key");
+            &uik.credential
+        };
+
+        my_credential.get_signature_scheme()
     }
 
     /// Increments the epoch counter by 1
@@ -903,7 +921,8 @@ impl GroupState {
         confirmation_key: ConfirmationKey,
     ) -> Result<Handshake, Error> {
         // signature = Sign(identity_key, GroupState.transcript_hash)
-        let signature = self.ss.sign(&self.identity_key, &self.transcript_hash);
+        let my_ss = self.get_signature_scheme();
+        let signature = my_ss.sign(&self.identity_key, &self.transcript_hash);
 
         // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
@@ -995,7 +1014,7 @@ impl GroupState {
     /// derived application key schedule object.
     // This is just a wrapper around self.create_and_apply_remove_op and self.create_handshake
     pub fn create_and_apply_remove_handshake(
-        &mut self,
+        &self,
         removed_roster_index: u32,
         new_path_secret: PathSecret,
         csprng: &mut dyn CryptoRng,
@@ -1192,10 +1211,10 @@ mod test {
         group_state::{GroupState, UpdateSecret, Welcome},
         handshake::{ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
         ratchet_tree::RatchetTree,
+        test_utils,
         tls_de::TlsDeserializer,
         tls_ser,
         upcast::{CryptoCtx, CryptoUpcast},
-        utils::test_utils,
     };
 
     use quickcheck_macros::quickcheck;
@@ -1207,8 +1226,8 @@ mod test {
     #[quickcheck]
     fn welcome_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-        // Make a starting group
-        let (group_state1, _) = test_utils::random_full_group_state(&mut rng);
+        // Make a starting group of at least 1 person
+        let (group_state1, _) = test_utils::random_full_group_state(1, &mut rng);
 
         // Make the data necessary for a Welcome message
         let cipher_suites = vec![&X25519_SHA256_AES128GCM];
@@ -1283,7 +1302,6 @@ mod test {
         let ss = &ED25519_IMPL;
         GroupState {
             cs: cs,
-            ss: ss,
             protocol_version: MLS_DUMMY_VERSION,
             identity_key: ss.secret_key_from_bytes(&[0u8; 32]).unwrap(),
             group_id: tgs.group_id,

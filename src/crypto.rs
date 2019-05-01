@@ -1,3 +1,7 @@
+// Allow this because sometimes enum_variant! is called on single-variant types, which produces
+// unnecessary warnings
+#![allow(unreachable_patterns)]
+
 pub(crate) mod aead;
 pub mod ciphersuite;
 pub(crate) mod dh;

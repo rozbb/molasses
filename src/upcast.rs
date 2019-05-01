@@ -93,7 +93,7 @@ impl CryptoUpcast for DhPrivateKey {
 
 impl CryptoUpcast for SigPublicKey {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        let raw = enum_variant_msg!(self, SigPublicKey::Raw, "can't upcast a non-raw SigPublicKey");
+        let raw = enum_variant!(self, SigPublicKey::Raw, "can't upcast a non-raw SigPublicKey");
         match ctx.ss {
             Some(ss) => {
                 *self = ss.public_key_from_bytes(&raw.0)?;
@@ -107,7 +107,7 @@ impl CryptoUpcast for SigPublicKey {
 
 impl CryptoUpcast for Signature {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        let raw = enum_variant_msg!(self, Signature::Raw, "can't upcast a non-raw Signature");
+        let raw = enum_variant!(self, Signature::Raw, "can't upcast a non-raw Signature");
         match ctx.ss {
             Some(ss) => {
                 *self = ss.signature_from_bytes(&raw.0)?;

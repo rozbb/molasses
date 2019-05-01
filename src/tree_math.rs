@@ -327,7 +327,8 @@ fn tree_frontier(num_leaves: usize) -> Vec<usize> {
     frontier
 }
 
-/// Returns a list of indices for leaf nodes in a tree of given size
+/// Returns a list of indices for leaf nodes in a tree of given size. The list is in ascending
+/// index order.
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES`
 pub(crate) fn tree_leaves(num_leaves: usize) -> impl DoubleEndedIterator<Item = usize> {
