@@ -390,18 +390,11 @@ mod test {
         application::{
             decrypt_application_message, encrypt_application_message, ApplicationKeyChain,
         },
-        credential::Roster,
-        crypto::{
-            ciphersuite::X25519_SHA256_AES128GCM,
-            rng::CryptoRng,
-            sig::{SignatureScheme, ED25519_IMPL},
-        },
+        crypto::{ciphersuite::X25519_SHA256_AES128GCM, rng::CryptoRng},
         group_state::{ApplicationSecret, GroupState},
-        handshake::MLS_DUMMY_VERSION,
-        ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
+        ratchet_tree::PathSecret,
         test_utils,
         tls_de::TlsDeserializer,
-        tree_math,
     };
 
     use quickcheck_macros::quickcheck;
@@ -551,8 +544,8 @@ mod test {
     #[test]
     fn application_key_schedule_kat() {
         // There's no need to make this a quickcheck test, since it's pretty much impossible for
-        // this to succeed due to random chance. But still, the test should be deterministic, so
-        // just seed the rng with 0.
+        // this to succeed due to random chance. But still, we need an rng for some of these ops,
+        // and the test should still be deterministic, so just seed it with 0.
         let mut rng = rand::rngs::StdRng::seed_from_u64(0);
 
         // Deserialize the test vectors (no need to upcast, there's nothing but vectors here)
@@ -570,37 +563,12 @@ mod test {
 
         // The ciphersuite and signature scheme for this test case
         let cs = &X25519_SHA256_AES128GCM;
-        let ss = &ED25519_IMPL;
 
-        // Make a dummy (read: invalid) GroupState, just so we can pass it to
-        // ApplicationKeyChain::from_application_secret. The only things that matter are the length
-        // of the roster and the number of leaves in the tree.
-        let dummy_group_state = {
-            // Dummy identity
-            let identity_key = ss.secret_key_from_random(&mut rng).unwrap();
-            // Dummy ID
-            let group_id = b"dummygroup".to_vec();
-            // Dummy roster of the correct length, filled with blanks
-            let roster = Roster(vec![None; num_members]);
-            // Dummy roster index; the sender_index is what matters in the application key chain
-            let roster_index = 0;
-            // Dummy tree with the correct number of leaves
-            let tree = {
-                let num_nodes = tree_math::num_nodes_in_tree(num_members);
-                RatchetTree {
-                    nodes: vec![RatchetTreeNode::Blank; num_nodes],
-                }
-            };
-            GroupState::new_from_parts(
-                cs,
-                MLS_DUMMY_VERSION,
-                identity_key,
-                group_id,
-                roster,
-                roster_index,
-                tree,
-            )
-        };
+        // Make a dummy GroupState, just so we can pass it to
+        // ApplicationKeyChain::from_application_secret. The only thing that matters is that the
+        // length of the roster and number of leaves in the tree is at least num_members
+        let (dummy_group_state, _) =
+            test_utils::random_full_group_state(test_vecs.num_members, &mut rng);
         // Finally make the application key chain with the given application secret and correct
         // number of members
         let mut app_key_chain =
