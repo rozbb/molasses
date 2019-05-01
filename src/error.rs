@@ -20,7 +20,7 @@ pub enum Error {
     /// For when we need randomness and there's none left
     OutOfEntropy,
     /// For when we've been removed from a group
-    Removed,
+    IAmRemoved,
 }
 
 // The only IO done in molasses is via serde, so this is a natural conversion
@@ -43,7 +43,7 @@ impl std::error::Error for Error {
             Error::SerdeError(e) => e.description(),
             Error::UpcastError(e) => e,
             Error::OutOfEntropy => "Out of Entropy",
-            Error::Removed => "Removed",
+            Error::IAmRemoved => "I am Removed",
         }
     }
 }

@@ -483,12 +483,12 @@ mod test {
             .expect("failed to create/apply remove op");
 
         // Apply the Handshake to the removed group. Since this is the party that got removed, this
-        // should give an Error::Removed
+        // should give an Error::IAmRemoved
         let res = removed_group.process_handshake(&remove_handshake);
         match res {
             Ok(_) => panic!("Removed party didn't give an error"),
-            Err(Error::Removed) => (),
-            Err(e) => panic!("Removed party didn't give an Error::Removed, instead got {}", e),
+            Err(Error::IAmRemoved) => (),
+            Err(e) => panic!("Removed party didn't give an Error::IAmRemoved, instead got {}", e),
         }
 
         // Apply the Handshake to the other non-removed group. This should not error
@@ -581,6 +581,31 @@ mod test {
             group_state2,
             "GroupStates disagree after post-Remove Update"
         );
+    }
+
+    // Check that removing yourself doesn't work
+    #[quickcheck]
+    fn self_remove_failure(rng_seed: u64) {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+
+        // Make a starting group of at least 1 members
+        let (group_state, _) = test_utils::random_full_group_state(1, &mut rng);
+        let my_roster_index = group_state.roster_index.unwrap();
+
+        // Now try to remove myself
+        let new_path_secret = PathSecret::new_from_random(group_state.cs, &mut rng);
+        let res = group_state.create_and_apply_remove_handshake(
+            my_roster_index,
+            new_path_secret,
+            &mut rng,
+        );
+
+        // The middle case is what we expect
+        match res {
+            Ok(_) => panic!("self removal didn't give an error at all!"),
+            Err(Error::IAmRemoved) => (),
+            Err(e) => panic!("self removal didn't give an Error::IAmRemoved, instead got {}", e),
+        }
     }
 
     // Checks that

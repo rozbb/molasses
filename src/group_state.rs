@@ -428,8 +428,8 @@ impl GroupState {
     /// if this member is the one being removed.
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets. Returns an `Error::Removed` iff this member is
-    /// the one who has been removed. Otherwise returns some other kind of `Error`.
+    /// necessary for generating new epoch secrets. Returns an `Error::IAmRemoved` iff this member
+    /// is the one who has been removed. Otherwise returns some other kind of `Error`.
     // NOTE: There is no corresponding "apply_remove" method because the creator of a Remove is
     // able to process the Remove, whereas the creator of an Update cannot process their own
     // operation (this is because the creator's own path secret is never put into the
@@ -452,7 +452,7 @@ impl GroupState {
             // Oh no, we've been kicked! May as well throw an error now, since the
             // decrypt_direct_path_message below would throw an error anyway: you can't decrypt
             // DirectPathMessages where you are the starting node.
-            return Err(Error::Removed);
+            return Err(Error::IAmRemoved);
         }
 
         // Get the new entropy for the tree
@@ -656,6 +656,12 @@ impl GroupState {
     /// associated `ApplicationKeyChain` This does not mutate the current `GroupState`. Instead, it
     /// returns the next version of the `GroupState`, where the operation contained by the
     /// `Handshake` has been applied.
+    ///
+    /// Returns: `Ok((group_state, app_key_chain))` on success, where `group_state` is the
+    /// `GroupState` after the given handshake has been applied, and `app_key_chain` is the
+    /// `ApplicationKeyChain` belonging to `group_state`. Returns `Error::IAmRemoved` iff this
+    /// member is the subject of a group `Remove` operation. Otherwise, returns some other sort of
+    /// `Error`.
     // According to the spec, this is how we process handshakes:
     // 1. Verify that the prior_epoch field of the Handshake message is equal the epoch field of
     //    the current GroupState object.
@@ -865,7 +871,8 @@ impl GroupState {
     /// is the resulting application key chain (again, after having applied the add operation),
     /// `group_op` is the raw `GroupOperation` object, and `confirmation_key` is the derived
     /// confirmation key we'll use to compute the MAC in the `Handshake` that will end up
-    /// containing the `GroupOperation`.
+    /// containing the `GroupOperation`. Returns an `Error::IAmRemoved` iff this member is the one
+    /// who is being removed.
     // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
     // consume the Remove ops they produce (unlike Updates). But for consistency with the other
     // create_*_op functions, this should mutate the GroupState too.
@@ -1013,6 +1020,9 @@ impl GroupState {
     /// `removed_roster_index` and introduces a new path secret `new_path_secret` at the removed
     /// index. This method does not mutate this `GroupState`, the operation is rather applied to
     /// the returned `GroupState`.
+    ///
+    /// Requires: `removed_roster_index != self.roster_index`. That is, a member cannot remove
+    /// themselves from the group. An attempt to do so will result in an `Error::IAmRemoved`.
     ///
     /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
     /// message representing the specified remove operation, and `app_key_chain` is the newly
