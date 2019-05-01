@@ -4,7 +4,7 @@ use crate::crypto::sig::{SigPublicKey, SignatureScheme};
 
 /// A `Roster`, as it appears in a `GroupState`, is a list of optional `Credential`s
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct Roster(pub(crate) Vec<Option<Credential>>);
+pub struct Roster(pub(crate) Vec<Option<Credential>>);
 
 impl Roster {
     /// Truncates the roster to the last non-blank entry. If the roster is all blank, this will
@@ -31,6 +31,11 @@ impl Roster {
 
     pub(crate) fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// Returns an iterator of the non-empty entries in the roster
+    pub fn credential_iter<'a>(&'a self) -> impl Iterator<Item = &'a Credential> {
+        self.0.iter().filter(|x| x.is_some()).map(|x| x.as_ref().unwrap())
     }
 }
 
@@ -109,7 +114,7 @@ impl Credential {
         }
     }
 
-    pub(crate) fn get_identity(&self) -> &Identity {
+    pub fn get_identity(&self) -> &Identity {
         match self {
             Credential::Basic(ref basic) => &basic.identity,
             Credential::X509(_) => unimplemented!(),

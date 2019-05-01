@@ -282,51 +282,6 @@ impl Iterator for DirectPathIter {
     }
 }
 
-/// Returns an iterator for the copath path of a given node in the order `i_1, i_2, ..., i_n` where
-/// `i_1` is the sibling of the given node and `i_n` is a child of the root node.
-///
-/// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
-/// `start_idx >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn node_copath(start_idx: usize, num_leaves: usize) -> impl Iterator<Item = usize> {
-    assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
-    assert!(start_idx < num_nodes_in_tree(num_leaves));
-
-    // The copath is just all the siblings along the direct path
-    node_direct_path(start_idx, num_leaves).map(move |idx| node_sibling(idx, num_leaves))
-}
-
-/// Returns a list of root node indices for maximal subtrees of a tree of a given size
-///
-/// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES`
-fn tree_frontier(num_leaves: usize) -> Vec<usize> {
-    assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
-
-    // The given tree has a maximal subtree of size 2^(i+1)-1 exists iff the i-th bit (indexing at
-    // 0) is set in the binary representation of num_leaves. We store the sizes by the number of
-    // leaves in the tree, i.e., 2^i where i is as above.
-    let mut sizes_present = Vec::new();
-    for j in 0..=log2(num_leaves).unwrap() {
-        let bitmask = 1 << j;
-        if num_leaves & bitmask != 0 {
-            sizes_present.push(bitmask);
-        }
-    }
-
-    let mut base = 0;
-    let mut frontier = Vec::new();
-    // Iterate from largest to smallest subtrees, since the largest occur on the left.
-    for num_leaves_in_subtree in sizes_present.into_iter().rev() {
-        frontier.push(root_idx(num_leaves_in_subtree) + base);
-        let num_nodes_in_subtree = num_nodes_in_tree(num_leaves_in_subtree);
-        // Advance the index to the next relevant subtree. There's a +1 because we skip over the
-        // parent of the maximal subtree we were just at.
-        // Efficiency note: this is equivalent to writing base |= num_leaves_in_subtree << 1;
-        base += num_nodes_in_subtree + 1;
-    }
-
-    frontier
-}
-
 /// Returns a list of indices for leaf nodes in a tree of given size. The list is in ascending
 /// index order.
 ///
@@ -544,26 +499,6 @@ mod test {
         assert_eq!(direct_path_vec(6), vec![6, 5, 3]);
         assert_eq!(direct_path_vec(7), vec![]);
         assert_eq!(direct_path_vec(8), vec![8]);
-    }
-
-    // See above tree for a diagram
-    #[test]
-    fn copath_path_kat() {
-        // Convenience function
-        fn copath_vec(start_idx: usize) -> Vec<usize> {
-            let num_leaves = 5;
-            node_copath(start_idx, num_leaves).collect::<Vec<usize>>()
-        }
-
-        assert_eq!(copath_vec(0), vec![2, 5, 8]);
-        assert_eq!(copath_vec(1), vec![5, 8]);
-        assert_eq!(copath_vec(2), vec![0, 5, 8]);
-        assert_eq!(copath_vec(3), vec![8]);
-        assert_eq!(copath_vec(4), vec![6, 1, 8]);
-        assert_eq!(copath_vec(5), vec![1, 8]);
-        assert_eq!(copath_vec(6), vec![4, 1, 8]);
-        assert_eq!(copath_vec(7), vec![]);
-        assert_eq!(copath_vec(8), vec![3]);
     }
 
     // See above tree for a diagram

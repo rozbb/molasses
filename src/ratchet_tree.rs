@@ -141,36 +141,18 @@ pub(crate) struct RatchetTree {
 }
 
 impl RatchetTree {
-    /// Returns an new empty `RatchetTree`
-    pub fn new() -> RatchetTree {
-        RatchetTree {
-            nodes: Vec::new(),
-        }
-    }
-
     /// Returns the number of nodes in the tree
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         self.nodes.len()
     }
 
     /// Returns the node at the given index
-    pub fn get(&self, idx: usize) -> Option<&RatchetTreeNode> {
+    pub(crate) fn get(&self, idx: usize) -> Option<&RatchetTreeNode> {
         self.nodes.get(idx)
     }
 
-    /// Returns the root node. Returns `None` iff the tree is empty.
-    pub fn get_root_node(&self) -> Option<&RatchetTreeNode> {
-        if self.size() == 0 {
-            None
-        } else {
-            let num_leaves = tree_math::num_leaves_in_tree(self.size());
-            let root_idx = tree_math::root_idx(num_leaves);
-            self.get(root_idx)
-        }
-    }
-
     /// Returns a mutable reference to the node at the given index
-    pub fn get_mut(&mut self, idx: usize) -> Option<&mut RatchetTreeNode> {
+    pub(crate) fn get_mut(&mut self, idx: usize) -> Option<&mut RatchetTreeNode> {
         self.nodes.get_mut(idx)
     }
 
@@ -188,7 +170,7 @@ impl RatchetTree {
     //                                         / \     / \    |
     //                                        A   B   C   D   E
     //                                        0 1 2 3 4 5 6 7 8
-    pub fn add_leaf_node(&mut self, node: RatchetTreeNode) {
+    pub(crate) fn add_leaf_node(&mut self, node: RatchetTreeNode) {
         if self.nodes.is_empty() {
             self.nodes.push(node);
             return;
@@ -642,7 +624,9 @@ mod test {
         let num_nodes = tree_math::num_nodes_in_tree(num_leaves);
 
         // Fill a tree with Blanks
-        let mut tree = RatchetTree::new();
+        let mut tree = RatchetTree {
+            nodes: Vec::new(),
+        };
         for _ in 0..num_leaves {
             tree.add_leaf_node(RatchetTreeNode::Blank);
         }

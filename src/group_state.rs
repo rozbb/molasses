@@ -959,6 +959,11 @@ impl GroupState {
 // Implement public API for Handshake creation
 
 impl GroupState {
+    /// Returns this group's roster
+    pub fn get_roster(&self) -> &Roster {
+        &self.roster
+    }
+
     /// Creates and applies a `GroupUpdate` operation with the given path secret information. This
     /// method does not mutate this `GroupState`, the operation is rather applied to the returned
     /// `GroupState`.
