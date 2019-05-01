@@ -493,13 +493,26 @@ impl GroupState {
         // the message match the ones we derived
         self.tree.validate_direct_path_public_keys(remove_tree_idx, direct_path_public_keys)?;
 
-        // Blank out the roster location and prune the blanks from the end
+        // Blank out the roster location
         self.roster
             .0
             .get_mut(remove.removed_roster_index as usize)
             .map(|cred| *cred = None)
             .ok_or(Error::ValidationError("Invalid roster index"))?;
-        self.roster.truncate_to_last_nonblank();
+
+        // Try to prune the blanks from the end. Finding yourself in an empty group after a Remove
+        // operation should be an impossible state.
+        // Proof: First, a claim
+        //     Claim: If you have this `GroupState` object, you are in the roster.
+        //     Proof: If you are not, then why do you have it? Get rid of it! Alternatively, you
+        //            could not be in the roster because this is a preliminary group state. If this
+        //            were the case, we would have thrown an error at the beginning of this method
+        //            (see above).
+        // Proof (cont.): If you are in the roster, and it is impossible to remove yourself from
+        //     the group (see Error::IAmRemoved conditions in process_handshake and
+        //     create_and_apply_remove_op), then it is impossible to have any fewer than 1 group
+        //     member. QED
+        self.roster.truncate_to_last_nonblank().expect("Remove resulted in an empty group");
 
         // Blank out the direct path of remove_tree_idx
         self.tree.propagate_blank(remove_tree_idx);
