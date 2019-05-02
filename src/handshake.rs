@@ -39,9 +39,9 @@ pub(crate) struct DirectPathMessage {
     pub(crate) node_messages: Vec<DirectPathNodeMessage>,
 }
 
-/// This is used in lieu of negotiating public keys when a participant is added. This has a bunch
-/// of published ephemeral keys that can be used to initiated communication with a previously
-/// uncontacted participant.
+/// This is used in lieu of negotiating public keys when a member is added. This has a bunch of
+/// published ephemeral keys that can be used to initiated communication with a previously
+/// uncontacted member.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct UserInitKey {
     // opaque user_init_key_id<0..255>
@@ -329,12 +329,12 @@ pub(crate) struct GroupInit;
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupAdd {
     // uint32 index;
-    /// Indicates where to add the new participant. This may index into an empty roster entry or be
-    /// equal to the size of the roster.
+    /// Indicates where to add the new member. This may index into an empty roster entry or be equal
+    /// to the size of the roster.
     pub(crate) roster_index: u32,
 
     // UserInitKey init_key;
-    /// Contains the public key used to add the new participant
+    /// Contains the public key used to add the new member
     pub(crate) init_key: UserInitKey,
 
     // opaque welcome_info_hash<0..255>;
@@ -352,7 +352,7 @@ pub(crate) struct GroupUpdate {
 /// Operation to remove a partcipant from the group
 #[derive(Debug, Deserialize, Serialize)]
 pub(crate) struct GroupRemove {
-    /// The roster index of the removed participant
+    /// The roster index of the removed member
     pub(crate) removed_roster_index: u32,
 
     /// New entropy for the tree

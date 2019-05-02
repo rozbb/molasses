@@ -88,9 +88,9 @@ pub struct GroupState {
     #[serde(rename = "transcript_hash__bound_u8")]
     pub(crate) transcript_hash: Vec<u8>,
 
-    /// The participant's position in the roster. This is also known as `signer_index`. It is
-    /// `None` iff this `GroupState` is in a preliminary state, i.e., iff it is between a `Welcome`
-    /// and `Add` operation.
+    /// The member's position in the roster. This is also known as `signer_index`. It is `None` iff
+    /// this `GroupState` is in a preliminary state, i.e., iff it is between a `Welcome` and `Add`
+    /// operation.
     #[serde(skip)]
     pub(crate) roster_index: Option<u32>,
 
@@ -175,8 +175,8 @@ impl GroupState {
     }
 
     /// Initializes a preliminary `GroupState` with the given `WelcomeInfo` information, this
-    /// this participant's identity key, and the `UserInitKey` used to encrypt the `Welcome` that
-    /// the `WelcomeInfo` came from.
+    /// member's identity key, and the `UserInitKey` used to encrypt the `Welcome` that the
+    /// `WelcomeInfo` came from.
     ///
     /// Returns: A `GroupState` in a "preliminary state", meaning that `roster_index` is `None` and
     /// `initializing_user_init_key` is `Some`. The only thing to do with a preliminary
@@ -633,8 +633,7 @@ impl GroupState {
         self.tree.propagate_blank(add_tree_index);
 
         // Now find the node keypair information and make our node in the ratchet tree. The keypair
-        // we associate to the new participant is the one that corresponds to our current
-        // ciphersuite.
+        // we associate to the new member is the one that corresponds to our current ciphersuite.
         let public_key = init_key.get_public_key(self.cs)?.ok_or(Error::ValidationError(
             "UserInitKey has no public keys for group's ciphersuite",
         ))?;
@@ -1100,7 +1099,7 @@ pub(crate) struct WelcomeInfo {
 // This is public-facing
 pub struct WelcomeInfoHash(ring::digest::Digest);
 
-/// This contains an encrypted `WelcomeInfo` for new group participants
+/// This contains an encrypted `WelcomeInfo` for new group members
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Welcome {
     // opaque user_init_key_id<0..255>;

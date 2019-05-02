@@ -18,7 +18,7 @@ pub(crate) fn serialize_to_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>, Err
 // many bytes its serialization takes, so we seek back to the prefix location, and put that in as
 // the length. One downside of this: we have to serialize the whole thing before we can reject it
 // as too long. But this is nice and simple and I don't think it'll backfire unless the local
-// participant is actively trying to take up a ton of memory.
+// member is actively trying to take up a ton of memory.
 macro_rules! serialize_with_bound {
     ($t:ty, $ti:ident, $fn_name:ident, $write_fn:ident, $endianness:ty ) => {
         doc_comment! {

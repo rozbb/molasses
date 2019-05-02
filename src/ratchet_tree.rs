@@ -412,8 +412,8 @@ impl RatchetTree {
     }
 
     /// Finds the (unique) ciphertext in the given direct path message that is meant for this
-    /// participant and decrypts it. `starting_node_idx` is the the index of the starting node of
-    /// the encoded direct path.
+    /// member and decrypts it. `starting_node_idx` is the the index of the starting node of the
+    /// encoded direct path.
     ///
     /// Requires: `starting_tree_idx` cannot be an ancestor of `my_tree_idx`, nor vice-versa. We
     /// cannot decrypt messages that violate this.
