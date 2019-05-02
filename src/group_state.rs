@@ -1293,11 +1293,7 @@ mod test {
         let group_state2 = GroupState::from_welcome(welcome, new_identity_key, init_key).unwrap();
 
         // Now see if the resulting group states agree
-        let (group1_bytes, group2_bytes) = (
-            tls_ser::serialize_to_bytes(&group_state1).unwrap(),
-            tls_ser::serialize_to_bytes(&group_state2).unwrap(),
-        );
-        assert_eq!(group1_bytes, group2_bytes, "GroupStates disagree after a Welcome");
+        assert_serialized_eq!(group_state1, group_state2, "GroupStates disagree after a Welcome");
     }
 
     // This is all the serializable bits of a GroupState. We have this separate because GroupState
