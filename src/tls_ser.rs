@@ -530,12 +530,6 @@ pub(crate) mod test {
     // We're making some of these pub(crate), because tls_de will use these data structures for
     // testing deserialization
 
-    make_enum_u8_discriminant!(Eek {
-        Draxx = 0x05,
-        Them = 0xff,
-        Sklounst = 0x32,
-    });
-
     #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
     struct Ripp(u16);
 
@@ -549,14 +543,13 @@ pub(crate) mod test {
         fv: Vec<u32>,
         fp: Ripp,
         fs: Shake,
-        fe: Eek,
     }
 
     #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
-    #[serde(rename = "Hacc__enum_u8")]
-    enum Hacc {
-        Nothing,
-        Something {
+    #[serde(rename = "Draxx__enum_u8")]
+    enum Draxx {
+        Them,
+        Sklounst {
             sa: u16,
             sb: u32,
         },
@@ -570,8 +563,8 @@ pub(crate) mod test {
         #[serde(rename = "d__bound_u16")]
         d: Vec<Fan>,
         e: u32,
-        f: Hacc,
-        g: Hacc,
+        f: Draxx,
+        g: Draxx,
     }
 
     // This represents the known Biff data structure that's returned by make_biff()
@@ -580,7 +573,7 @@ pub(crate) mod test {
         0x01, 0x00, 0x00, 0x00,          // u32
         0x0a, 0x0b, 0x0c,                // [u8; 3]
         0xff,                            // u8
-        0x00, 0x20,                      // 32 bytes of Vec<Fan>
+        0x00, 0x1e,                      // 30 bytes of Vec<Fan>
             0x0c,                        //   12 bytes of Vec<u32>
                 0xff, 0xff, 0xff, 0x00,  //     u32
                 0x00, 0x00, 0x00, 0xff,  //     u32
@@ -588,17 +581,15 @@ pub(crate) mod test {
             0x09, 0x08,                  //   Ripp
             0x00, 0x00,                  //   0 bytes of Shake
                                          //     [nothing]
-            0x05,                        //   Eek::Draxx
             0x04,                        //   4 bytes of Vec<u32>
                 0x10, 0x10, 0x10, 0x10,  //     u32
             0x07, 0x06,                  //   Ripp
             0x00, 0x04,                  //   4 bytes of Shake
                 0xaa, 0xbb,              //     u16
                 0xcc, 0xdd,              //     u16
-            0x32,                        //   Eek::Sklounst
         0x00, 0x00, 0x00, 0x02,          // u32
-        0x00,                            // Hacc::Nothing
-        0x01,                            // Hacc::Something
+        0x00,                            // Draxx::Them
+        0x01,                            // Draxx::Sklounst
             0x33, 0x44,                  //   u16
             0x55, 0x66, 0x77, 0x88,      //   u32
     ];
@@ -614,18 +605,16 @@ pub(crate) mod test {
                     fv: vec![0xffffff00, 0x000000ff, 0x00ff00ff],
                     fp: Ripp(0x0908),
                     fs: Shake(Vec::new()),
-                    fe: Eek::Draxx,
                 },
                 Fan {
                     fv: vec![0x10101010],
                     fp: Ripp(0x0706),
                     fs: Shake(vec![0xaabb, 0xccdd]),
-                    fe: Eek::Sklounst,
                 },
             ],
             e: 0x00000002,
-            f: Hacc::Nothing,
-            g: Hacc::Something {
+            f: Draxx::Them,
+            g: Draxx::Sklounst {
                 sa: 0x3344,
                 sb: 0x55667788,
             },
