@@ -622,7 +622,6 @@ impl GroupState {
             self.tree.add_leaf_node(RatchetTreeNode::Blank);
         }
 
-        let add_tree_index = GroupState::roster_index_to_tree_index(add_roster_index)?;
         if is_preliminary {
             // If we're one being Added, then this index is us
             self.roster_index = Some(add_roster_index);
@@ -630,6 +629,7 @@ impl GroupState {
 
         // Propagate the blank up the tree before we overwrite the new leaf with the new
         // member's pubkey info
+        let add_tree_index = GroupState::roster_index_to_tree_index(add_roster_index)?;
         self.tree.propagate_blank(add_tree_index);
 
         // Now find the node keypair information and make our node in the ratchet tree. The keypair
