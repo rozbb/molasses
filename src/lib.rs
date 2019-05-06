@@ -1,3 +1,8 @@
+// This is because ratchet trees use 32-bit indices, which means Vecs need to be able to store up
+// to 2^32 - 1 many elements
+#[cfg(any(target_pointer_width = "16", target_pointer_width = "8"))]
+compile_error!("Molasses requires that the architecture's pointer width be at least 32 bits");
+
 // Can't make this work using edition 2018 syntax yet
 #[macro_use]
 extern crate serde;
