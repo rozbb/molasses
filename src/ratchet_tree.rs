@@ -634,9 +634,10 @@ mod test {
         // Fill the tree with deterministic path secrets
         let cs: &'static CipherSuite = &X25519_SHA256_AES128GCM;
         for i in 0..num_leaves {
-            let leaf_idx = 2 * i;
+            // This is the index of a leaf in the tree
+            let tree_idx = 2 * i;
             let initial_path_secret = PathSecret::new(vec![i as u8; 32]);
-            tree.propagate_new_path_secret(cs, initial_path_secret, leaf_idx).unwrap();
+            tree.propagate_new_path_secret(cs, initial_path_secret, tree_idx).unwrap();
         }
 
         // Come up with sender and receiver indices. The sender must be a leaf node, because

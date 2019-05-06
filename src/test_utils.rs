@@ -79,8 +79,9 @@ fn random_tree<R: rand::Rng + CryptoRng>(
     };
 
     // In a random order, fill the tree
-    let leaf_indices: Vec<usize> = (0..num_leaves).map(|i| i.checked_mul(2).unwrap()).collect();
-    for idx in leaf_indices.into_iter() {
+    // We cannot say the word "leaf index" because that means something else
+    let indices_of_leaves = (0..num_leaves).map(|i| i.checked_mul(2).unwrap());
+    for idx in indices_of_leaves {
         // Random path secret used to derive all private keys up the tree
         let path_secret = {
             let mut buf = [0u8; 32];
