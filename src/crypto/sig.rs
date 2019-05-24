@@ -1,3 +1,6 @@
+//! Defines `SignatureScheme` and other related digital signature-related data structures and
+//! algorithms used in MLS
+
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
@@ -8,7 +11,7 @@ pub const ED25519_IMPL: Ed25519 = Ed25519;
 pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
 
 // opaque SignaturePublicKey<1..2^16-1>
-/// This is the form that all `SigPublicKey`s take when being sent or received over the wire
+/// The form that all `SigPublicKey`s take when being sent or received over the wire
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "SigPublicKeyRaw__bound_u16")]
 pub struct SigPublicKeyRaw(pub(crate) Vec<u8>);
@@ -56,7 +59,7 @@ impl core::fmt::Debug for SigSecretKey {
 }
 
 // opaque UserInitKey::signature<0..2^16-1>
-/// This is the form that all `Signature`s take when being sent or received over the wire
+/// The form that all `Signature`s take when being sent or received over the wire
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "SignatureRaw__bound_u16")]
 pub struct SignatureRaw(pub(crate) Vec<u8>);
@@ -122,7 +125,7 @@ impl PartialEq for SignatureScheme {
 
 impl Eq for SignatureScheme {}
 
-/// This represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
+/// Represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
 pub struct Ed25519;
 
 // This implementation is for Ed25519 only, currently. In the future, we should wrap Ed25519 with

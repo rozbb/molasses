@@ -1,4 +1,4 @@
-//! This module defines specialized serialization and deserialization routines for various types
+//! Defines specialized serialization and deserialization routines for various types
 
 use crate::crypto::{
     ciphersuite::{CipherSuite, P256_SHA256_AES128GCM, X25519_SHA256_AES128GCM},

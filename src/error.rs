@@ -1,3 +1,5 @@
+//! Defines `Error`, which we use to represent anything that goes wrong in this crate
+
 /// An error type for anything that goes wrong in this crate
 #[derive(Debug)]
 pub enum Error {

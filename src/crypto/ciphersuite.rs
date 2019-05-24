@@ -1,3 +1,5 @@
+//! Defines and instantiates `CipherSuite` objects, corresponding to MLS ciphersuites
+
 use crate::{
     crypto::{
         aead::{AuthenticatedEncryption, AES128GCM_IMPL},

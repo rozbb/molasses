@@ -1,3 +1,5 @@
+//! An MLS serializer. This is the same wire format as TLS.
+
 use crate::error::Error;
 
 use byteorder::{BigEndian, WriteBytesExt};

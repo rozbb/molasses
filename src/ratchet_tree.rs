@@ -1,3 +1,5 @@
+//! Defines `RatchetTree` and all its functionality. Not much public API here.
+
 use crate::{
     crypto::{
         ciphersuite::CipherSuite,
@@ -42,7 +44,7 @@ impl PathSecret {
 // an Option<DhPublicKey> would be.
 
 /// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
-/// corresponding private key and a secret octet string.
+/// corresponding private key.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename = "RatchetTreeNode__enum_u8")]
 pub(crate) enum RatchetTreeNode {

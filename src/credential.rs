@@ -1,3 +1,5 @@
+//! Defines the data structures that relate to user identity and long-term keys
+
 use crate::crypto::sig::{SigPublicKey, SignatureScheme};
 use crate::error::Error;
 
@@ -52,7 +54,9 @@ impl Roster {
 }
 
 // opaque cert_data<1..2^24-1>;
-/// A bunch of bytes representing an X.509 certificate. This currently doesn't do anything.
+/// A bunch of bytes representing an X.509 certificate.
+///
+/// NOTE: This currently doesn't do anything.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "X509CertData__bound_u24")]
 pub struct X509CertData(Vec<u8>);
@@ -75,7 +79,7 @@ impl Identity {
     }
 }
 
-/// Defines a simple user credential
+/// A user credential without respect to any standard credential format
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct BasicCredential {
     /// This is a user ID
@@ -103,7 +107,8 @@ impl BasicCredential {
     }
 }
 
-/// A user credential, as defined in section 5.6 of the MLS spec
+/// A user credential specifies the member's identity, public signing key, and signature scheme the
+/// member will use to sign messages
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename = "Credential__enum_u8")]
 pub enum Credential {

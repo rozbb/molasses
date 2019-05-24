@@ -1,3 +1,5 @@
+//! An MLS deserializer. This is the same wire format as TLS.
+
 use crate::error::Error;
 
 use std::io::Read;

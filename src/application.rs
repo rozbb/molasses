@@ -1,5 +1,5 @@
-//! This module contains the data structures for the application key schedule as well as
-//! application-level messages
+//! Contains the data structures for the application key schedule as well as application-level
+//! messages
 
 use crate::{
     crypto::{

@@ -1,3 +1,6 @@
+//! Defines the `GroupState` object, which is the primary interface for creating and processing MLS
+//! group operations
+
 use crate::{
     application::ApplicationKeyChain,
     credential::{Credential, Roster},
@@ -280,7 +283,6 @@ impl GroupState {
     /// Increments the epoch counter by 1
     ///
     /// Returns: An `Error::ValidationError` if the epoch value is at its max
-    #[must_use]
     fn increment_epoch(&mut self) -> Result<(), Error> {
         let new_epoch = self
             .epoch
@@ -294,7 +296,6 @@ impl GroupState {
     /// Computes and updates the transcript hash, given a new `Handshake` message.
     ///
     /// Returns: An `Error::SerdeError` if there was an issue during serialization
-    #[must_use]
     fn update_transcript_hash(&mut self, operation: &GroupOperation) -> Result<(), Error> {
         // Compute the new transcript hash
         // From section 5.7: transcript_hash_[n] = Hash(transcript_hash_[n-1] || operation)
@@ -314,7 +315,6 @@ impl GroupState {
     /// Specifically, this sets the init secret of the group, and returns the confirmation key and
     /// application secret. This is done this way because the latter two values must be used
     /// immediately in `process_handshake`.
-    #[must_use]
     fn update_epoch_secrets(
         &mut self,
         update_secret: &UpdateSecret,
@@ -376,7 +376,6 @@ impl GroupState {
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
     /// necessary for generating new epoch secrets.
-    #[must_use]
     fn process_incoming_update_op(
         &mut self,
         update: &GroupUpdate,
@@ -434,7 +433,6 @@ impl GroupState {
     // able to process the Remove, whereas the creator of an Update cannot process their own
     // operation (this is because the creator's own path secret is never put into the
     // DirectPathMessage).
-    #[must_use]
     fn process_remove_op(&mut self, remove: &GroupRemove) -> Result<UpdateSecret, Error> {
         // Find the entropy provided in remove.path that we'll use to update the tree before
         // blanking out the removed node
@@ -535,7 +533,6 @@ impl GroupState {
     // NOTE: There is no corresponding "apply_add" method because the creator of an Add is able to
     // process the Add, whereas the creator of an Update cannot process their own operation (this
     // is because the creator's own path secret is never put into the DirectPathMessage).
-    #[must_use]
     fn process_add_op(
         &mut self,
         add: &GroupAdd,
@@ -689,7 +686,6 @@ impl GroupState {
     //    message, as described below, and verify that it is the same as the confirmation field.
     // 7. If the the above checks are successful, consider the updated GroupState object as the
     //    current state of the group.
-    #[must_use]
     pub fn process_handshake(
         &self,
         handshake: &Handshake,

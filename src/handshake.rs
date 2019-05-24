@@ -1,3 +1,5 @@
+//! Defines group handshake-related data structures and operations. Not much public API here.
+
 use crate::{
     credential::Credential,
     crypto::{

@@ -1,3 +1,6 @@
+//! This module contains all the cryptographic utilities necessary in MLS. The main players are an
+//! AEAD, a Diffie Hellman scheme, and a digital signature scheme.
+
 // Allow this because sometimes enum_variant! is called on single-variant types, which produces
 // unnecessary warnings
 #![allow(unreachable_patterns)]

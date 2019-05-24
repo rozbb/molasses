@@ -1,3 +1,6 @@
+// No need to use any unsafety in this crate
+#![forbid(unsafe_code)]
+
 // This is because ratchet trees use 32-bit indices, which means Vecs need to be able to store up
 // to 2^32 - 1 many elements
 #[cfg(any(target_pointer_width = "16", target_pointer_width = "8"))]
