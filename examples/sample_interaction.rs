@@ -15,7 +15,7 @@ use molasses::{
     credential::{BasicCredential, Credential, Identity},
     crypto::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
-        sig::{SignatureScheme, ED25519_IMPL},
+        sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
     group_state::{GroupState, Welcome},
     handshake::{Handshake, ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
@@ -33,7 +33,7 @@ use serde::de::Deserialize;
 use serde::ser::Serialize;
 
 const COMMON_CIPHER_SUITE: &'static CipherSuite = &X25519_SHA256_AES128GCM;
-const COMMON_SIG_SCHEME: &'static dyn SignatureScheme = &ED25519_IMPL;
+const COMMON_SIG_SCHEME: &'static SignatureScheme = &ED25519_IMPL;
 const COMMON_PROTOCOL_VERSION: ProtocolVersion = MLS_DUMMY_VERSION;
 
 // Pauses the main thread until the user presses Enter
@@ -165,8 +165,9 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
 
     // First order of business, make a GroupState
     // Make up an identity key
-    let identity_secret_key = COMMON_SIG_SCHEME.secret_key_from_random(&mut rng).unwrap();
-    let identity_public_key = COMMON_SIG_SCHEME.public_key_from_secret_key(&identity_secret_key);
+    let identity_secret_key = SigSecretKey::new_from_random(COMMON_SIG_SCHEME, &mut rng).unwrap();
+    let identity_public_key =
+        SigPublicKey::new_from_secret_key(COMMON_SIG_SCHEME, &identity_secret_key);
 
     // Make up a group ID
     let group_id = b"suspicions_rising".to_vec();
@@ -255,8 +256,9 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     let mut rng = rand::thread_rng();
 
     // Make an identity
-    let identity_secret_key = COMMON_SIG_SCHEME.secret_key_from_random(&mut rng).unwrap();
-    let identity_public_key = COMMON_SIG_SCHEME.public_key_from_secret_key(&identity_secret_key);
+    let identity_secret_key = SigSecretKey::new_from_random(COMMON_SIG_SCHEME, &mut rng).unwrap();
+    let identity_public_key =
+        SigPublicKey::new_from_secret_key(COMMON_SIG_SCHEME, &identity_secret_key);
 
     // Make up a credential
     let credential = {
@@ -340,8 +342,9 @@ fn carol(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     rx.recv().unwrap();
 
     // Make an identity
-    let identity_secret_key = COMMON_SIG_SCHEME.secret_key_from_random(&mut rng).unwrap();
-    let identity_public_key = COMMON_SIG_SCHEME.public_key_from_secret_key(&identity_secret_key);
+    let identity_secret_key = SigSecretKey::new_from_random(COMMON_SIG_SCHEME, &mut rng).unwrap();
+    let identity_public_key =
+        SigPublicKey::new_from_secret_key(COMMON_SIG_SCHEME, &identity_secret_key);
 
     // Make up a credential
     let credential = {

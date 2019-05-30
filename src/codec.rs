@@ -18,7 +18,7 @@ const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)]
     (&P256_SHA256_AES128GCM, "P256_SHA256_AES128GCM", 0x0000),
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
-const SIGSCHEME_NAME_IDS: &'static [(&'static dyn SignatureScheme, &'static str, u16)] = &[
+const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16)] = &[
     (&ECDSA_P256_IMPL, "dummy_ecdsa_secp256r1_sha256", 0x0403), // FAKE
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];
@@ -86,13 +86,13 @@ impl<'de> Deserialize<'de> for &'static SignatureScheme {
         struct Visitor;
 
         impl<'de> serde::de::Visitor<'de> for Visitor {
-            type Value = &'static dyn SignatureScheme;
+            type Value = &'static SignatureScheme;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
                 formatter.write_str("a u16 representing a signature scheme")
             }
 
-            fn visit_u16<E>(self, value: u16) -> Result<&'static dyn SignatureScheme, E>
+            fn visit_u16<E>(self, value: u16) -> Result<&'static SignatureScheme, E>
             where
                 E: serde::de::Error,
             {

@@ -4,11 +4,12 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
-/// The canonical instantiation of the `Ed25519` unit struct. Things that use this algorithm should
-/// use `&'static` references to this.
-pub const ED25519_IMPL: Ed25519 = Ed25519;
+/// The canonical instantiation of the ed25519 `SignatureScheme`. Things that use this algorithm
+/// should use `&'static` references to this.
+pub const ED25519_IMPL: SignatureScheme = SignatureScheme(&Ed25519);
 
-pub(crate) const ECDSA_P256_IMPL: DummyEcdsaP256 = DummyEcdsaP256;
+/// A dummy placeholder for the canonical instantiation of the ECDSA-over-P256 `SignatureScheme`
+pub(crate) const ECDSA_P256_IMPL: SignatureScheme = SignatureScheme(&DummyEcdsaP256);
 
 // opaque SignaturePublicKey<1..2^16-1>
 /// The form that all `SigPublicKey`s take when being sent or received over the wire
@@ -25,11 +26,26 @@ pub enum SigPublicKey {
 }
 
 impl SigPublicKey {
-    pub(crate) fn as_bytes(&self) -> &[u8] {
+    pub fn as_bytes(&self) -> &[u8] {
         match self {
             SigPublicKey::Ed25519PublicKey(p) => p.as_bytes(),
             SigPublicKey::Raw(p) => p.0.as_slice(),
         }
+    }
+
+    // This just passes through to `SignatureSchemeInterface::public_key_from_bytes`
+    /// Creates a public key from the provided bytes
+    ///
+    /// Returns: `Ok(public_key)` on success. If anything goes wrong, returns an
+    /// `Error::SignatureError`.
+    pub fn new_from_bytes(ss: &SignatureScheme, bytes: &[u8]) -> Result<SigPublicKey, Error> {
+        ss.0.public_key_from_bytes(bytes)
+    }
+
+    // This just passes through to `SignatureSchemeInterface::public_key_from_secret_key`
+    /// Derives the public key corresponding to the given secret key
+    pub fn new_from_secret_key(ss: &SignatureScheme, secret_key: &SigSecretKey) -> SigPublicKey {
+        ss.0.public_key_from_secret_key(secret_key)
     }
 }
 
@@ -37,6 +53,29 @@ impl SigPublicKey {
 /// algorithm
 pub enum SigSecretKey {
     Ed25519SecretKey(ed25519_dalek::SecretKey),
+}
+
+impl SigSecretKey {
+    // This just passes through to `SignatureSchemeInterface::signature_from_bytes`
+    /// Creates a key pair from the provided secret key bytes
+    ///
+    /// Returns: `Ok(secret_key)` on success. Returns an `Error::SignatureError` iff the number of
+    /// bytes is not precisely the size of a secret key.
+    pub fn new_from_bytes(ss: &SignatureScheme, bytes: &[u8]) -> Result<SigSecretKey, Error> {
+        ss.0.secret_key_from_bytes(bytes)
+    }
+
+    // This just passes through to `SignatureSchemeInterface::secret_key_from_random`
+    /// Generates a random key pair using the given CSPRNG
+    ///
+    /// Returns: `Ok(secret_key)` on success. On error, returns `Error::SignatureError` or
+    /// `Error::OutOfEntropy`.
+    pub fn new_from_random(
+        ss: &SignatureScheme,
+        csprng: &mut dyn CryptoRng,
+    ) -> Result<SigSecretKey, Error> {
+        ss.0.secret_key_from_random(csprng)
+    }
 }
 
 // We only really need this in order to derive(Clone) for GroupState
@@ -82,20 +121,75 @@ impl Signature {
             Signature::Raw(s) => s.0.clone(),
         }
     }
+
+    // This just passes through to `SignatureSchemeInterface::signature_from_bytes`
+    /// Creates a signature from the provided bytes
+    ///
+    /// Returns: `Ok(signature)` on success. If anything goes wrong, returns an
+    /// `Error::SignatureError`.
+    pub(crate) fn new_from_bytes(ss: &SignatureScheme, bytes: &[u8]) -> Result<Signature, Error> {
+        ss.0.signature_from_bytes(bytes)
+    }
 }
 
-// TODO: Do not expose this. We can avoid &'static dyn SignatureSchemes everywhere by having
-//     struct SignatureSchemeHandle {
-//         my_impl: &'static dyn SignatureScheme
-//     }
-//     pub const ED25519_IMPL: SignatureSchemeHandle = SignatureSchemeHandle {
-//         my_impl: &'static Ed25519
-//     }
-//     ...etc
-// This would also let us get away with not exposing the SignatureScheme trait directly, instead
-// taking &'static SignatureSchemeHandle
+// Why do we have this wrapper around a trait object instead of just passing around the trait
+// object itself?
+// Well, I would like to mimic the semantics of hash/hkdf. That is, I would like a core
+// functionality associated to a SignatureScheme, like sign/verify, and then separately have other
+// public functions like SigPublicKey::new_from_bytes that take in a SignatureScheme as a
+// parameter. If we take in a SignatureScheme as a parameter, then we have to expose this type in
+// the API.
+// Now if we expose a trait, then we end up exposing all its methods, even the ones that users
+// should not be able to use, like `sign` and `verify. This is not ideal.
+// If on the other hand we expose a struct, we get more control over which methods are public.
+// We pay for this additional complexity with some code repetition, but I think it's worth it.
+/// A struct representing any signature scheme
+pub struct SignatureScheme(&'static dyn SignatureSchemeInterface);
+
+impl SignatureScheme {
+    // This just passes through to `SignatureSchemeInterface::name`
+    /// Returns the signature scheme's name, as per the MLS spec. Here, it is `ed25519`
+    pub(crate) fn name(&self) -> &'static str {
+        self.0.name()
+    }
+
+    // This just passes through to `SignatureSchemeInterface::sign`
+    /// Computes a signature of the given message under the given secret key
+    pub(crate) fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
+        self.0.sign(secret, msg)
+    }
+
+    // This just passes through to `SignatureSchemeInterface::verify`
+    /// Verifies the signature of the given message under the given public key
+    ///
+    /// Returns: `Ok(())` iff the signature succeeded. Otherwise, returns an
+    /// `Err(Error::SignatureError)` which is a lot of "Error"s, so you know it's bad.
+    pub(crate) fn verify(
+        &self,
+        public_key: &SigPublicKey,
+        msg: &[u8],
+        sig: &Signature,
+    ) -> Result<(), Error> {
+        self.0.verify(public_key, msg, sig)
+    }
+}
+
+impl core::fmt::Debug for SignatureScheme {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.write_str(self.0.name())
+    }
+}
+
+impl PartialEq for SignatureScheme {
+    fn eq(&self, other: &SignatureScheme) -> bool {
+        self.0.name() == other.0.name()
+    }
+}
+
+impl Eq for SignatureScheme {}
+
 /// A trait representing any signature scheme
-pub trait SignatureScheme {
+trait SignatureSchemeInterface {
     fn name(&self) -> &'static str;
 
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error>;
@@ -113,26 +207,12 @@ pub trait SignatureScheme {
     fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error>;
 }
 
-impl core::fmt::Debug for SignatureScheme {
-    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-impl PartialEq for SignatureScheme {
-    fn eq(&self, other: &SignatureScheme) -> bool {
-        self.name() == other.name()
-    }
-}
-
-impl Eq for SignatureScheme {}
-
-/// Represents the Ed25519 signature scheme. Notably, it implements `SignatureScheme`.
+/// Represents the Ed25519 signature scheme. Notably, it implements `SignatureSchemeInterface`.
 pub struct Ed25519;
 
 // This implementation is for Ed25519 only, currently. In the future, we should wrap Ed25519 with
 // a trait, and use the same trait for other signature implementations
-impl SignatureScheme for Ed25519 {
+impl SignatureSchemeInterface for Ed25519 {
     /// Returns the signature scheme's name, as per the MLS spec. Here, it is `ed25519`
     fn name(&self) -> &'static str {
         "ed25519"
@@ -168,7 +248,10 @@ impl SignatureScheme for Ed25519 {
         SigPublicKey::Ed25519PublicKey(public_key)
     }
 
-    /// Creates a key pair from the provided secret key bytes. This expects 32 bytes.
+    /// Creates a key pair from the provided secret key bytes
+    ///
+    /// Returns: `Ok(secret_key)` on success. Returns an `Error::SignatureError` iff the number of
+    /// bytes is not precisely the size of a secret key.
     fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error> {
         match ed25519_dalek::SecretKey::from_bytes(bytes) {
             Ok(secret) => Ok(SigSecretKey::Ed25519SecretKey(secret)),
@@ -178,7 +261,7 @@ impl SignatureScheme for Ed25519 {
 
     /// Generates a random key pair using the given CSPRNG
     ///
-    /// Returns: `Ok(secret_key)` on success. On error, returns `Error::SignatureErrror` or
+    /// Returns: `Ok(secret_key)` on success. On error, returns `Error::SignatureError` or
     /// `Error::OutOfEntropy`.
     fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error> {
         let mut key_bytes = [0u8; 32];
@@ -204,7 +287,6 @@ impl SignatureScheme for Ed25519 {
     ///
     /// Returns: `Ok(())` iff the signature succeeded. Otherwise, returns an
     /// `Err(Error::SignatureError)` which is a lot of "Error"s, so you know it's bad.
-    #[must_use]
     fn verify(&self, public_key: &SigPublicKey, msg: &[u8], sig: &Signature) -> Result<(), Error> {
         // Convert the public key bytes into the ed25519_dalek representation
         let public_key = enum_variant!(public_key, SigPublicKey::Ed25519PublicKey);
@@ -218,7 +300,7 @@ impl SignatureScheme for Ed25519 {
 
 pub(crate) struct DummyEcdsaP256;
 
-impl SignatureScheme for DummyEcdsaP256 {
+impl SignatureSchemeInterface for DummyEcdsaP256 {
     fn name(&self) -> &'static str {
         "dummy_ecdsa_secp256r1_sha256"
     }
@@ -298,22 +380,25 @@ mod test {
               f760984dc6594a7c15e9716ed28dc027beceea1ec40a"),
         ];
 
+        // We're only working with ed25519
+        let ss: &'static SignatureScheme = &ED25519_IMPL;
+
         for (secret_hex, public_hex, msg_hex, sig_hex) in sk_pk_msg_sig_tuples.iter() {
             let msg = hex::decode(msg_hex).unwrap();
             let secret = {
                 let bytes = hex::decode(secret_hex).unwrap();
-                ED25519_IMPL.secret_key_from_bytes(&bytes).unwrap()
+                SigSecretKey::new_from_bytes(ss, &bytes).unwrap()
             };
             let expected_public = {
                 let bytes = hex::decode(public_hex).unwrap();
-                ED25519_IMPL.public_key_from_bytes(&bytes).unwrap()
+                SigPublicKey::new_from_bytes(ss, &bytes).unwrap()
             };
-            let derived_public = ED25519_IMPL.public_key_from_secret_key(&secret);
+            let derived_public = SigPublicKey::new_from_secret_key(ss, &secret);
 
             // Make sure the expected public key and the public key we derived are the same
             assert_eq!(expected_public.as_bytes(), derived_public.as_bytes());
 
-            let derived_sig = ED25519_IMPL.sign(&secret, &msg);
+            let derived_sig = ss.sign(&secret, &msg);
             let expected_sig = hex::decode(sig_hex).unwrap();
 
             assert_eq!(&expected_sig, &derived_sig.as_bytes());
@@ -322,20 +407,23 @@ mod test {
 
     #[quickcheck]
     fn ed25519_correctness(msg: Vec<u8>, secret_seed: u64) {
+        // We're only working with ed25519
+        let ss: &'static SignatureScheme = &ED25519_IMPL;
+
         // Make a secret key seeded with the above seed. This is so that this function is
         // deterministic.
         let secret_key = {
             let mut rng = rand::rngs::StdRng::seed_from_u64(secret_seed);
             let mut buf = [0u8; 32];
             rng.fill_bytes(&mut buf);
-            ED25519_IMPL.secret_key_from_bytes(&buf).unwrap()
+            SigSecretKey::new_from_bytes(ss, &buf).unwrap()
         };
-        let public_key = ED25519_IMPL.public_key_from_secret_key(&secret_key);
+        let public_key = SigPublicKey::new_from_secret_key(ss, &secret_key);
 
         // Sign the random message we were given
-        let sig = ED25519_IMPL.sign(&secret_key, &msg);
+        let sig = ss.sign(&secret_key, &msg);
 
         // Make sure the signature we just made is valid
-        assert!(ED25519_IMPL.verify(&public_key, &msg, &sig).is_ok());
+        assert!(ss.verify(&public_key, &msg, &sig).is_ok());
     }
 }

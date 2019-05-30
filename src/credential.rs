@@ -86,7 +86,7 @@ pub struct BasicCredential {
     pub(crate) identity: Identity,
 
     /// The member's preferred signature scheme
-    pub(crate) signature_scheme: &'static dyn SignatureScheme,
+    pub(crate) signature_scheme: &'static SignatureScheme,
 
     /// The member's public key under said signature scheme
     pub(crate) public_key: SigPublicKey,
@@ -96,7 +96,7 @@ impl BasicCredential {
     /// Makes a new credential with the given information
     pub fn new(
         identity: Identity,
-        signature_scheme: &'static dyn SignatureScheme,
+        signature_scheme: &'static SignatureScheme,
         public_key: SigPublicKey,
     ) -> BasicCredential {
         BasicCredential {
@@ -124,7 +124,7 @@ impl Credential {
         }
     }
 
-    pub(crate) fn get_signature_scheme(&self) -> &'static dyn SignatureScheme {
+    pub(crate) fn get_signature_scheme(&self) -> &'static SignatureScheme {
         match self {
             Credential::Basic(ref basic) => basic.signature_scheme,
             Credential::X509(_) => unimplemented!(),

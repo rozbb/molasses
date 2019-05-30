@@ -279,7 +279,7 @@ impl GroupState {
 
     /// Returns the signature scheme of this member of the group. This is determined by the
     /// signature scheme of this member's credential.
-    pub(crate) fn get_signature_scheme(&self) -> &'static dyn SignatureScheme {
+    pub(crate) fn get_signature_scheme(&self) -> &'static SignatureScheme {
         // We look for our credential first, since this contains our signature scheme. If this is a
         // preliminary group, i.e., if this group was just created from a WelcomeInfo, then we
         // don't know our roster index, so we can't get our credential from the roster. In this
@@ -1271,7 +1271,7 @@ mod test {
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
             hash::Digest,
             hmac::HmacKey,
-            sig::{SignatureScheme, ED25519_IMPL},
+            sig::{SigSecretKey, ED25519_IMPL},
         },
         error::Error,
         group_state::{GroupState, UpdateSecret, Welcome},
@@ -1363,7 +1363,7 @@ mod test {
         GroupState {
             cs: cs,
             protocol_version: MLS_DUMMY_VERSION,
-            identity_key: ss.secret_key_from_bytes(&[0u8; 32]).unwrap(),
+            identity_key: SigSecretKey::new_from_bytes(ss, &[0u8; 32]).unwrap(),
             group_id: tgs.group_id,
             epoch: tgs.epoch,
             roster: tgs.roster,

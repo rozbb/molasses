@@ -29,7 +29,7 @@ use crate::{
 #[derive(Clone, Copy)]
 pub struct CryptoCtx {
     cs: Option<&'static CipherSuite>,
-    ss: Option<&'static dyn SignatureScheme>,
+    ss: Option<&'static SignatureScheme>,
 }
 
 // TODO: Figure out when to check for coherence in ciphersuites
@@ -96,7 +96,7 @@ impl CryptoUpcast for SigPublicKey {
         let raw = enum_variant!(self, SigPublicKey::Raw, "can't upcast a non-raw SigPublicKey");
         match ctx.ss {
             Some(ss) => {
-                *self = ss.public_key_from_bytes(&raw.0)?;
+                *self = SigPublicKey::new_from_bytes(ss, &raw.0)?;
                 // No change to context
                 Ok(*ctx)
             }
@@ -110,7 +110,7 @@ impl CryptoUpcast for Signature {
         let raw = enum_variant!(self, Signature::Raw, "can't upcast a non-raw Signature");
         match ctx.ss {
             Some(ss) => {
-                *self = ss.signature_from_bytes(&raw.0)?;
+                *self = Signature::new_from_bytes(ss, &raw.0)?;
                 // No change to context
                 Ok(*ctx)
             }

@@ -7,6 +7,7 @@ use crate::{
         ciphersuite::CipherSuite,
         hkdf,
         hmac::HmacKey,
+        sig::Signature,
     },
     error::Error,
     group_state::{ApplicationSecret, GroupState},
@@ -385,7 +386,7 @@ pub fn decrypt_application_message(
         ApplicationMessageContent::deserialize(&mut deserializer)?
     };
     let plaintext = message_content.content;
-    let signature = sender_ss.signature_from_bytes(&message_content.signature)?;
+    let signature = Signature::new_from_bytes(sender_ss, &message_content.signature)?;
 
     // Create the stuff that the signature is over, then verify the signature. See above for why we
     // use group_epoch_at_creation
