@@ -2,6 +2,8 @@ use crate::crypto::{
     aead::{AeadKey, AeadNonce},
     ciphersuite::CipherSuite,
     dh::{DhPrivateKey, DhPublicKey},
+    hkdf,
+    hmac::HmacKey,
     rng::CryptoRng,
 };
 use crate::error::Error;
@@ -25,7 +27,8 @@ impl EciesLabel {
 }
 
 /// A short ciphertext encrypted with the enclosed ephemeral DH key
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct EciesCiphertext {
     /// Pubkey the ciphertext is encrypted under
     pub(crate) ephemeral_public_key: DhPublicKey,
@@ -35,11 +38,12 @@ pub(crate) struct EciesCiphertext {
     ciphertext: Vec<u8>,
 }
 
-/// Performs an ECIES encryption of a given plaintext under a given DH public key.
+/// Performs an ECIES encryption of a given plaintext under a given DH public key and a randomly
+/// chosen ephemeral key
 ///
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with random scalar generation or
 /// sealing the plaintext, an `Error` is returned.
-pub(crate) fn ecies_encrypt(
+pub(crate) fn encrypt(
     cs: &CipherSuite,
     others_public_key: &DhPublicKey,
     plaintext: Vec<u8>,
@@ -47,18 +51,18 @@ pub(crate) fn ecies_encrypt(
 ) -> Result<EciesCiphertext, Error> {
     // Genarate a random secret and pass to a deterministic version of this function
     let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
-    ecies_encrypt_with_scalar(cs, others_public_key, plaintext, my_ephemeral_secret)
+    encrypt_with_scalar(cs, others_public_key, plaintext, my_ephemeral_secret)
 }
 
 // TODO: Make this function secret-aware by making it take only ClearOnDrop values
 
-/// Performs an ECIES encryption of a given plaintext under a given DH public key and a fixed
-/// scalar value. This is the deterministic function underlying `ecies_encrypt`, and is important
-/// for testing purposes.
+/// Performs an ECIES encryption of a given plaintext under a given DH public key and a fixed scalar
+/// value. This is the deterministic function underlying `ecies_encrypt`, and is important for
+/// testing purposes.
 ///
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with sealing the plaintext, an
 /// `Error::EncryptionError` is returned.
-pub(crate) fn ecies_encrypt_with_scalar(
+pub(crate) fn encrypt_with_scalar(
     cs: &CipherSuite,
     others_public_key: &DhPublicKey,
     mut plaintext: Vec<u8>,
@@ -95,7 +99,7 @@ pub(crate) fn ecies_encrypt_with_scalar(
 ///
 /// Returns: `Ok(plaintext)` on success. Returns an `Error::EncryptionError` if something goes
 /// wrong.
-pub(crate) fn ecies_decrypt(
+pub(crate) fn decrypt(
     cs: &CipherSuite,
     my_secret_key: &DhPrivateKey,
     ciphertext: EciesCiphertext,
@@ -138,20 +142,18 @@ fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (Aead
     let key_label = EciesLabel::new(b"key", cs.aead_impl.key_size() as u16);
     let nonce_label = EciesLabel::new(b"nonce", cs.aead_impl.nonce_size() as u16);
 
-    // We're gonna used the serialized labels as the `info` parameter to HKDF-Expand
-    let serialized_key_label =
-        crate::tls_ser::serialize_to_bytes(&key_label).expect("couldn't serialize ECIES key label");
-    let serialized_nonce_label = crate::tls_ser::serialize_to_bytes(&nonce_label)
-        .expect("couldn't serialize ECIES nonce label");
-
     // This is the keying information that we will expand
-    let prk = ring::hmac::SigningKey::new(cs.hash_alg, &shared_secret_bytes);
+    let prk = HmacKey::new_from_bytes(&shared_secret_bytes);
 
     let mut key_buf = vec![0u8; cs.aead_impl.key_size()];
     let mut nonce_buf = vec![0u8; cs.aead_impl.nonce_size()];
 
-    ring::hkdf::expand(&prk, &serialized_key_label, &mut key_buf[..]);
-    ring::hkdf::expand(&prk, &serialized_nonce_label, &mut nonce_buf[..]);
+    // We're gonna used the serialized labels as the `info` parameter to HKDF-Expand. The only way
+    // this call fails is because of an `HkdfLabel` serialization error. This can't happen because
+    // the only possible error is if EciesLabel::label is oversized, but it is fixed as b"key" or
+    // b"nonce" above.
+    hkdf::expand(cs.hash_impl, &prk, &key_label, &mut key_buf[..]).unwrap();
+    hkdf::expand(cs.hash_impl, &prk, &nonce_label, &mut nonce_buf[..]).unwrap();
 
     let key = cs.aead_impl.key_from_bytes(&key_buf).expect("couldn't derive AEAD key from HKDF");
     let nonce =
@@ -162,8 +164,10 @@ fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (Aead
 
 #[cfg(test)]
 mod test {
-    use super::*;
-    use crate::crypto::ciphersuite::X25519_SHA256_AES128GCM;
+    use crate::crypto::{
+        ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        ecies::{self, EciesCiphertext},
+    };
 
     use quickcheck_macros::quickcheck;
     use rand::SeedableRng;
@@ -182,11 +186,11 @@ mod test {
 
             // Now encrypt to Alice
             let ecies_ciphertext: EciesCiphertext =
-                ecies_encrypt(cs, &alice_point, plaintext.clone(), &mut rng)
+                ecies::encrypt(cs, &alice_point, plaintext.clone(), &mut rng)
                     .expect(&format!("failed to encrypt ECIES plaintext; ciphersuite {}", cs.name));
 
             // Now let Alice decrypt it
-            let recovered_plaintext = ecies_decrypt(cs, &alice_scalar, ecies_ciphertext)
+            let recovered_plaintext = ecies::decrypt(cs, &alice_scalar, ecies_ciphertext)
                 .expect(&format!("failed to decrypt ECIES ciphertext; ciphersuite {}", cs.name))
                 .to_vec();
 

@@ -43,7 +43,8 @@ impl DhSharedSecret {
 
 // opaque HPKEPublicKey<1..2^16-1>
 /// This is the form that all `DhPublicKey`s take when being sent or received over the wire
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename = "DhPublicKeyRaw__bound_u16")]
 pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 
@@ -52,7 +53,8 @@ pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 /// element. The `Raw` variant only gets instantiated at the serialization/deserialization
 /// boundary, and should never be dealt with directly. The `CryptoUpcast` trait should take care of
 /// this.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) enum DhPublicKey {
     /// A curve point in Curve25519
     X25519PublicKey(x25519_dalek::PublicKey),
@@ -70,6 +72,13 @@ impl DhPublicKey {
             DhPublicKey::X25519PublicKey(p) => p.as_bytes(),
             DhPublicKey::Raw(p) => p.0.as_slice(),
         }
+    }
+}
+
+// This is probably not necessary, but why not
+impl subtle::ConstantTimeEq for DhPublicKey {
+    fn ct_eq(&self, other: &DhPublicKey) -> subtle::Choice {
+        self.as_bytes().ct_eq(other.as_bytes())
     }
 }
 

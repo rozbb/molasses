@@ -151,7 +151,7 @@ impl Serialize for Signature {
         // If it's not already, convert it to a Raw signature, then serialize that
         match self {
             Signature::Raw(p) => p.serialize(serializer),
-            p => SignatureRaw(p.to_bytes().to_vec()).serialize(serializer),
+            p => SignatureRaw(p.as_bytes().to_vec()).serialize(serializer),
         }
     }
 }

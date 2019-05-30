@@ -3,6 +3,7 @@ use crate::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
         hkdf,
+        hmac::HmacKey,
     },
     error::Error,
     ratchet_tree::{NodeSecret, PathSecret},
@@ -28,27 +29,37 @@ macro_rules! enum_variant {
     };
 }
 
-/// Returns `(node_public_key, node_private_key, node_secret, path_secret_[n])`, given
-/// `path_secret_[n-1]`
+/// Given a path secret, derives all node-specific values as well as the subsequent path secret.
 ///
-/// Requires: `path_secret.len() == cs.hash_alg.output_len`
+/// Requires: `path_secret.len() == cs.hash_impl.digest_size()`
 ///
-/// Panics: If above condition is not satisfied
+/// Returns: `Ok((public_key, private_key, ns, ps))` on success. If above condition is not
+/// satisfied, returns an `Error::ValidationError`.
 pub(crate) fn derive_node_values(
     cs: &'static CipherSuite,
-    mut path_secret: PathSecret,
+    path_secret: PathSecret,
 ) -> Result<(DhPublicKey, DhPrivateKey, NodeSecret, PathSecret), Error> {
-    assert_eq!(path_secret.0.len(), cs.hash_alg.output_len, "path secret length != Hash.length");
+    let digest_size = cs.hash_impl.digest_size();
+    if path_secret.len() != digest_size {
+        return Err(Error::ValidationError("Path secret length != Hash.length"));
+    }
 
-    let prk = hkdf::prk_from_bytes(cs.hash_alg, &*path_secret.0);
+    // PathSecrets are secretly HMAC keys
+    let prk: HmacKey = path_secret.into();
+
     // node_secret[n] = HKDF-Expand-Label(path_secret[n], "node", "", Hash.Length)
-    let mut node_secret = NodeSecret(vec![0u8; cs.hash_alg.output_len]);
-    hkdf::hkdf_expand_label(&prk, b"node", b"", &mut *node_secret.0);
+    let mut node_secret_buf = vec![0u8; digest_size];
+    hkdf::expand_label(cs.hash_impl, &prk, b"node", b"", &mut node_secret_buf);
+
     // path_secret[n] = HKDF-Expand-Label(path_secret[n-1], "path", "", Hash.Length)
-    hkdf::hkdf_expand_label(&prk, b"path", b"", &mut *path_secret.0);
+    let mut path_secret_buf = vec![0u8; digest_size];
+    hkdf::expand_label(cs.hash_impl, &prk, b"path", b"", &mut path_secret_buf);
 
     // Derive the private and public keys and assign them to the node
-    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret.0)?;
+    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret_buf)?;
 
-    Ok((node_public_key, node_private_key, node_secret, path_secret))
+    // Wrap the new values and return them
+    let node_secret = NodeSecret(node_secret_buf);
+    let new_path_secret = PathSecret::new_from_bytes(&path_secret_buf);
+    Ok((node_public_key, node_private_key, node_secret, new_path_secret))
 }

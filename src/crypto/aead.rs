@@ -130,7 +130,8 @@ impl AuthenticatedEncryption for Aes128Gcm {
     ///
     /// Requires: `nonce_bytes.len() == AES_128_GCM_NONCE_SIZE`
     ///
-    /// Returns: `Ok(Self::
+    /// Returns: `Ok(nonce)` on sucess. If the above requirement is not met, returns an
+    /// `Error::EncryptionError`.
     fn nonce_from_bytes(&self, nonce_bytes: &[u8]) -> Result<AeadNonce, Error> {
         if nonce_bytes.len() != AES_128_GCM_NONCE_SIZE {
             return Err(Error::EncryptionError("AES-GCM-128 requires 96-bit nonces"));

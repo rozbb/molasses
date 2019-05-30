@@ -4,6 +4,7 @@ use crate::{
     crypto::{
         aead::{AuthenticatedEncryption, AES128GCM_IMPL},
         dh::{DhPrivateKey, DhPublicKey, DiffieHellman, P256_IMPL, X25519_IMPL},
+        hash::{HashFunction, SHA256_IMPL},
     },
     error::Error,
 };
@@ -13,14 +14,14 @@ pub const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
-    hash_alg: &ring::digest::SHA256,
+    hash_impl: &SHA256_IMPL,
 };
 
 pub(crate) const P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "P256_SHA256_AES128GCM",
     dh_impl: &P256_IMPL,
     aead_impl: &AES128GCM_IMPL,
-    hash_alg: &ring::digest::SHA256,
+    hash_impl: &SHA256_IMPL,
 };
 
 /// Represents the contents of an MLS ciphersuite: a DH-like key-agreement protocol, a
@@ -35,17 +36,8 @@ pub struct CipherSuite {
     /// The trait object that implements our authenticated encryption functionality
     pub(crate) aead_impl: &'static dyn AuthenticatedEncryption,
 
-    /// The `ring::digest::Algorithm` that implements our hashing functionality
-    // We're gonna have to break the mold here. Originally this was Hash: digest::Digest. But to
-    // define HKDF and HMAC over a generic Digest, one needs the following constraints:
-    //     Hash: Input + BlockInput + FixedOutput + Reset + Default + Clone,
-    //     Hash::BlockSize: ArrayLength<u8> + Clone,
-    //     Hash::OutputSize: ArrayLength<u8>
-    // and I'm not about to do that. Idea for the future: come back to using something like Hash,
-    // but we can kill off all the ArrayLength stuff once associated constants for array lengths
-    // becomes possible. Until then, we're probably just gonna use Vecs. The other downside is that
-    // using a const locks us into whatever ring implements. Currently, it's just the SHA2 family.
-    pub(crate) hash_alg: &'static ring::digest::Algorithm,
+    /// The object that implements our hashing functionality
+    pub(crate) hash_impl: &'static HashFunction,
 }
 
 // TODO: Remove this impl if Add messages come with public_key indices in the future
@@ -59,15 +51,28 @@ impl PartialEq for CipherSuite {
 
 impl CipherSuite {
     /// Given an arbitrary number of bytes, derives a Diffie-Hellman keypair. For this ciphersuite,
-    /// the function is simply `scalar: [0u8; 32] = SHA256(bytes)`.
+    /// the function is simply `scalar: [u8; 32] = SHA256(bytes)`.
+    ///
+    /// Requires: `bytes.len() == self.hash_impl.digest_size()`
+    ///
+    /// Returns: `Ok((pubkey, privkey))` on success. If the above condition is not met, returns an
+    /// `Error::ValidationError`. If something goes wrong in key derivation, returns an
+    /// `Error::CryptoError`.
     pub(crate) fn derive_key_pair(
         &self,
         bytes: &[u8],
     ) -> Result<(DhPublicKey, DhPrivateKey), Error> {
-        let digest = ring::digest::digest(self.hash_alg, bytes);
-        let scalar_bytes = digest.as_ref();
+        // The spec requires this condition in the definition of Derive-Key-Pair
+        // TODO: URGENT: Uncomment this check once the official crypto test cases use appropriately
+        // sized input values for this function
+        //if bytes.len() != self.hash_impl.digest_size() {
+        //    return Err(Error::ValidationError("Derive-Key-Pair input length != Hash.length"));
+        //}
 
-        let privkey = self.dh_impl.private_key_from_bytes(scalar_bytes)?;
+        // Hash the input and use the digest as a private key
+        let digest = self.hash_impl.hash_bytes(bytes);
+        let privkey = self.dh_impl.private_key_from_bytes(digest.as_bytes())?;
+        // Derive the pubkey
         let pubkey = self.dh_impl.derive_public_key(&privkey);
 
         Ok((pubkey, privkey))

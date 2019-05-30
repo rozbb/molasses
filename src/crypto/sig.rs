@@ -60,13 +60,15 @@ impl core::fmt::Debug for SigSecretKey {
 
 // opaque UserInitKey::signature<0..2^16-1>
 /// The form that all `Signature`s take when being sent or received over the wire
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename = "SignatureRaw__bound_u16")]
 pub struct SignatureRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for a signature scheme's signature, depending on the underlying
 /// algorithm
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+#[cfg_attr(test, derive(Debug))]
 pub enum Signature {
     Ed25519Signature(ed25519_dalek::Signature),
     Raw(SignatureRaw),
@@ -74,7 +76,7 @@ pub enum Signature {
 
 impl Signature {
     // TODO: make this not allocate
-    pub(crate) fn to_bytes(&self) -> Vec<u8> {
+    pub(crate) fn as_bytes(&self) -> Vec<u8> {
         match self {
             Signature::Ed25519Signature(s) => s.to_bytes().to_vec(),
             Signature::Raw(s) => s.0.clone(),
@@ -314,7 +316,7 @@ mod test {
             let derived_sig = ED25519_IMPL.sign(&secret, &msg);
             let expected_sig = hex::decode(sig_hex).unwrap();
 
-            assert_eq!(&expected_sig, &derived_sig.to_bytes());
+            assert_eq!(&expected_sig, &derived_sig.as_bytes());
         }
     }
 

@@ -5,7 +5,8 @@ use crate::{
     crypto::{
         aead::{AeadKey, AeadNonce},
         ciphersuite::CipherSuite,
-        hkdf::{self, hkdf_expand_label},
+        hkdf,
+        hmac::HmacKey,
     },
     error::Error,
     group_state::{ApplicationSecret, GroupState},
@@ -15,17 +16,17 @@ use crate::{
 
 use core::convert::TryFrom;
 
-use clear_on_drop::ClearOnDrop;
 use serde::de::Deserialize;
 
 /// Contains a secret that is unique to a member of the group. This is part of the application key
-/// schedule (section 9.1)
+/// schedule defined in the "Encryption Keys" section of the spec.
 #[derive(Clone)]
-pub(crate) struct WriteSecret(ClearOnDrop<Vec<u8>>);
+pub(crate) struct WriteSecret(HmacKey);
 
-impl WriteSecret {
-    fn new(v: Vec<u8>) -> WriteSecret {
-        WriteSecret(ClearOnDrop::new(v))
+// WriteSecret --> HmacKey trivially
+impl From<WriteSecret> for HmacKey {
+    fn from(ws: WriteSecret) -> HmacKey {
+        ws.0
     }
 }
 
@@ -62,24 +63,28 @@ impl ApplicationKeyChain {
         let roster_len =
             u32::try_from(group_state.roster.len()).expect("roster length exceeds u32::MAX");
 
+        // The application secret is secretly an HMAC key
+        let prk: HmacKey = app_secret.into();
+
         // Make a write secret for every roster entry, and let its generation be 0
         let write_secrets_and_gens = (0u32..roster_len)
             .map(|roster_idx: u32| {
                 // write_secret_[sender] =
                 //     HKDF-Expand-Label(application_secret, "app sender", sender, Hash.length)
                 //  where sender is serialized as usual as a u32
-                let prk = hkdf::prk_from_bytes(group_state.cs.hash_alg, &app_secret.0);
-                let mut write_secret_buf = vec![0u8; group_state.cs.hash_alg.output_len];
+                let mut write_secret_buf = vec![0u8; group_state.cs.hash_impl.digest_size()];
                 let serialized_roster_idx = tls_ser::serialize_to_bytes(&roster_idx).unwrap();
-                hkdf_expand_label(
+                hkdf::expand_label(
+                    group_state.cs.hash_impl,
                     &prk,
                     b"app sender",
                     &serialized_roster_idx,
                     write_secret_buf.as_mut_slice(),
                 );
+                let write_secret = WriteSecret(HmacKey::new_from_bytes(&write_secret_buf));
 
                 // (write_secret, generation=0)
-                (WriteSecret::new(write_secret_buf), 0)
+                (write_secret, 0)
             })
             .collect();
 
@@ -107,17 +112,26 @@ impl ApplicationKeyChain {
             .ok_or(Error::ValidationError("Roster index out of bounds of application key chain"))?;
 
         // Derive the key and nonce
-        let prk = hkdf::prk_from_bytes(self.group_cs.hash_alg, &write_secret.0);
         let mut key_buf = vec![0u8; self.group_cs.aead_impl.key_size()];
         let mut nonce_buf = vec![0u8; self.group_cs.aead_impl.nonce_size()];
-        hkdf_expand_label(&prk, b"key", b"", key_buf.as_mut_slice());
-        hkdf_expand_label(&prk, b"nonce", b"", nonce_buf.as_mut_slice());
+        hkdf::expand_label(
+            self.group_cs.hash_impl,
+            &write_secret.0,
+            b"key",
+            b"",
+            key_buf.as_mut_slice(),
+        );
+        hkdf::expand_label(
+            self.group_cs.hash_impl,
+            &write_secret.0,
+            b"nonce",
+            b"",
+            nonce_buf.as_mut_slice(),
+        );
 
-        Ok((
-            self.group_cs.aead_impl.key_from_bytes(&key_buf)?,
-            self.group_cs.aead_impl.nonce_from_bytes(&nonce_buf)?,
-            *generation,
-        ))
+        let key = self.group_cs.aead_impl.key_from_bytes(&key_buf)?;
+        let nonce = self.group_cs.aead_impl.nonce_from_bytes(&nonce_buf)?;
+        Ok((key, nonce, *generation))
     }
 
     /// Ratchets `write_secrets_[roster_idx]` forward, as per section 9.1 of the MLS spec
@@ -126,7 +140,8 @@ impl ApplicationKeyChain {
     /// `Error::ValidationError`. If the write secret's generation is `u32::MAX`, returns an
     /// `Error::KdfError`.
     fn ratchet(&mut self, roster_idx: usize) -> Result<(), Error> {
-        // How to derive the new write key:
+        // We rename application_secret_[sender] to write_secret_[sender] for disambiguation's
+        // sake. From the spec, we derive the new keys as follows:
         //     application_secret_[sender]_[N-1]
         //               |
         //               +--> HKDF-Expand-Label(.,"nonce", "", nonce_length)
@@ -148,11 +163,19 @@ impl ApplicationKeyChain {
         let current_secret = write_secret.clone();
 
         // Ratchet the write secret, using its current value as a key
+        // write_secret_[sender]_[n] =
+        //     HKDF-Expand-Label(write_secret_[sender]_[n-1], "app sender", sender, Hash.length)
         let roster_idx = u32::try_from(roster_idx)
             .map_err(|_| Error::ValidationError("Roster index exceeds u32::MAX"))?;
         let serialized_roster_idx = tls_ser::serialize_to_bytes(&roster_idx).unwrap();
-        let prk = hkdf::prk_from_bytes(self.group_cs.hash_alg, &current_secret.0);
-        hkdf_expand_label(&prk, b"app sender", &serialized_roster_idx, &mut *write_secret.0);
+        let prk: HmacKey = current_secret.into();
+        hkdf::expand_label(
+            self.group_cs.hash_impl,
+            &prk,
+            b"app sender",
+            &serialized_roster_idx,
+            (write_secret.0).0.as_mut_slice(), // Overwrite the undelrying HmacKey
+        );
 
         // Increment the generation
         *generation = generation
@@ -265,14 +288,13 @@ pub fn encrypt_application_message(
         sender: my_roster_idx,
         content: &plaintext,
     };
-    let serialized_signature_content = tls_ser::serialize_to_bytes(&signature_content)?;
-    let hashed_signature_content = ring::digest::digest(cs.hash_alg, &serialized_signature_content);
-    let sig = ss.sign(&group_state.identity_key, hashed_signature_content.as_ref());
+    let hashed_signature_content = cs.hash_impl.hash_serializable(&signature_content)?;
+    let sig = ss.sign(&group_state.identity_key, hashed_signature_content.as_bytes());
 
     // Pack the plaintext and signature together and encrypt it
     let message_content = ApplicationMessageContent {
         content: plaintext,
-        signature: sig.to_bytes(),
+        signature: sig.as_bytes(),
     };
     let encrypted_content = {
         // Serialize the ApplicationMessageContent and make room for the tag
@@ -374,9 +396,8 @@ pub fn decrypt_application_message(
         sender: app_message.sender,
         content: &plaintext,
     };
-    let serialized_signature_content = tls_ser::serialize_to_bytes(&signature_content)?;
-    let hashed_signature_content = ring::digest::digest(cs.hash_alg, &serialized_signature_content);
-    sender_ss.verify(sender_pubkey, hashed_signature_content.as_ref(), &signature)?;
+    let hashed_signature_content = cs.hash_impl.hash_serializable(&signature_content)?;
+    sender_ss.verify(sender_pubkey, hashed_signature_content.as_bytes(), &signature)?;
 
     // All good. Now ratchet the write secret forward
     app_key_chain.ratchet(app_message.sender as usize)?;
@@ -390,8 +411,8 @@ mod test {
         application::{
             decrypt_application_message, encrypt_application_message, ApplicationKeyChain,
         },
-        crypto::{ciphersuite::X25519_SHA256_AES128GCM, rng::CryptoRng},
-        group_state::{ApplicationSecret, GroupState},
+        crypto::{ciphersuite::X25519_SHA256_AES128GCM, hmac::HmacKey, rng::CryptoRng},
+        group_state::GroupState,
         ratchet_tree::PathSecret,
         test_utils,
         tls_de::TlsDeserializer,
@@ -555,7 +576,7 @@ mod test {
 
         // These values hold for all test vectors
         let num_members = test_vecs.num_members as usize;
-        let app_secret = ApplicationSecret::new(test_vecs.application_secret);
+        let app_secret = HmacKey::new_from_bytes(&test_vecs.application_secret).into();
 
         // Test the X25519 case
         // TODO: Test P256 when it's ready

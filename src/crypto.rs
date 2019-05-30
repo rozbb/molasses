@@ -9,7 +9,9 @@ pub(crate) mod aead;
 pub mod ciphersuite;
 pub(crate) mod dh;
 pub(crate) mod ecies;
+pub(crate) mod hash;
 pub(crate) mod hkdf;
+pub(crate) mod hmac;
 pub mod rng;
 pub mod sig;
 
@@ -19,12 +21,12 @@ mod test {
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
             dh::DhPublicKey,
-            ecies::{ecies_decrypt, ecies_encrypt_with_scalar, EciesCiphertext},
+            ecies::{self, EciesCiphertext},
             hkdf,
+            hmac::HmacKey,
         },
         error::Error,
         tls_de::TlsDeserializer,
-        tls_ser::serialize_to_bytes,
         upcast::{CryptoCtx, CryptoUpcast},
     };
 
@@ -124,15 +126,16 @@ mod test {
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = CryptoTestVectors::deserialize(&mut deserializer).unwrap();
 
+        let cs = &X25519_SHA256_AES128GCM;
         let case1 = {
             let mut raw_case = test_vec.case_x25519_ed25519;
-            let ctx = crate::upcast::CryptoCtx::new().set_cipher_suite(&X25519_SHA256_AES128GCM);
+            let ctx = crate::upcast::CryptoCtx::new().set_cipher_suite(cs);
             raw_case.upcast_crypto_values(&ctx).unwrap();
             raw_case
         };
 
         // prk  = derive_sercret_salt
-        let prk = hkdf::prk_from_bytes(&ring::digest::SHA256, &test_vec.derive_secret_salt);
+        let prk = HmacKey::new_from_bytes(&test_vec.derive_secret_salt);
 
         // Test Derive-Secret against known answer.
         // derive_secret_out == Derive-Secret(
@@ -141,26 +144,25 @@ mod test {
         //     context=derive_secret_context
         //  )
         let derive_secret_out = hkdf::derive_secret(
+            cs.hash_impl,
             &prk,
             &test_vec.derive_secret_label,
             &test_vec.derive_secret_context,
-        );
-        assert_eq!(&derive_secret_out, &case1.derive_secret_out);
+        )
+        .unwrap();
+        // Wrap the RHS in an HMAC key so we can compare it to the LHS HmacKey
+        assert_eq!(derive_secret_out, HmacKey::new_from_bytes(&case1.derive_secret_out));
 
         // Test Derive-Key-Pair(derive_key_pair_seed) against known answer
         let (recip_public_key, recip_secret_key) =
-            X25519_SHA256_AES128GCM.derive_key_pair(&test_vec.derive_key_pair_seed).unwrap();
+            cs.derive_key_pair(&dbg!(test_vec.derive_key_pair_seed)).unwrap();
         let expected_recip_public_key = case1.derive_key_pair_pub;
         // Just compare the public keys
-        assert_eq!(
-            serialize_to_bytes(&recip_public_key).unwrap(),
-            serialize_to_bytes(&expected_recip_public_key).unwrap()
-        );
+        assert_serialized_eq!(recip_public_key, expected_recip_public_key);
 
         // Make sure the decryption of the ECIES ciphertext is indeed the given plaintext
         let derived_plaintext =
-            ecies_decrypt(&X25519_SHA256_AES128GCM, &recip_secret_key, case1.ecies_out.clone())
-                .unwrap();
+            ecies::decrypt(cs, &recip_secret_key, case1.ecies_out.clone()).unwrap();
         let expected_plaintext = test_vec.ecies_plaintext.clone();
         assert_eq!(&derived_plaintext, &expected_plaintext);
 
@@ -172,20 +174,17 @@ mod test {
             let key_material =
                 [recip_public_key.as_bytes(), test_vec.ecies_plaintext.as_slice()].concat();
             // key_pair = Derive-Key-Pair(key_material)
-            X25519_SHA256_AES128GCM.derive_key_pair(&key_material).unwrap()
+            cs.derive_key_pair(&key_material).unwrap()
         };
         // ciphertext = Ecies-Encrypt_(sender_secret_key,recip_public_key)(plaintext)
-        let derived_ciphertext = ecies_encrypt_with_scalar(
-            &X25519_SHA256_AES128GCM,
+        let derived_ciphertext = ecies::encrypt_with_scalar(
+            cs,
             &recip_public_key,
             test_vec.ecies_plaintext,
             sender_secret_key,
         )
         .unwrap();
         // Now serialize both ciphertexts and make sure they agree
-        assert_eq!(
-            serialize_to_bytes(&derived_ciphertext).unwrap(),
-            serialize_to_bytes(&case1.ecies_out).unwrap()
-        );
+        assert_serialized_eq!(derived_ciphertext, case1.ecies_out);
     }
 }

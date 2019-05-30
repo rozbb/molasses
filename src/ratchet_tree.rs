@@ -5,6 +5,7 @@ use crate::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
         ecies,
+        hmac::HmacKey,
         rng::CryptoRng,
     },
     error::Error,
@@ -12,7 +13,6 @@ use crate::{
     tree_math, utils,
 };
 
-use clear_on_drop::ClearOnDrop;
 use subtle::ConstantTimeEq;
 
 /// This is called the "node secret" (section 5.2). If `Hash` is the current ciphersuite's hash
@@ -22,19 +22,37 @@ pub(crate) struct NodeSecret(pub(crate) Vec<u8>);
 /// This is called the "path secret" (section 5.2). If `Hash` is the current ciphersuite's hash
 /// algorithm, this MUST have length equal to `Hash.length`.
 #[derive(Clone)]
-pub struct PathSecret(pub(crate) ClearOnDrop<Vec<u8>>);
+pub struct PathSecret(HmacKey);
 
 impl PathSecret {
     /// Wraps a `Vec<u8>` with a `ClearOnDrop` and makes it a `PathSecret`
-    pub(crate) fn new(v: Vec<u8>) -> PathSecret {
-        PathSecret(ClearOnDrop::new(v))
+    pub(crate) fn new_from_bytes(bytes: &[u8]) -> PathSecret {
+        PathSecret(HmacKey::new_from_bytes(bytes))
     }
 
     /// Generates a random `PathSecret` of the appropriate length
     pub fn new_from_random(cs: &'static CipherSuite, csprng: &mut dyn CryptoRng) -> PathSecret {
-        let mut buf = vec![0u8; cs.hash_alg.output_len];
-        csprng.fill_bytes(&mut buf);
-        PathSecret(ClearOnDrop::new(buf))
+        let key = HmacKey::new_from_random(cs.hash_impl, csprng);
+        PathSecret(key)
+    }
+
+    /// Returns the bytes-representation of the path secret. Do not use this method unless you
+    /// really really need to.
+    fn as_bytes(&self) -> &[u8] {
+        // Dig into the HMAC key and pull out a slice
+        (self.0).0.as_slice()
+    }
+
+    /// Returns the length of the bytes-representation of the path secret
+    pub(crate) fn len(&self) -> usize {
+        self.as_bytes().len()
+    }
+}
+
+// PathSecret --> HmacKey trivially
+impl From<PathSecret> for HmacKey {
+    fn from(p: PathSecret) -> HmacKey {
+        p.0
     }
 }
 
@@ -45,7 +63,8 @@ impl PathSecret {
 
 /// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
 /// corresponding private key.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 #[serde(rename = "RatchetTreeNode__enum_u8")]
 pub(crate) enum RatchetTreeNode {
     Blank,
@@ -136,7 +155,8 @@ impl RatchetTreeNode {
 }
 
 /// A left-balanced binary tree of `RatchetTreeNode`s
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct RatchetTree {
     #[serde(rename = "nodes__bound_u32")]
     pub(crate) nodes: Vec<RatchetTreeNode>,
@@ -296,11 +316,14 @@ impl RatchetTree {
     ///
     /// Returns: `Ok(())` iff everything is in agreement and the iterator is as long as the direct
     /// path. Returns some sort of `Error::ValidationError` otherwise.
-    pub(crate) fn validate_direct_path_public_keys<'a, I: Iterator<Item = &'a DhPublicKey>>(
+    pub(crate) fn validate_direct_path_public_keys<'a, I>(
         &self,
         start_idx: usize,
         mut expected_public_keys: I,
-    ) -> Result<(), Error> {
+    ) -> Result<(), Error>
+    where
+        I: Iterator<Item = &'a DhPublicKey>,
+    {
         let num_leaves = tree_math::num_leaves_in_tree(self.size());
 
         // Verify that the pubkeys in the message agree with our newly-derived pubkeys all the way
@@ -317,11 +340,10 @@ impl RatchetTree {
                         .ok_or(Error::ValidationError("Node on direct path has no public key"))?;
 
                     // Constant-time compare the pubkeys (I don't think CT is necessary, but I
-                    // ain't taking any chances)
-                    let expected_bytes = expected_pubkey.as_bytes();
-                    let existing_bytes = existing_pubkey.as_bytes();
-                    // The underlying value is 1 iff expected_bytes == existing_bytes
-                    if expected_bytes.ct_eq(existing_bytes).unwrap_u8() != 1 {
+                    // ain't taking any chances). The underlying value is 1 iff expected_bytes ==
+                    // existing_bytes
+                    let pubkeys_match: bool = expected_pubkey.ct_eq(existing_pubkey).into();
+                    if !pubkeys_match {
                         return Err(Error::ValidationError(
                             "Inconsistent public keys in Update message",
                         ));
@@ -389,10 +411,10 @@ impl RatchetTree {
                 // that are non-blank, by definition of "resolution"
                 let others_public_key = res_node.get_public_key().unwrap();
                 // Encrypt the parent's path secret with the resolution node's pubkey
-                let ciphertext = ecies::ecies_encrypt(
+                let ciphertext = ecies::encrypt(
                     cs,
                     others_public_key,
-                    (&*parent_path_secret.0).to_vec(), // TODO: Make this not copy secrets
+                    parent_path_secret.as_bytes().to_vec(), // TODO: Make this not copy secrets
                     csprng,
                 )?;
                 encrypted_path_secrets.push(ciphertext);
@@ -495,8 +517,9 @@ impl RatchetTree {
                     .ok_or(Error::TreeError("Malformed DirectPathMessage"))?;
 
                 // Finally, decrypt the thing and return the plaintext and common ancestor
-                let pt = ecies::ecies_decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
-                return Ok((PathSecret::new(pt), common_ancestor_idx));
+                let plaintext = ecies::decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
+                let path_secret = PathSecret::new_from_bytes(&plaintext);
+                return Ok((path_secret, common_ancestor_idx));
             }
         }
 
@@ -638,7 +661,7 @@ mod test {
         for i in 0..num_leaves {
             // This is the index of a leaf in the tree
             let tree_idx = 2 * i;
-            let initial_path_secret = PathSecret::new(vec![i as u8; 32]);
+            let initial_path_secret = PathSecret::new_from_bytes(&vec![i as u8; 32]);
             tree.propagate_new_path_secret(cs, initial_path_secret, tree_idx).unwrap();
         }
 
@@ -659,7 +682,7 @@ mod test {
         let sender_path_secret = {
             let mut buf = [0u8; 32];
             rng.fill_bytes(&mut buf);
-            PathSecret::new(buf.to_vec())
+            PathSecret::new_from_bytes(&buf)
         };
         let direct_path_msg = tree
             .encrypt_direct_path_secrets(cs, sender_tree_idx, sender_path_secret.clone(), &mut rng)

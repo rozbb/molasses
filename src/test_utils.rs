@@ -2,6 +2,8 @@ use crate::{
     credential::{self, BasicCredential, Credential, Roster},
     crypto::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        hash::Digest,
+        hmac::HmacKey,
         rng::CryptoRng,
         sig::{SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
@@ -18,8 +20,8 @@ use rand::seq::SliceRandom;
 macro_rules! assert_serialized_eq {
     ($left:expr, $right:expr $(,$fmt:tt)*) => {
         let (left_bytes, right_bytes) = (
-            tls_ser::serialize_to_bytes(&$left).unwrap(),
-            tls_ser::serialize_to_bytes(&$right).unwrap(),
+            crate::tls_ser::serialize_to_bytes(&$left).unwrap(),
+            crate::tls_ser::serialize_to_bytes(&$right).unwrap(),
         );
         assert_eq!(left_bytes, right_bytes, $($fmt,)*);
     };
@@ -86,7 +88,7 @@ fn random_tree<R: rand::Rng + CryptoRng>(
         let path_secret = {
             let mut buf = [0u8; 32];
             rng.fill_bytes(&mut buf);
-            PathSecret::new(buf.to_vec())
+            PathSecret::new_from_bytes(&buf)
         };
         tree.propagate_new_path_secret(cs, path_secret, idx)
             .expect("couldn't propagate random secrets in a random tree");
@@ -132,17 +134,10 @@ pub(crate) fn random_full_group_state<R: rand::Rng + CryptoRng>(
         rng.fill_bytes(&mut buf);
         buf
     };
-    // Make a random init_secret and transcript_hash of length Hash.length
-    let init_secret = {
-        let mut buf = vec![0u8; cs.hash_alg.output_len];
-        rng.fill_bytes(&mut buf);
-        buf
-    };
-    let transcript_hash = {
-        let mut buf = vec![0u8; cs.hash_alg.output_len];
-        rng.fill_bytes(&mut buf);
-        buf
-    };
+
+    // Make a random init_secret and a zero transcript_hash
+    let init_secret = HmacKey::new_from_random(cs.hash_impl, rng);
+    let transcript_hash = Digest::new_from_zeros(cs.hash_impl);
 
     let group_state = GroupState {
         cs: cs,

@@ -6,8 +6,10 @@ use crate::{
     credential::{Credential, Roster},
     crypto::{
         ciphersuite::CipherSuite,
-        ecies::{ecies_encrypt, EciesCiphertext},
+        ecies::{self, EciesCiphertext},
+        hash::Digest,
         hkdf,
+        hmac::{self, HmacKey},
         rng::CryptoRng,
         sig::{SigSecretKey, SignatureScheme},
     },
@@ -15,39 +17,68 @@ use crate::{
     handshake::{
         GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion, UserInitKey,
     },
-    ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
+    ratchet_tree::{NodeSecret, PathSecret, RatchetTree, RatchetTreeNode},
     tls_de::TlsDeserializer,
     tls_ser,
     upcast::{CryptoCtx, CryptoUpcast},
 };
 
-use clear_on_drop::ClearOnDrop;
 use serde::de::Deserialize;
+use subtle::ConstantTimeEq;
 
-/// This is called the `application_secret` in the MLS key schedule (section 5.9)
-pub(crate) struct ApplicationSecret(pub(crate) ClearOnDrop<Vec<u8>>);
+/// This is called the `application_secret` in the MLS key schedule
+pub(crate) struct ApplicationSecret(HmacKey);
 
-impl ApplicationSecret {
-    pub(crate) fn new(v: Vec<u8>) -> ApplicationSecret {
-        ApplicationSecret(ClearOnDrop::new(v))
+// HmacKey --> ApplicationSecret trivially
+impl From<HmacKey> for ApplicationSecret {
+    fn from(key: HmacKey) -> ApplicationSecret {
+        ApplicationSecret(key)
     }
 }
 
-/// This is called the `confirmation_key` in the MLS key schedule (section 5.9)
-pub(crate) struct ConfirmationKey(ClearOnDrop<Vec<u8>>);
-
-impl ConfirmationKey {
-    fn new(v: Vec<u8>) -> ConfirmationKey {
-        ConfirmationKey(ClearOnDrop::new(v))
+// ApplicationSecret --> HmacKey trivially
+impl From<ApplicationSecret> for HmacKey {
+    fn from(app_secret: ApplicationSecret) -> HmacKey {
+        app_secret.0
     }
 }
 
-/// This is called the `update_secret` in the MLS key schedule (section 5.9)
-pub(crate) struct UpdateSecret(ClearOnDrop<Vec<u8>>);
+/// This is called the `confirmation_key` in the MLS key schedule
+pub(crate) struct ConfirmationKey(HmacKey);
+
+// HmacKey --> ConfirmationKey trivially
+impl From<HmacKey> for ConfirmationKey {
+    fn from(key: HmacKey) -> ConfirmationKey {
+        ConfirmationKey(key)
+    }
+}
+
+// ConfirmationKey --> HmacKey trivially
+impl From<ConfirmationKey> for HmacKey {
+    fn from(conf_key: ConfirmationKey) -> HmacKey {
+        conf_key.0
+    }
+}
+
+/// This is called the `update_secret` in the MLS key schedule. It's used to derive epoch secrets
+/// in `update_epoch_secrets`.
+pub(crate) struct UpdateSecret(Vec<u8>);
 
 impl UpdateSecret {
-    fn new(v: Vec<u8>) -> UpdateSecret {
-        UpdateSecret(ClearOnDrop::new(v))
+    fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    // The update secret is all zeros after Add operations
+    fn new_from_zeros(num_zeros: usize) -> UpdateSecret {
+        UpdateSecret(vec![0u8; num_zeros])
+    }
+}
+
+// NodeSecret --> UpdateSecret by rewrapping the underlying vectors
+impl From<NodeSecret> for UpdateSecret {
+    fn from(n: NodeSecret) -> UpdateSecret {
+        UpdateSecret(n.0)
     }
 }
 
@@ -88,8 +119,7 @@ pub struct GroupState {
 
     // opaque transcript_hash<0..255>;
     /// Contains a running hash of `GroupOperation` messages that led to this state
-    #[serde(rename = "transcript_hash__bound_u8")]
-    pub(crate) transcript_hash: Vec<u8>,
+    pub(crate) transcript_hash: Digest,
 
     /// The member's position in the roster. This is also known as `signer_index`. It is `None` iff
     /// this `GroupState` is in a preliminary state, i.e., iff it is between a `Welcome` and `Add`
@@ -105,7 +135,7 @@ pub struct GroupState {
 
     /// The initial secret used to derive `application_secret` and `confirmation_key`
     #[serde(skip)]
-    pub(crate) init_secret: Vec<u8>,
+    pub(crate) init_secret: HmacKey,
 }
 
 // TODO: Write the method to create a one-man group from scratch. The spec says that
@@ -159,8 +189,8 @@ impl GroupState {
         tree: RatchetTree,
     ) -> GroupState {
         // Transcript hash and init secrets are both zeros to begin with
-        let transcript_hash = vec![0u8; cs.hash_alg.output_len];
-        let init_secret = vec![0u8; cs.hash_alg.output_len];
+        let transcript_hash = Digest::new_from_zeros(cs.hash_impl);
+        let init_secret = HmacKey::new_from_zeros(cs.hash_impl);
 
         GroupState {
             cs: cs,
@@ -299,43 +329,44 @@ impl GroupState {
     fn update_transcript_hash(&mut self, operation: &GroupOperation) -> Result<(), Error> {
         // Compute the new transcript hash
         // From section 5.7: transcript_hash_[n] = Hash(transcript_hash_[n-1] || operation)
-        let operation_bytes = tls_ser::serialize_to_bytes(operation)?;
-        let new_transcript_hash = {
-            let mut ctx = ring::digest::Context::new(self.cs.hash_alg);
-            ctx.update(&self.transcript_hash);
-            ctx.update(&operation_bytes);
-            ctx.finish().as_ref().to_vec()
+        self.transcript_hash = {
+            let mut ctx = self.cs.hash_impl.new_context();
+            ctx.feed_bytes(self.transcript_hash.as_bytes());
+            ctx.feed_serializable(&operation)?;
+            ctx.finalize()
         };
-        self.transcript_hash = new_transcript_hash;
 
         Ok(())
     }
 
-    /// Derives and sets the next generation of Group secrets as per section 5.9 in the spec.
-    /// Specifically, this sets the init secret of the group, and returns the confirmation key and
-    /// application secret. This is done this way because the latter two values must be used
+    /// Derives and sets the next generation of Group secrets as per the "Key Schedule" section of
+    /// the spec. Specifically, this sets the init secret of the group, and returns the confirmation
+    /// key and application secret. This is done this way because the latter two values must be used
     /// immediately in `process_handshake`.
     fn update_epoch_secrets(
         &mut self,
         update_secret: &UpdateSecret,
     ) -> Result<(ApplicationSecret, ConfirmationKey), Error> {
+        let hash_impl = self.cs.hash_impl;
+
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
-        let salt = hkdf::prk_from_bytes(self.cs.hash_alg, &self.init_secret);
-        let epoch_secret: ring::hmac::SigningKey = hkdf::hkdf_extract(&salt, &*update_secret.0);
+        let ikm = update_secret.as_bytes();
+        let epoch_secret: HmacKey = hkdf::extract(hash_impl, &self.init_secret, ikm);
 
-        let serialized_self = tls_ser::serialize_to_bytes(self)?;
+        // Set my new init_secret first. We don't have to worry about this update affecting
+        // subsequent serializations of this GroupState object in the lines below, since
+        // init_secret is not included in the serialized form of a GroupState.
 
-        // Set my new init_secret first
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupState_[n])
-        self.init_secret = hkdf::derive_secret(&epoch_secret, b"init", &serialized_self);
+        self.init_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"init", self)?;
 
         // application_secret = Derive-Secret(epoch_secret, "app", GroupState_[n])
-        let application_secret = hkdf::derive_secret(&epoch_secret, b"app", &serialized_self);
+        let application_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"app", self)?;
 
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupState_[n])
-        let confirmation_key = hkdf::derive_secret(&epoch_secret, b"confirm", &serialized_self);
+        let confirmation_key = hkdf::derive_secret(hash_impl, &epoch_secret, b"confirm", self)?;
 
-        Ok((ApplicationSecret::new(application_secret), ConfirmationKey::new(confirmation_key)))
+        Ok((application_secret.into(), confirmation_key.into()))
     }
 
     /// Converts the index of a roster entry into the index of the corresponding leaf node of the
@@ -368,7 +399,7 @@ impl GroupState {
 
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree."
-        Ok(UpdateSecret::new(root_node_secret.0))
+        Ok(UpdateSecret::from(root_node_secret))
     }
 
     /// Performs and validates an incoming (i.e., one we did not generate) Update operation on the
@@ -485,7 +516,7 @@ impl GroupState {
 
         // "The update secret resulting from this change is the secret for the root node of the
         // ratchet tree after the second step". This will be our return value.
-        let update_secret = UpdateSecret::new(root_node_secret.0);
+        let update_secret = UpdateSecret::from(root_node_secret);
 
         // Before blank out the direct path of the removed node, check that all the public keys in
         // the message match the ones we derived
@@ -556,7 +587,10 @@ impl GroupState {
             return Err(Error::ValidationError("Invalid insertion index in Add operation"));
         }
 
-        if prior_welcome_info_hash.0.as_ref() != add.welcome_info_hash.as_slice() {
+        // Constant-time compare the WelcomeInfo hashes (no reason for constant-time other than it
+        // feels icky not to do it)
+        let hashes_match: bool = prior_welcome_info_hash.ct_eq(&add.welcome_info_hash).into();
+        if !hashes_match {
             return Err(Error::ValidationError("Invalid WelcomeInfo hash in Add operation"));
         }
 
@@ -658,7 +692,7 @@ impl GroupState {
 
         // "The update secret resulting from this change is an all-zero octet string of length
         // Hash.length."
-        Ok(UpdateSecret::new(vec![0u8; self.cs.hash_alg.output_len]))
+        Ok(UpdateSecret::new_from_zeros(self.cs.hash_impl.digest_size()))
     }
 
     /// Processes the given `Handshake` and, if successful, produces a new `GroupState` and
@@ -730,17 +764,16 @@ impl GroupState {
                 // just the state of this group
                 let prior_welcome_info_hash = {
                     let prior_welcome_info = self.as_welcome_info();
-                    let serialized = tls_ser::serialize_to_bytes(&prior_welcome_info)?;
-                    let digest = ring::digest::digest(self.cs.hash_alg, &serialized);
-                    WelcomeInfoHash(digest)
+                    let digest = self.cs.hash_impl.hash_serializable(&prior_welcome_info)?;
+                    WelcomeInfoHash::from(digest)
                 };
                 new_state.process_add_op(add, &prior_welcome_info_hash)?
             }
+            // The spec hasn't weighed on group Init yet
             GroupOperation::Init(_) => unimplemented!(),
         };
 
-        let (app_secret, confirmation_key_bytes) =
-            new_state.update_epoch_secrets(&update_secret)?;
+        let (app_secret, confirmation_key) = new_state.update_epoch_secrets(&update_secret)?;
 
         //
         // Now validate the new state. If it's valid, we set the current state to the new one.
@@ -752,21 +785,21 @@ impl GroupState {
         // Check the signature. From section 7 of the spec:
         // signature_data = GroupState.transcript_hash
         // Handshake.signature = Sign(identity_key, signature_data)
-        let sig_data = &new_state.transcript_hash;
+        let sig_data = new_state.transcript_hash.as_bytes();
         sender_ss.verify(sender_public_key, sig_data, &handshake.signature)?;
 
         // Check the MAC. From section 7 of the spec:
         // confirmation_data = GroupState.transcript_hash || Handshake.signature
         // Handshake.confirmation = HMAC(confirmation_key, confirmation_data)
-        let confirmation_key =
-            ring::hmac::VerificationKey::new(new_state.cs.hash_alg, &*confirmation_key_bytes.0);
-        let confirmation_data =
-            [new_state.transcript_hash.as_slice(), handshake.signature.to_bytes().as_slice()]
+        let confirmation_data: Vec<u8> =
+            [new_state.transcript_hash.as_bytes().to_vec(), handshake.signature.as_bytes()]
                 .concat();
-        // It's okay to reveal that the MAC is incorrect, because the ring::hmac::verify runs in
-        // constant time
-        ring::hmac::verify(&confirmation_key, &confirmation_data, &handshake.confirmation)
-            .map_err(|_| Error::SignatureError("Handshake confirmation is invalid"))?;
+        hmac::verify(
+            self.cs.hash_impl,
+            &confirmation_key.0,
+            &confirmation_data,
+            &handshake.confirmation,
+        )?;
 
         // All is well. Make the new application key chain and send it along
         let app_key_chain = ApplicationKeyChain::from_application_secret(&new_state, app_secret);
@@ -853,7 +886,7 @@ impl GroupState {
         let add = GroupAdd {
             roster_index: new_roster_index,
             init_key: init_key,
-            welcome_info_hash: prior_welcome_info_hash.0.as_ref().to_vec(),
+            welcome_info_hash: prior_welcome_info_hash.clone(),
         };
         // Apply the Add, log the operation in the transcript hash, increment the epoch, update
         // the epoch secrets, and make the new ApplicationKeyChain
@@ -937,21 +970,18 @@ impl GroupState {
     ) -> Result<Handshake, Error> {
         // signature = Sign(identity_key, GroupState.transcript_hash)
         let my_ss = self.get_signature_scheme();
-        let signature = my_ss.sign(&self.identity_key, &self.transcript_hash);
+        let signature = my_ss.sign(&self.identity_key, self.transcript_hash.as_bytes());
 
-        // TODO: Use application_secret for application key schedule
         // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
 
         // confirmation = HMAC(confirmation_key, confirmation_data)
         // where confirmation_data = GroupState.transcript_hash || Handshake.signature
         let confirmation = {
-            let mac_key = ring::hmac::SigningKey::new(self.cs.hash_alg, &*confirmation_key.0);
+            let mut ctx = hmac::new_signing_context(self.cs.hash_impl, &confirmation_key.0);
+            ctx.feed_bytes(self.transcript_hash.as_bytes());
+            ctx.feed_bytes(&signature.as_bytes());
 
-            let mut ctx = ring::hmac::SigningContext::with_key(&mac_key);
-            ctx.update(&self.transcript_hash);
-            ctx.update(&signature.to_bytes());
-
-            ctx.sign()
+            ctx.finalize()
         };
 
         // Safely unwrap the roster index. A preliminary GroupState is one that has just been
@@ -965,7 +995,7 @@ impl GroupState {
             operation: operation,
             signer_index: roster_index,
             signature: signature,
-            confirmation: confirmation.as_ref().to_vec(),
+            confirmation: confirmation,
         };
         Ok(handshake)
     }
@@ -1055,7 +1085,8 @@ impl GroupState {
 
 /// Contains everything a new user needs to know to join a group. This is always followed by an
 /// `Add` operation.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 pub(crate) struct WelcomeInfo {
     // ProtocolVersion version;
     /// The protocol version
@@ -1082,21 +1113,36 @@ pub(crate) struct WelcomeInfo {
 
     // opaque transcript_hash<0..255>;
     /// Contains a running hash of `GroupOperation` messages that led to this state
-    #[serde(rename = "transcript_hash__bound_u8")]
-    transcript_hash: Vec<u8>,
+    transcript_hash: Digest,
 
     // opaque init_secret<0..255>;
     /// The initial secret used to derive all the rest
-    #[serde(rename = "init_secret__bound_u8")]
-    init_secret: Vec<u8>,
+    init_secret: HmacKey,
 }
 
-/// Represents the hash of a `WelcomeInfo` object
 // This is public-facing
-pub struct WelcomeInfoHash(ring::digest::Digest);
+/// Represents the hash of a `WelcomeInfo` object
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+pub struct WelcomeInfoHash(Digest);
+
+// Digest --> WelcomeInfoHash trivially
+impl From<Digest> for WelcomeInfoHash {
+    fn from(d: Digest) -> WelcomeInfoHash {
+        WelcomeInfoHash(d)
+    }
+}
+
+// Do constant-time comparison by comparing the underlying digests
+impl subtle::ConstantTimeEq for WelcomeInfoHash {
+    fn ct_eq(&self, other: &WelcomeInfoHash) -> subtle::Choice {
+        self.0.ct_eq(&other.0)
+    }
+}
 
 /// This contains an encrypted `WelcomeInfo` for new group members
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
 pub struct Welcome {
     // opaque user_init_key_id<0..255>;
     #[serde(rename = "user_init_key_id__bound_u8")]
@@ -1121,7 +1167,7 @@ impl Welcome {
 
         // Serialize and encrypt the WelcomeInfo
         let serialized_welcome_info = tls_ser::serialize_to_bytes(welcome_info)?;
-        let ciphertext = ecies_encrypt(cs, &public_key, serialized_welcome_info, csprng)?;
+        let ciphertext = ecies::encrypt(cs, &public_key, serialized_welcome_info, csprng)?;
 
         // All done
         Ok(Welcome {
@@ -1150,16 +1196,12 @@ impl Welcome {
         // Take the hash of the WelcomeInfo. This is necessary if the caller wants to make an Add.
         // The caller can't derive it themselves, because we wrap the WelcomeInfo in a Welcome in
         // the next step.
-        let welcome_info_hash = {
-            let serialized = tls_ser::serialize_to_bytes(&welcome_info)?;
-            let digest = ring::digest::digest(group_state.cs.hash_alg, &serialized);
-            WelcomeInfoHash(digest)
-        };
+        let welcome_info_hash = group_state.cs.hash_impl.hash_serializable(&welcome_info)?;
 
         // Encrypt it up
         let welcome = Welcome::from_welcome_info(&group_state.cs, init_key, &welcome_info, csprng)?;
 
-        Ok((welcome, welcome_info_hash))
+        Ok((welcome, welcome_info_hash.into()))
     }
 
     /// Decrypts the `Welcome` with the given `UserInitKey`
@@ -1188,8 +1230,7 @@ impl Welcome {
             .ok_or(Error::ValidationError("Can't decrypt Welcome without a private key"))?;
 
         // Decrypt the WelcomeInfo, deserialize it, upcast it, and return it
-        let welcome_info_bytes =
-            crate::crypto::ecies::ecies_decrypt(cs, dh_private_key, self.encrypted_welcome_info)?;
+        let welcome_info_bytes = ecies::decrypt(cs, dh_private_key, self.encrypted_welcome_info)?;
         let welcome_info = {
             let mut cursor = welcome_info_bytes.as_slice();
             let mut deserializer = TlsDeserializer::from_reader(&mut cursor);
@@ -1228,6 +1269,8 @@ mod test {
         credential::Roster,
         crypto::{
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+            hash::Digest,
+            hmac::HmacKey,
             sig::{SignatureScheme, ED25519_IMPL},
         },
         error::Error,
@@ -1236,7 +1279,6 @@ mod test {
         ratchet_tree::RatchetTree,
         test_utils,
         tls_de::TlsDeserializer,
-        tls_ser,
         upcast::{CryptoCtx, CryptoUpcast},
     };
 
@@ -1305,8 +1347,7 @@ mod test {
         #[serde(rename = "roster__bound_u32")]
         roster: Roster,
         tree: RatchetTree,
-        #[serde(rename = "transcript_hash__bound_u8")]
-        pub(crate) transcript_hash: Vec<u8>,
+        pub(crate) transcript_hash: Digest,
     }
 
     impl CryptoUpcast for TestGroupState {
@@ -1330,7 +1371,7 @@ mod test {
             transcript_hash: tgs.transcript_hash,
             roster_index: Some(0),
             initializing_user_init_key: None,
-            init_secret: Vec::new(),
+            init_secret: HmacKey::new_from_zeros(cs.hash_impl),
         }
     }
 
@@ -1419,14 +1460,20 @@ mod test {
         // Keep deriving new secrets with respect to the given update secret. Check all the
         // resulting keys against the test vector.
         for epoch in case1.epochs.into_iter() {
-            let update_secret = UpdateSecret::new(epoch.update_secret);
+            let update_secret = UpdateSecret(epoch.update_secret);
             let (app_secret, conf_key) = group_state.update_epoch_secrets(&update_secret).unwrap();
 
+            // Wrap all the inputs in HmacKeys so we can compare them to other HmacKeys
+            let epoch_application_secret = HmacKey::new_from_bytes(&epoch.application_secret);
+            let epoch_confirmation_key = HmacKey::new_from_bytes(&epoch.confirmation_key);
+            let epoch_init_secret = HmacKey::new_from_bytes(&epoch.init_secret);
+
             // We don't save the derived epoch_secret anywhere, since it's just an intermediate
-            // value. We do test all the things derived from it, though.
-            assert_eq!(&*app_secret.0, epoch.application_secret.as_slice());
-            assert_eq!(&*conf_key.0, epoch.confirmation_key.as_slice());
-            assert_eq!(&*group_state.init_secret, epoch.init_secret.as_slice());
+            // value. We do test all the things derived from it, though. We convert the LHS to
+            // HmacKeys so we can compare them to the RHS.
+            assert_eq!(HmacKey::from(app_secret), epoch_application_secret);
+            assert_eq!(HmacKey::from(conf_key), epoch_confirmation_key);
+            assert_eq!(group_state.init_secret, epoch_init_secret);
 
             // Increment the state epoch every time we do a key derivation. This is what happens in
             // the actual protocol.
