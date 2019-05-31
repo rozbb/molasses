@@ -6,6 +6,7 @@ use crate::{
     credential::{Credential, Roster},
     crypto::{
         ciphersuite::CipherSuite,
+        dh::DhPrivateKey,
         ecies::{self, EciesCiphertext},
         hash::Digest,
         hkdf,
@@ -147,20 +148,23 @@ impl GroupState {
     ///
     /// Returns: `Ok(group_state)` on success. If there was an issue creating an ephemeral private
     /// key, returns some sort of `Error`.
-    pub fn new_singleton_group(
+    pub fn new_singleton_group<R>(
         cs: &'static CipherSuite,
         protocol_version: ProtocolVersion,
         identity_key: SigSecretKey,
         group_id: Vec<u8>,
         my_credential: Credential,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<GroupState, Error> {
+        csprng: &mut R,
+    ) -> Result<GroupState, Error>
+    where
+        R: CryptoRng,
+    {
         // Turn the credential into a singleton roster
         let roster = Roster(vec![Some(my_credential)]);
         let my_roster_index = 0u32;
 
         // Make an ephemeral keypair and turn it into a tree
-        let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
+        let my_ephemeral_secret = DhPrivateKey::new_from_random(cs.dh_impl, csprng)?;
         let my_node = RatchetTreeNode::new_from_private_key(cs, my_ephemeral_secret);
         let tree = RatchetTree {
             nodes: vec![my_node],
@@ -816,11 +820,14 @@ impl GroupState {
     /// `group_op` is the raw `GroupOperation` object, and `confirmation_key` is the derived
     /// confirmation key we'll use to compute the MAC in the `Handshake` that will end up
     /// containing the `GroupOperation`.
-    pub(crate) fn create_and_apply_update_op(
+    pub(crate) fn create_and_apply_update_op<R>(
         &self,
         new_path_secret: PathSecret,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
+        csprng: &mut R,
+    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
+    where
+        R: CryptoRng,
+    {
         // Ugh, a full group state clone, I know
         let mut new_group_state = self.clone();
 
@@ -917,12 +924,15 @@ impl GroupState {
     // Technically, there's no reason that this has to mutate the GroupState, since GroupStates can
     // consume the Remove ops they produce (unlike Updates). But for consistency with the other
     // create_*_op functions, this should mutate the GroupState too.
-    pub(crate) fn create_and_apply_remove_op(
+    pub(crate) fn create_and_apply_remove_op<R>(
         &self,
         removed_roster_index: u32,
         new_path_secret: PathSecret,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
+        csprng: &mut R,
+    ) -> Result<(GroupState, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
+    where
+        R: CryptoRng,
+    {
         // Ugh, a full group state clone, I know
         let mut new_group_state = self.clone();
 
@@ -1018,11 +1028,14 @@ impl GroupState {
     /// group state after the update has been applied, `app_key_chain` is the newly derived
     /// application key schedule object
     // This is just a wrapper around self.create_and_apply_update_op and self.create_handshake
-    pub fn create_and_apply_update_handshake(
+    pub fn create_and_apply_update_handshake<R>(
         &self,
         new_path_secret: PathSecret,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
+        csprng: &mut R,
+    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error>
+    where
+        R: CryptoRng,
+    {
         let (new_group_state, app_key_chain, update_op, conf_key) =
             self.create_and_apply_update_op(new_path_secret, csprng)?;
         let prior_epoch = self.epoch;
@@ -1066,12 +1079,15 @@ impl GroupState {
     /// message representing the specified remove operation, and `app_key_chain` is the newly
     /// derived application key schedule object.
     // This is just a wrapper around self.create_and_apply_remove_op and self.create_handshake
-    pub fn create_and_apply_remove_handshake(
+    pub fn create_and_apply_remove_handshake<R>(
         &self,
         removed_roster_index: u32,
         new_path_secret: PathSecret,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error> {
+        csprng: &mut R,
+    ) -> Result<(Handshake, GroupState, ApplicationKeyChain), Error>
+    where
+        R: CryptoRng,
+    {
         let (new_group_state, app_key_chain, remove_op, conf_key) =
             self.create_and_apply_remove_op(removed_roster_index, new_path_secret, csprng)?;
         let prior_epoch = self.epoch;
@@ -1154,12 +1170,15 @@ pub struct Welcome {
 impl Welcome {
     /// Packages up a `WelcomeInfo` object with a preferred cipher suite, and encrypts it to the
     /// specified `UserInitKey` (under the appropriate public key)
-    fn from_welcome_info(
+    fn from_welcome_info<R>(
         cs: &'static CipherSuite,
         init_key: &UserInitKey,
         welcome_info: &WelcomeInfo,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<Welcome, Error> {
+        csprng: &mut R,
+    ) -> Result<Welcome, Error>
+    where
+        R: CryptoRng,
+    {
         // Get the public key from the supplied UserInitKey corresponding to the given cipher suite
         let public_key = init_key
             .get_public_key(cs)?
@@ -1185,11 +1204,14 @@ impl Welcome {
     /// underlying `WelcomeInfo` object. The hash is relevant for `Add` operations.
     // This is a convenient wrapper around GroupState::as_welcome_info and
     // Welcome::from_welcome_info
-    pub fn from_group_state(
+    pub fn from_group_state<R>(
         group_state: &GroupState,
         init_key: &UserInitKey,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<(Welcome, WelcomeInfoHash), Error> {
+        csprng: &mut R,
+    ) -> Result<(Welcome, WelcomeInfoHash), Error>
+    where
+        R: CryptoRng,
+    {
         // Make a WelcomeInfo from the group
         let welcome_info = group_state.as_welcome_info();
 

@@ -200,6 +200,9 @@ trait SignatureSchemeInterface {
 
     fn secret_key_from_bytes(&self, bytes: &[u8]) -> Result<SigSecretKey, Error>;
 
+    // This has to take a dyn CryptoRng because SignatureSchemeInterface is used as a trait object
+    // inside SignatureScheme. Trait objects can't have associated types, associated constants, or
+    // generic methods.
     fn secret_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<SigSecretKey, Error>;
 
     fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature;

@@ -108,14 +108,17 @@ struct PartialUserInitKey<'a> {
 impl UserInitKey {
     /// Generates a new `UserInitKey` with the key ID, credential, ciphersuites, and supported
     /// versions. The identity key is needed to sign the resulting structure.
-    pub fn new_from_random(
+    pub fn new_from_random<R>(
         identity_key: &SigSecretKey,
         user_init_key_id: Vec<u8>,
         credential: Credential,
         mut cipher_suites: Vec<&'static CipherSuite>,
         supported_versions: Vec<ProtocolVersion>,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<UserInitKey, Error> {
+        csprng: &mut R,
+    ) -> Result<UserInitKey, Error>
+    where
+        R: CryptoRng,
+    {
         // Check the ciphersuite list for duplicates. We don't like this
         let old_cipher_suite_len = cipher_suites.len();
         cipher_suites.dedup();
@@ -136,8 +139,8 @@ impl UserInitKey {
 
         // Collect a keypair for every ciphersuite in the given vector
         for cs in cipher_suites.iter() {
-            let scalar = cs.dh_impl.scalar_from_random(csprng)?;
-            let public_key = cs.dh_impl.derive_public_key(&scalar);
+            let scalar = DhPrivateKey::new_from_random(cs.dh_impl, csprng)?;
+            let public_key = DhPublicKey::new_from_private_key(cs.dh_impl, &scalar);
 
             init_keys.push(public_key);
             private_keys.push(scalar);

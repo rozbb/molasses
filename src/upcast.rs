@@ -75,7 +75,7 @@ impl CryptoUpcast for DhPublicKey {
         let raw = enum_variant!(self, DhPublicKey::Raw);
         match ctx.cs {
             Some(cs) => {
-                *self = cs.dh_impl.public_key_from_bytes(raw.0.as_slice())?;
+                *self = DhPublicKey::new_from_bytes(cs.dh_impl, raw.0.as_slice())?;
                 Ok(*ctx)
             }
             None => Err(Error::UpcastError("Need a CipherSuite to upcast a DhPublicKey")),

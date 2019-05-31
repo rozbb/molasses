@@ -1,10 +1,10 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
-/// A singleton object representing the X25519 DH scheme
-pub(crate) const X25519_IMPL: X25519 = X25519;
+/// A type representing the X25519 DH scheme
+pub(crate) const X25519_IMPL: DhScheme = DhScheme(&X25519);
 
-pub(crate) const P256_IMPL: DummyP256 = DummyP256;
+pub(crate) const P256_IMPL: DhScheme = DhScheme(&DummyP256);
 
 const X25519_POINT_SIZE: usize = 32;
 const X25519_SCALAR_SIZE: usize = 32;
@@ -16,6 +16,34 @@ const X25519_SCALAR_SIZE: usize = 32;
 pub(crate) enum DhPrivateKey {
     /// A scalar value in Curve25519
     X25519PrivateKey(x25519_dalek::StaticSecret),
+}
+
+impl DhPrivateKey {
+    // This just passes through to DhSchemeInterface::private_key_from_bytes
+    /// Makes a `DhPrivateKey` from the given bytes
+    ///
+    /// Requires: `bytes.len() == scheme.private_key_size()`
+    ///
+    /// Returns: `Ok(private_key)` on success. Otherwise, if `bytes.len() !=
+    /// scheme.private_key_size()`, returns `Error::DhError`.
+    pub(crate) fn new_from_bytes(scheme: &DhScheme, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
+        scheme.0.private_key_from_bytes(bytes)
+    }
+
+    // This just passes through to DhSchemeInterface::private_key_from_random
+    /// Generates a random private key
+    ///
+    /// Returns: `Ok(private_key)` on success. Otherwise, if something goes wrong with the RNG, it
+    /// returns `Error::OutOfEntropy`.
+    pub(crate) fn new_from_random<R>(
+        scheme: &DhScheme,
+        csprng: &mut R,
+    ) -> Result<DhPrivateKey, Error>
+    where
+        R: CryptoRng,
+    {
+        scheme.0.private_key_from_random(csprng)
+    }
 }
 
 impl core::fmt::Debug for DhPrivateKey {
@@ -73,6 +101,26 @@ impl DhPublicKey {
             DhPublicKey::Raw(p) => p.0.as_slice(),
         }
     }
+
+    // This just passes through to DhSchemeInterface::public_key_from_bytes
+    /// Makes a `DhPublicKey` from the given bytes
+    ///
+    /// Requires: `bytes.len() == scheme.public_key_size()`
+    ///
+    /// Returns: `Ok(public_key)` on success. Otherwise, if the above requirement is not
+    /// met,returns `Error::DhError`.
+    pub(crate) fn new_from_bytes(scheme: &DhScheme, bytes: &[u8]) -> Result<DhPublicKey, Error> {
+        scheme.0.public_key_from_bytes(bytes)
+    }
+
+    // This just passes through to DhSchemeInterface::public_key_from_private_key
+    /// Derives a public key from the given private key
+    pub(crate) fn new_from_private_key(
+        scheme: &DhScheme,
+        private_key: &DhPrivateKey,
+    ) -> DhPublicKey {
+        scheme.0.public_key_from_private_key(private_key)
+    }
 }
 
 // This is probably not necessary, but why not
@@ -82,32 +130,71 @@ impl subtle::ConstantTimeEq for DhPublicKey {
     }
 }
 
+// Why do we do this? Firstly, it's a pain to write &'static dyn DhSchemeInterface everywhere.
+// Secondly, I would like to support methods like AeadKey::new_from_bytes which would take in an
+// DhSchemeInterface, but this leaves two ways of instantiating a DhPublicKey: either with
+// new_from_bytes or with DhSchemeInterface::public_key_from_bytes. I think there should only be
+// one way of doing this, so we'll wrap the trait object and not export the trait. Thirdly, this is
+// in keeping with the design of SignatureScheme. Reasoning for that mess can be found in sig.rs.
+pub(crate) struct DhScheme(&'static dyn DhSchemeInterface);
+
+impl DhScheme {
+    // This just passes through to DhSchemeInterface::diffie_hellman
+    /// Computes `privkey * Pubkey` where `privkey` is your local secret (a scalar) and `Pubkey` is
+    /// someone's public key (a curve point)
+    ///
+    /// Returns: `Ok(shared_secret)` on success. If the computed shared secret is all zeros,
+    /// returns an `Error::DhError`, as required by the spec
+    pub(crate) fn diffie_hellman(
+        &self,
+        privkey: &DhPrivateKey,
+        pubkey: &DhPublicKey,
+    ) -> Result<DhSharedSecret, Error> {
+        self.0.diffie_hellman(privkey, pubkey)
+    }
+}
+
 /// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
 /// etc.
-pub(crate) trait DiffieHellman {
+trait DhSchemeInterface {
+    fn public_key_size(&self) -> usize;
+
+    fn private_key_size(&self) -> usize;
+
     fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPublicKey, Error>;
+
+    fn public_key_from_private_key(&self, scalar: &DhPrivateKey) -> DhPublicKey;
 
     fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error>;
 
     // This has to take a dyn CryptoRng because DiffieHellman is itself a trait object inside a
     // CipherSuite. Trait objects can't have associated types, associated constants, or generic
     // methods.
-    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error>;
+    fn private_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error>;
 
-    fn derive_public_key(&self, scalar: &DhPrivateKey) -> DhPublicKey;
-
-    fn diffie_hellman(&self, privkey: &DhPrivateKey, pubkey: &DhPublicKey) -> DhSharedSecret;
+    fn diffie_hellman(
+        &self,
+        privkey: &DhPrivateKey,
+        pubkey: &DhPublicKey,
+    ) -> Result<DhSharedSecret, Error>;
 }
 
 /// This represents the X25519 Diffie-Hellman key agreement protocol. Notably, it implements
 /// `DiffieHellman`.
 pub(crate) struct X25519;
 
-// TODO: Urgent: Do the zero checks that the specification requires
-// TODO: Change "point" to "public key" and "scalar" to "private key"
+impl DhSchemeInterface for X25519 {
+    /// Returns the size of a point
+    fn public_key_size(&self) -> usize {
+        X25519_POINT_SIZE
+    }
 
-impl DiffieHellman for X25519 {
+    /// Returns the size of a scalar
+    fn private_key_size(&self) -> usize {
+        X25519_SCALAR_SIZE
+    }
+
     /// Makes a `DhPublicKey` from the given bytes
     ///
     /// Requires: `bytes.len() == X25519_POINT_SIZE == 32`
@@ -128,11 +215,19 @@ impl DiffieHellman for X25519 {
         }
     }
 
+    /// Calculates `scalar * P`, where `P` is the standard X25519 basepoint. This function is used
+    /// for creating public keys for DHE.
+    fn public_key_from_private_key(&self, scalar: &DhPrivateKey) -> DhPublicKey {
+        let scalar = enum_variant!(scalar, DhPrivateKey::X25519PrivateKey);
+        let public_key: x25519_dalek::PublicKey = scalar.into();
+        DhPublicKey::X25519PublicKey(public_key)
+    }
+
     /// Uses the given bytes as a scalar in GF(2^255 - 19)
     ///
     /// Requires: `bytes.len() == 32`
     ///
-    /// Returns: `Ok(scalar)` on success. Otherwise, if `bytes.len() != 32`, returns
+    /// Returns: `Ok(private_key)` on success. Otherwise, if `bytes.len() != 32`, returns
     /// `Error::DhError`.
     fn private_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPrivateKey, Error> {
         if bytes.len() != X25519_SCALAR_SIZE {
@@ -144,37 +239,51 @@ impl DiffieHellman for X25519 {
         }
     }
 
-    /// Generates a random scalar value
+    /// Generates a random private key
     ///
-    /// Returns: `Ok(scalar)` on success. Otherwise, if something goes wrong with the RNG, it
+    /// Returns: `Ok(private_key)` on success. Otherwise, if something goes wrong with the RNG, it
     /// returns `Error::OutOfEntropy`.
-    fn scalar_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
+    fn private_key_from_random(&self, csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
         let mut box_rng = Box::new(csprng);
         Ok(DhPrivateKey::X25519PrivateKey(x25519_dalek::StaticSecret::new(&mut box_rng)))
     }
 
-    /// Calculates `scalar * P`, where `P` is the standard X25519 basepoint. This function is used
-    /// for creating public keys for DHE.
-    fn derive_public_key(&self, scalar: &DhPrivateKey) -> DhPublicKey {
-        let scalar = enum_variant!(scalar, DhPrivateKey::X25519PrivateKey);
-        let public_key: x25519_dalek::PublicKey = scalar.into();
-        DhPublicKey::X25519PublicKey(public_key)
-    }
-
     /// Computes `privkey * Pubkey` where `privkey` is your local secret (a scalar) and `Pubkey` is
     /// someone's public key (a curve point)
-    fn diffie_hellman(&self, privkey: &DhPrivateKey, pubkey: &DhPublicKey) -> DhSharedSecret {
+    ///
+    /// Returns: `Ok(shared_secret)` on success. If the computed shared secret is all zeros,
+    /// returns an `Error::DhError`, as required by the spec
+    fn diffie_hellman(
+        &self,
+        privkey: &DhPrivateKey,
+        pubkey: &DhPublicKey,
+    ) -> Result<DhSharedSecret, Error> {
         let privkey = enum_variant!(privkey, DhPrivateKey::X25519PrivateKey);
         let pubkey = enum_variant!(pubkey, DhPublicKey::X25519PublicKey);
 
         let ss = privkey.diffie_hellman(&pubkey);
-        DhSharedSecret::X25519SharedSecret(ss)
+
+        // Make sure we don't get all zeros
+        if ss.as_bytes() == &[0u8; 32] {
+            Err(Error::DhError("DH resulted in shared secret of all zeros"))
+        } else {
+            // We're good
+            Ok(DhSharedSecret::X25519SharedSecret(ss))
+        }
     }
 }
 
 pub(crate) struct DummyP256;
 
-impl DiffieHellman for DummyP256 {
+impl DhSchemeInterface for DummyP256 {
+    fn public_key_size(&self) -> usize {
+        65
+    }
+
+    fn private_key_size(&self) -> usize {
+        32
+    }
+
     fn public_key_from_bytes(&self, bytes: &[u8]) -> Result<DhPublicKey, Error> {
         if bytes.len() != 65 {
             Err(Error::DhError("P256 DH public key isn't 65 bytes long"))
@@ -184,22 +293,26 @@ impl DiffieHellman for DummyP256 {
         }
     }
 
+    fn public_key_from_private_key(&self, _scalar: &DhPrivateKey) -> DhPublicKey {
+        unimplemented!()
+    }
+
     fn private_key_from_bytes(&self, _bytes: &[u8]) -> Result<DhPrivateKey, Error> {
         unimplemented!()
     }
 
-    // This has to take a dyn CryptoRng because DiffieHellman is itself a trait object inside a
-    // CipherSuite. Trait objects can't have associated types, associated constants, or generic
+    // This has to take a dyn CryptoRng because DhSchemeInterface is used as a trait object inside
+    // DhScheme. Trait objects can't have associated types, associated constants, or generic
     // methods.
-    fn scalar_from_random(&self, _csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
+    fn private_key_from_random(&self, _csprng: &mut dyn CryptoRng) -> Result<DhPrivateKey, Error> {
         unimplemented!()
     }
 
-    fn derive_public_key(&self, _scalar: &DhPrivateKey) -> DhPublicKey {
-        unimplemented!()
-    }
-
-    fn diffie_hellman(&self, _privkey: &DhPrivateKey, _pubkey: &DhPublicKey) -> DhSharedSecret {
+    fn diffie_hellman(
+        &self,
+        _privkey: &DhPrivateKey,
+        _pubkey: &DhPublicKey,
+    ) -> Result<DhSharedSecret, Error> {
         unimplemented!()
     }
 }
@@ -214,24 +327,27 @@ mod test {
     // Diffie Hellman test vectors from https://tools.ietf.org/html/rfc7748#section-6.1
     #[test]
     fn x25519_kat() {
+        // We're only working with x25519
+        let scheme: &'static DhScheme = &X25519_IMPL;
+
         let alice_scalar = {
             let hex_str = "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL.private_key_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+            DhPrivateKey::new_from_bytes(scheme, &bytes).expect("couldn't make scalar from bytes")
         };
         let bob_scalar = {
             let hex_str = "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL.private_key_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+            DhPrivateKey::new_from_bytes(scheme, &bytes).expect("couldn't make scalar from bytes")
         };
 
         // Compute aP and bP where a is Alice's scalar, and b is Bob's
-        let alice_pubkey = X25519_IMPL.derive_public_key(&alice_scalar);
-        let bob_pubkey = X25519_IMPL.derive_public_key(&bob_scalar);
+        let alice_pubkey = DhPublicKey::new_from_private_key(scheme, &alice_scalar);
+        let bob_pubkey = DhPublicKey::new_from_private_key(scheme, &bob_scalar);
 
         // Compute b(aP) and a(bP) and make sure they are the same
-        let shared_secret_a = X25519_IMPL.diffie_hellman(&alice_scalar, &bob_pubkey);
-        let shared_secret_b = X25519_IMPL.diffie_hellman(&bob_scalar, &alice_pubkey);
+        let shared_secret_a = scheme.diffie_hellman(&alice_scalar, &bob_pubkey).unwrap();
+        let shared_secret_b = scheme.diffie_hellman(&bob_scalar, &alice_pubkey).unwrap();
 
         // Known-answer for aP
         assert_eq!(
@@ -254,6 +370,9 @@ mod test {
 
     #[quickcheck]
     fn x25519_correctness(secret_seed: u64) {
+        // We're only working with x25519
+        let scheme: &'static DhScheme = &X25519_IMPL;
+
         // Make a secret key seeded with the above seed. This is so that this function is
         // deterministic.
         let (scalar1, scalar2) = {
@@ -263,16 +382,18 @@ mod test {
             rng.fill_bytes(&mut buf1);
             rng.fill_bytes(&mut buf2);
             (
-                X25519_IMPL.private_key_from_bytes(&buf1).unwrap(),
-                X25519_IMPL.private_key_from_bytes(&buf2).unwrap(),
+                DhPrivateKey::new_from_bytes(scheme, &buf1).unwrap(),
+                DhPrivateKey::new_from_bytes(scheme, &buf2).unwrap(),
             )
         };
 
-        let (point1, point2) =
-            (X25519_IMPL.derive_public_key(&scalar1), X25519_IMPL.derive_public_key(&scalar2));
+        let (point1, point2) = (
+            DhPublicKey::new_from_private_key(scheme, &scalar1),
+            DhPublicKey::new_from_private_key(scheme, &scalar2),
+        );
         let (shared1, shared2) = (
-            X25519_IMPL.diffie_hellman(&scalar1, &point2),
-            X25519_IMPL.diffie_hellman(&scalar2, &point1),
+            X25519_IMPL.diffie_hellman(&scalar1, &point2).unwrap(),
+            X25519_IMPL.diffie_hellman(&scalar2, &point1).unwrap(),
         );
 
         assert_eq!(shared1.as_bytes(), shared2.as_bytes());
@@ -282,13 +403,16 @@ mod test {
     // https://github.com/mlswg/mls-implementations/blob/master/test_vectors/treesnodes.md
     #[test]
     fn node_key_derivation_kat() {
+        // We're only working with x25519
+        let scheme: &'static DhScheme = &X25519_IMPL;
+
         let scalar = {
             let hex_str = "e029fbe9de859e7bd6aea95ac258ae743a9eabccde9358420d8c975365938714";
             let bytes = hex::decode(hex_str).unwrap();
-            X25519_IMPL.private_key_from_bytes(&bytes).expect("couldn't make scalar from bytes")
+            DhPrivateKey::new_from_bytes(scheme, &bytes).expect("couldn't make scalar from bytes")
         };
 
-        let pubkey = X25519_IMPL.derive_public_key(&scalar);
+        let pubkey = DhPublicKey::new_from_private_key(scheme, &scalar);
 
         assert_eq!(
             hex::encode(pubkey.as_bytes()),

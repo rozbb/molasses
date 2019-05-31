@@ -82,7 +82,7 @@ impl RatchetTreeNode {
         private_key: DhPrivateKey,
     ) -> RatchetTreeNode {
         // Derive the pubkey and stick it in the node
-        let pubkey = cs.dh_impl.derive_public_key(&private_key);
+        let pubkey = DhPublicKey::new_from_private_key(cs.dh_impl, &private_key);
         RatchetTreeNode::Filled {
             public_key: pubkey,
             private_key: Some(private_key),
@@ -369,13 +369,16 @@ impl RatchetTree {
     ///
     /// Requires: `starting_tree_idx` to be a leaf node. Otherwise, any child of ours would be
     /// unable to decrypt this message.
-    pub(crate) fn encrypt_direct_path_secrets(
+    pub(crate) fn encrypt_direct_path_secrets<R>(
         &self,
         cs: &'static CipherSuite,
         starting_tree_idx: usize,
         starting_path_secret: PathSecret,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<DirectPathMessage, Error> {
+        csprng: &mut R,
+    ) -> Result<DirectPathMessage, Error>
+    where
+        R: CryptoRng,
+    {
         // Check if it's a leaf node
         if starting_tree_idx % 2 != 0 {
             return Err(Error::TreeError("Cannot encrypt direct paths of non-leaf nodes"));

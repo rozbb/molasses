@@ -43,14 +43,17 @@ pub(crate) struct EciesCiphertext {
 ///
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with random scalar generation or
 /// sealing the plaintext, an `Error` is returned.
-pub(crate) fn encrypt(
+pub(crate) fn encrypt<R>(
     cs: &CipherSuite,
     others_public_key: &DhPublicKey,
     plaintext: Vec<u8>,
-    csprng: &mut dyn CryptoRng,
-) -> Result<EciesCiphertext, Error> {
+    csprng: &mut R,
+) -> Result<EciesCiphertext, Error>
+where
+    R: CryptoRng,
+{
     // Genarate a random secret and pass to a deterministic version of this function
-    let my_ephemeral_secret = cs.dh_impl.scalar_from_random(csprng)?;
+    let my_ephemeral_secret = DhPrivateKey::new_from_random(cs.dh_impl, csprng)?;
     encrypt_with_scalar(cs, others_public_key, plaintext, my_ephemeral_secret)
 }
 
@@ -61,7 +64,8 @@ pub(crate) fn encrypt(
 /// testing purposes.
 ///
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with sealing the plaintext, an
-/// `Error::EncryptionError` is returned.
+/// `Error::EncryptionError` is returned. If there is an issue with deriving DH keys, an
+/// `Error::DhError` is returned.
 pub(crate) fn encrypt_with_scalar(
     cs: &CipherSuite,
     others_public_key: &DhPublicKey,
@@ -76,10 +80,11 @@ pub(crate) fn encrypt_with_scalar(
     plaintext.resize(tagged_plaintext_size, 0u8);
 
     // If my_ephermeral_secret is `a`, let this be `aP`
-    let my_ephemeral_public_key = cs.dh_impl.derive_public_key(&my_ephemeral_secret);
+    let my_ephemeral_public_key =
+        DhPublicKey::new_from_private_key(cs.dh_impl, &my_ephemeral_secret);
 
     // This is `abP` where `bP` is the other person's public key is `bP`
-    let shared_secret = cs.dh_impl.diffie_hellman(&my_ephemeral_secret, &others_public_key);
+    let shared_secret = cs.dh_impl.diffie_hellman(&my_ephemeral_secret, &others_public_key)?;
 
     let (key, nonce) = derive_ecies_key_nonce(cs, shared_secret.as_bytes());
 
@@ -109,7 +114,7 @@ pub(crate) fn decrypt(
         mut ciphertext,
     } = ciphertext;
     // This is `abP` where `bP` is the other person's public key is `bP` and my secret key is `a`
-    let shared_secret = cs.dh_impl.diffie_hellman(&my_secret_key, &ephemeral_public_key);
+    let shared_secret = cs.dh_impl.diffie_hellman(&my_secret_key, &ephemeral_public_key)?;
 
     // Derive the key and nonce, then open the ciphertext. The length of the subslice it gives is
     // the length we'll truncate the plaintext to. Recall this happens because there was a MAC at
@@ -167,6 +172,7 @@ fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (Aead
 mod test {
     use crate::crypto::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        dh::{DhPrivateKey, DhPublicKey},
         ecies::{self, EciesCiphertext},
     };
 
@@ -182,8 +188,8 @@ mod test {
 
         for cs in CIPHERSUITES {
             // First make an identity we'll encrypt to
-            let alice_scalar = cs.dh_impl.scalar_from_random(&mut rng).unwrap();
-            let alice_point = cs.dh_impl.derive_public_key(&alice_scalar);
+            let alice_scalar = DhPrivateKey::new_from_random(cs.dh_impl, &mut rng).unwrap();
+            let alice_point = DhPublicKey::new_from_private_key(cs.dh_impl, &alice_scalar);
 
             // Now encrypt to Alice
             let ecies_ciphertext: EciesCiphertext =

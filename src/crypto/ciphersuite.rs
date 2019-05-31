@@ -3,7 +3,7 @@
 use crate::{
     crypto::{
         aead::{AeadScheme, AES128GCM_IMPL},
-        dh::{DhPrivateKey, DhPublicKey, DiffieHellman, P256_IMPL, X25519_IMPL},
+        dh::{DhPrivateKey, DhPublicKey, DhScheme, P256_IMPL, X25519_IMPL},
         hash::{HashFunction, SHA256_IMPL},
     },
     error::Error,
@@ -30,13 +30,13 @@ pub struct CipherSuite {
     /// The name of this cipher suite
     pub(crate) name: &'static str,
 
-    /// The trait object that implements our key exchange functionality
-    pub(crate) dh_impl: &'static dyn DiffieHellman,
+    /// The struct that implements our key exchange functionality
+    pub(crate) dh_impl: &'static DhScheme,
 
-    /// The trait object that implements our authenticated encryption functionality
+    /// The struct that implements our authenticated encryption functionality
     pub(crate) aead_impl: &'static AeadScheme,
 
-    /// The object that implements our hashing functionality
+    /// The struct that implements our hashing functionality
     pub(crate) hash_impl: &'static HashFunction,
 }
 
@@ -71,9 +71,9 @@ impl CipherSuite {
 
         // Hash the input and use the digest as a private key
         let digest = self.hash_impl.hash_bytes(bytes);
-        let privkey = self.dh_impl.private_key_from_bytes(digest.as_bytes())?;
+        let privkey = DhPrivateKey::new_from_bytes(self.dh_impl, digest.as_bytes())?;
         // Derive the pubkey
-        let pubkey = self.dh_impl.derive_public_key(&privkey);
+        let pubkey = DhPublicKey::new_from_private_key(self.dh_impl, &privkey);
 
         Ok((pubkey, privkey))
     }
