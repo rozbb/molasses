@@ -20,7 +20,7 @@ struct EciesLabel {
 impl EciesLabel {
     fn new(label: &[u8], length: u16) -> EciesLabel {
         EciesLabel {
-            length: length,
+            length,
             label: [b"mls10 ecies ", label].concat(),
         }
     }
@@ -94,7 +94,7 @@ pub(crate) fn encrypt_with_scalar(
 
     let ret = EciesCiphertext {
         ephemeral_public_key: my_ephemeral_public_key,
-        ciphertext: ciphertext,
+        ciphertext,
     };
     Ok(ret)
 }

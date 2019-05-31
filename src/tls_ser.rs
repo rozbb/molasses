@@ -2,6 +2,8 @@
 
 use crate::error::Error;
 
+use std::convert::TryFrom;
+
 use byteorder::{BigEndian, WriteBytesExt};
 use doc_comment::doc_comment;
 use serde::ser::{Serialize, SerializeSeq, Serializer};
@@ -36,6 +38,8 @@ macro_rules! serialize_with_bound {
                 <&'a mut TlsSerializer as Serializer>::Ok,
                 <&'a mut TlsSerializer as Serializer>::Error,
             > {
+                use std::convert::TryFrom;
+
                 // Starting position
                 let len_pos = serializer.buf.position();
                 // Write a dummy zero here, then serialize everything we get, then rewrite the
@@ -43,10 +47,14 @@ macro_rules! serialize_with_bound {
                 serializer.buf.$write_fn::<$endianness>(0)?;
                 value.serialize(&mut **serializer)?;
                 // End position - start position - size of length tag = length of serialized output
-                let len: u64 =
-                    serializer.buf.position() - len_pos - (std::mem::size_of::<$t>() as u64);
+                // The length is a u64 because an std::Cursor can only seek up to 2^64-1 bytes
+                let len: u64 = {
+                    let ty_size = u64::try_from(std::mem::size_of::<$t>())
+                        .expect(&format!("Type {} is too big to be serialized", stringify!(t)));
+                    serializer.buf.position() - len_pos - ty_size
+                };
 
-                if len > (std::$ti::MAX as u64) {
+                if len > u64::from(std::$ti::MAX) {
                     let err = <Error as serde::ser::Error>::custom(
                         format_args!(
                             "tried to serialize a {}-bounded object that was too long",
@@ -93,7 +101,7 @@ pub(crate) fn serialize_with_bound_u8<'a, T: Serialize + ?Sized>(
     // End position - start position - size of length tag = length of serialized output
     let len: u64 = serializer.buf.position() - len_pos - 1;
 
-    if len > (std::u8::MAX as u64) {
+    if len > std::u8::MAX.into() {
         let err = <Error as serde::ser::Error>::custom(
             "tried to serialize a u8-bounded object that was too long",
         );
@@ -296,13 +304,13 @@ impl<'a> Serializer for &'a mut TlsSerializer {
     ) -> Result<Self::Ok, Self::Error> {
         if name.ends_with("__enum_u8") {
             // Make sure the variant index isn't out of our range
-            assert!(variant_index <= core::u8::MAX as u32, "enum variant index out of bounds");
-            self.serialize_u8(variant_index as u8)
+            let byte = u8::try_from(variant_index).expect("enum variant index out of bounds");
+            self.serialize_u8(byte)
         } else {
             let err = <Error as serde::ser::Error>::custom(
                 "don't know how to serialize a non-__enum_u8 enum",
             );
-            return Err(err);
+            Err(err)
         }
     }
 

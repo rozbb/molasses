@@ -305,8 +305,8 @@ impl UserInitKey {
     /// Returns: `Ok(Some(supported_version))` on success. Returns `Ok(None)` iff there is no
     /// supported version corresponding to the given ciphersuite Returns
     /// `Err(Error::ValidationError)` iff validation (via `UserInitKey::validate()`) failed.
-    pub(crate) fn get_supported_version<'a>(
-        &'a self,
+    pub(crate) fn get_supported_version(
+        &self,
         cs_to_find: &'static CipherSuite,
     ) -> Result<Option<ProtocolVersion>, Error> {
         // First validate. If this were not valid, then the output of this function might be

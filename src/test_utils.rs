@@ -47,7 +47,7 @@ pub(crate) fn random_roster_index_with_exceptions<R: rand::Rng>(
 // Generates a random BasicCredential with the given SignatureScheme
 fn random_credential<R: rand::Rng + CryptoRng>(
     rng: &mut R,
-    signature_scheme: &'static SignatureScheme,
+    ss: &'static SignatureScheme,
 ) -> (Credential, SigSecretKey) {
     // Make a random 16 byte identity
     let identity = {
@@ -56,12 +56,12 @@ fn random_credential<R: rand::Rng + CryptoRng>(
         credential::Identity(buf.to_vec())
     };
     // Make a random keypair
-    let secret_key = SigSecretKey::new_from_random(signature_scheme, rng).unwrap();
-    let public_key = SigPublicKey::new_from_secret_key(signature_scheme, &secret_key);
+    let secret_key = SigSecretKey::new_from_random(ss, rng).unwrap();
+    let public_key = SigPublicKey::new_from_secret_key(ss, &secret_key);
 
     let cred = Credential::Basic(BasicCredential {
         identity,
-        signature_scheme,
+        signature_scheme: ss,
         public_key,
     });
 
@@ -169,15 +169,15 @@ pub(crate) fn random_basic_credential<R: rand::Rng + CryptoRng>(
 
     // TODO: Expand the number of available ciphersuites once more are available
     let signature_schemes = [&ED25519_IMPL];
-    let signature_scheme = *signature_schemes.choose(rng).unwrap();
+    let ss = *signature_schemes.choose(rng).unwrap();
 
     // Generate a random keypair
-    let identity_key = SigSecretKey::new_from_random(signature_scheme, rng).unwrap();
-    let public_key = SigPublicKey::new_from_secret_key(signature_scheme, &identity_key);
+    let identity_key = SigSecretKey::new_from_random(ss, rng).unwrap();
+    let public_key = SigPublicKey::new_from_secret_key(ss, &identity_key);
 
     let cred = Credential::Basic(BasicCredential {
         identity,
-        signature_scheme,
+        signature_scheme: ss,
         public_key,
     });
 

@@ -90,7 +90,7 @@ impl ApplicationKeyChain {
             .collect();
 
         ApplicationKeyChain {
-            write_secrets_and_gens: write_secrets_and_gens,
+            write_secrets_and_gens,
             group_cs: group_state.cs,
             group_id: group_state.group_id.clone(),
             group_epoch_at_creation: group_state.epoch,
@@ -285,7 +285,7 @@ pub fn encrypt_application_message(
     let signature_content = SignatureContent {
         group_id: &group_id,
         epoch: app_key_chain.group_epoch_at_creation,
-        generation: generation,
+        generation,
         sender: my_roster_idx,
         content: &plaintext,
     };
@@ -313,9 +313,9 @@ pub fn encrypt_application_message(
     Ok(ApplicationMessage {
         group_id: group_state.group_id.clone(),
         epoch: app_key_chain.group_epoch_at_creation,
-        generation: generation,
+        generation,
         sender: my_roster_idx,
-        encrypted_content: encrypted_content,
+        encrypted_content,
     })
 }
 
@@ -391,9 +391,9 @@ pub fn decrypt_application_message(
     // Create the stuff that the signature is over, then verify the signature. See above for why we
     // use group_epoch_at_creation
     let signature_content = SignatureContent {
-        group_id: group_id,
+        group_id,
         epoch: app_key_chain.group_epoch_at_creation,
-        generation: generation,
+        generation,
         sender: app_message.sender,
         content: &plaintext,
     };

@@ -6,7 +6,7 @@ use crate::{
 
 use serde::ser::Serialize;
 
-const MLS_PREFIX: &'static [u8] = b"mls10 ";
+const MLS_PREFIX: &[u8] = b"mls10 ";
 
 // This struct is only used in `hkdf::expand_label`
 #[derive(Serialize)]
@@ -90,7 +90,7 @@ pub(crate) fn expand_label(
         length: out_buf.len() as u16,
         // Recall the def: opaque label<6..255> = "mls10 " + Label;
         label: &full_label_info_slice,
-        context: context,
+        context,
     };
 
     // Finally, do the HKDF-Expand operation with built-in serialization. This can't fail, since we

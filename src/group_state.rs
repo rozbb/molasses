@@ -197,17 +197,17 @@ impl GroupState {
         let init_secret = HmacKey::new_from_zeros(cs.hash_impl);
 
         GroupState {
-            cs: cs,
-            protocol_version: protocol_version,
-            identity_key: identity_key,
-            group_id: group_id,
+            cs,
+            protocol_version,
+            identity_key,
+            group_id,
             epoch: 0,
-            roster: roster,
-            tree: tree,
-            transcript_hash: transcript_hash,
+            roster,
+            tree,
+            transcript_hash,
             roster_index: Some(roster_index),
             initializing_user_init_key: None,
-            init_secret: init_secret,
+            init_secret,
         }
     }
 
@@ -229,7 +229,7 @@ impl GroupState {
         // Make a new preliminary group (notice how roster is None and initializing_user_init_key
         // is Some)
         GroupState {
-            cs: cs,
+            cs,
             protocol_version: w.protocol_version,
             identity_key: my_identity_key,
             group_id: w.group_id,
@@ -677,7 +677,7 @@ impl GroupState {
         // The new node we add has the public key we found, and no known secrets
         let new_node = RatchetTreeNode::Filled {
             public_key: public_key.clone(),
-            private_key: private_key,
+            private_key,
         };
 
         // Check that we're only overwriting a Blank node.
@@ -892,7 +892,7 @@ impl GroupState {
         // Make the Add op
         let add = GroupAdd {
             roster_index: new_roster_index,
-            init_key: init_key,
+            init_key,
             welcome_info_hash: prior_welcome_info_hash.clone(),
         };
         // Apply the Add, log the operation in the transcript hash, increment the epoch, update
@@ -947,7 +947,7 @@ impl GroupState {
 
         // Make the remove
         let remove = GroupRemove {
-            removed_roster_index: removed_roster_index,
+            removed_roster_index,
             path: direct_path_msg,
         };
 
@@ -1001,11 +1001,11 @@ impl GroupState {
         ))?;
 
         let handshake = Handshake {
-            prior_epoch: prior_epoch,
-            operation: operation,
+            prior_epoch,
+            operation,
             signer_index: roster_index,
-            signature: signature,
-            confirmation: confirmation,
+            signature,
+            confirmation,
         };
         Ok(handshake)
     }
@@ -1383,7 +1383,7 @@ mod test {
         let cs = &X25519_SHA256_AES128GCM;
         let ss = &ED25519_IMPL;
         GroupState {
-            cs: cs,
+            cs,
             protocol_version: MLS_DUMMY_VERSION,
             identity_key: SigSecretKey::new_from_bytes(ss, &[0u8; 32]).unwrap(),
             group_id: tgs.group_id,

@@ -14,12 +14,12 @@ use serde::{
     ser::{Serialize, Serializer},
 };
 
-const CIPHERSUITE_NAME_IDS: &'static [(&'static CipherSuite, &'static str, u16)] = &[
+const CIPHERSUITE_NAME_IDS: &[(&CipherSuite, &str, u16)] = &[
     (&P256_SHA256_AES128GCM, "P256_SHA256_AES128GCM", 0x0000),
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
-const SIGSCHEME_NAME_IDS: &'static [(&'static SignatureScheme, &'static str, u16)] = &[
-    (&ECDSA_P256_IMPL, "dummy_ecdsa_secp256r1_sha256", 0x0403), // FAKE
+const SIGSCHEME_NAME_IDS: &[(&SignatureScheme, &str, u16)] = &[
+    (&ECDSA_P256_IMPL, "dummy_ecdsa_secp256r1_sha256", 0x0403),
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];
 
@@ -125,7 +125,7 @@ impl Serialize for DhPublicKey {
 impl<'de> Deserialize<'de> for DhPublicKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
-        DhPublicKeyRaw::deserialize(deserializer).map(|raw| DhPublicKey::Raw(raw))
+        DhPublicKeyRaw::deserialize(deserializer).map(DhPublicKey::Raw)
     }
 }
 
@@ -142,7 +142,7 @@ impl Serialize for SigPublicKey {
 impl<'de> Deserialize<'de> for SigPublicKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
-        SigPublicKeyRaw::deserialize(deserializer).map(|raw| SigPublicKey::Raw(raw))
+        SigPublicKeyRaw::deserialize(deserializer).map(SigPublicKey::Raw)
     }
 }
 
@@ -159,6 +159,6 @@ impl Serialize for Signature {
 impl<'de> Deserialize<'de> for Signature {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
-        SignatureRaw::deserialize(deserializer).map(|raw| Signature::Raw(raw))
+        SignatureRaw::deserialize(deserializer).map(Signature::Raw)
     }
 }

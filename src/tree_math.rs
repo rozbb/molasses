@@ -196,11 +196,7 @@ pub(crate) fn is_ancestor(a: usize, b: usize, num_leaves: usize) -> bool {
 
     // If a is the root, then it's everybody's ancestor. Otherwise, we couldn't find a in b's
     // direct path, so it's not an ancestor
-    if a == root {
-        true
-    } else {
-        false
-    }
+    a == root
 }
 
 /// Computes the index of the sibling of a given node. The sibling of the root is the root.
@@ -240,7 +236,7 @@ pub(crate) fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iter
     // parent == root, this will be an empty iterator if we're the root node (since the parent of
     // the root is the root)
     DirectPathIter {
-        num_leaves: num_leaves,
+        num_leaves,
         successive_parent: start_idx,
     }
 }

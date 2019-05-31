@@ -38,18 +38,18 @@ fn make_custom_error<T: core::fmt::Display>(msg: T) -> Error {
 /// ```
 /// we would have `field == "Foo__bound_u8` and look for a single byte representing the length of
 /// the contained vector.
-fn get_field_len<'b, R>(field: &'static str, reader: &mut R) -> Result<Option<u64>, Error>
+fn get_field_len<R>(field: &'static str, reader: &mut R) -> Result<Option<u64>, Error>
 where
     R: std::io::Read,
 {
     let res = if field.ends_with("__bound_u8") {
-        Some(reader.read_u8()? as u64)
+        Some(reader.read_u8()?.into())
     } else if field.ends_with("__bound_u16") {
-        Some(reader.read_u16::<BigEndian>()? as u64)
+        Some(reader.read_u16::<BigEndian>()?.into())
     } else if field.ends_with("__bound_u24") {
-        Some(reader.read_u24::<BigEndian>()? as u64)
+        Some(reader.read_u24::<BigEndian>()?.into())
     } else if field.ends_with("__bound_u32") {
-        Some(reader.read_u32::<BigEndian>()? as u64)
+        Some(reader.read_u32::<BigEndian>()?.into())
     } else if field.ends_with("__bound_u64") {
         Some(reader.read_u64::<BigEndian>()?)
     } else {
@@ -70,7 +70,7 @@ impl<'a, R: std::io::Read> TlsDeserializer<'a, R> {
     /// Makes a new `TlsDeserializer` from the given byte reader
     pub fn from_reader(reader: &'a mut R) -> TlsDeserializer<R> {
         TlsDeserializer {
-            reader: reader,
+            reader,
         }
     }
 }
@@ -323,8 +323,8 @@ impl<'a, 'b, R: std::io::Read> TlsStructSeq<'a, 'b, R> {
         fields: &'static [&'static str],
     ) -> TlsStructSeq<'a, 'b, R> {
         TlsStructSeq {
-            de: de,
-            fields: fields,
+            de,
+            fields,
             field_idx: 0,
         }
     }
@@ -345,8 +345,8 @@ impl<'a, 'b, R: std::io::Read> TlsTupleSeq<'a, 'b, R> {
     /// index to 0
     fn new(de: &'a mut TlsDeserializer<'b, R>, len: usize) -> TlsTupleSeq<'a, 'b, R> {
         TlsTupleSeq {
-            de: de,
-            len: len,
+            de,
+            len,
             idx: 0,
         }
     }
@@ -392,7 +392,7 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
         // number of bytes specified by the length tag. Then deserialize the contents normally. It
         // will finish when it runs out of things to read. This is guaranteed by the logic in
         // TlsVecSeq.
-        let res = if let Some(len) = field_len {
+        if let Some(len) = field_len {
             // Make a sub-buffer to read from
             let mut sub_reader = self.de.reader.take(len);
             let mut sub_deserializer = TlsDeserializer::from_reader(&mut sub_reader);
@@ -402,9 +402,7 @@ impl<'de, 'a, 'b, R: std::io::Read> serde::de::SeqAccess<'de> for TlsStructSeq<'
         } else {
             // If no length is specified, do the natural thing
             seed.deserialize(&mut *self.de).map(Some)
-        };
-
-        res
+        }
 
         // We can't wrap errors like below. Recall that the sequence deserializer will stop
         // deserializing once it hits an io::ErrorKind::UnexpectedEof. If `res` above is one of
@@ -427,7 +425,7 @@ impl<'a, 'b, R: std::io::Read> TlsVecSeq<'a, 'b, R> {
     /// Makes a new `TlsVecSeq` object from the given deserializer
     fn new(de: &'a mut TlsDeserializer<'b, R>) -> TlsVecSeq<'a, 'b, R> {
         TlsVecSeq {
-            de: de,
+            de,
         }
     }
 }
@@ -469,7 +467,7 @@ impl<'a, 'b, R: std::io::Read> TlsEnumU8<'a, 'b, R> {
     /// Makes a new `TlsEnumU8` object from the given deserializer
     fn new(de: &'a mut TlsDeserializer<'b, R>) -> TlsEnumU8<'a, 'b, R> {
         TlsEnumU8 {
-            de: de,
+            de,
         }
     }
 }

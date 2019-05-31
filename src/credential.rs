@@ -48,7 +48,7 @@ impl Roster {
     }
 
     /// Returns an iterator of the non-empty entries in the roster
-    pub fn credential_iter<'a>(&'a self) -> impl Iterator<Item = &'a Credential> {
+    pub fn credential_iter(&self) -> impl Iterator<Item = &Credential> {
         self.0.iter().filter(|x| x.is_some()).map(|x| x.as_ref().unwrap())
     }
 }
@@ -96,12 +96,12 @@ impl BasicCredential {
     /// Makes a new credential with the given information
     pub fn new(
         identity: Identity,
-        signature_scheme: &'static SignatureScheme,
+        ss: &'static SignatureScheme,
         public_key: SigPublicKey,
     ) -> BasicCredential {
         BasicCredential {
             identity,
-            signature_scheme,
+            signature_scheme: ss,
             public_key,
         }
     }

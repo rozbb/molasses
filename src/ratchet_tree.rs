@@ -106,13 +106,13 @@ impl RatchetTreeNode {
     /// node into a `Filled` one.
     pub(crate) fn update_public_key(&mut self, new_public_key: DhPublicKey) {
         match self {
-            &mut RatchetTreeNode::Blank => {
+            RatchetTreeNode::Blank => {
                 *self = RatchetTreeNode::Filled {
                     public_key: new_public_key,
                     private_key: None,
                 };
             }
-            &mut RatchetTreeNode::Filled {
+            RatchetTreeNode::Filled {
                 ref mut public_key,
                 ..
             } => *public_key = new_public_key,
@@ -122,8 +122,8 @@ impl RatchetTreeNode {
     /// Returns a node's public key. If the node is `Blank`, returns `None`.
     pub(crate) fn get_public_key(&self) -> Option<&DhPublicKey> {
         match self {
-            &RatchetTreeNode::Blank => None,
-            &RatchetTreeNode::Filled {
+            RatchetTreeNode::Blank => None,
+            RatchetTreeNode::Filled {
                 ref public_key,
                 ..
             } => Some(public_key),
@@ -135,10 +135,10 @@ impl RatchetTreeNode {
     /// Panics: If the node is `Blank`
     pub(crate) fn update_private_key(&mut self, new_private_key: DhPrivateKey) {
         match self {
-            &mut RatchetTreeNode::Blank => panic!("tried to update private key of blank node"),
-            &mut RatchetTreeNode::Filled {
-                public_key: _,
+            RatchetTreeNode::Blank => panic!("tried to update private key of blank node"),
+            RatchetTreeNode::Filled {
                 ref mut private_key,
+                ..
             } => {
                 *private_key = Some(new_private_key);
             }
@@ -148,10 +148,10 @@ impl RatchetTreeNode {
     /// Returns `Some(&private_key)` if the node contains a private key. Otherwise returns `None`.
     pub(crate) fn get_private_key(&self) -> Option<&DhPrivateKey> {
         match self {
-            &RatchetTreeNode::Blank => None,
-            &RatchetTreeNode::Filled {
-                public_key: _,
+            RatchetTreeNode::Blank => None,
+            RatchetTreeNode::Filled {
                 ref private_key,
+                ..
             } => private_key.as_ref(),
         }
     }
@@ -529,7 +529,8 @@ impl RatchetTree {
             }
         }
 
-        return Err(Error::TreeError("Cannot find node in resolution with known private key"));
+        // With the checks at the beginning of this method, this should never happen
+        Err(Error::TreeError("Cannot find node in resolution with known private key"))
     }
 
     /// Updates the path secret at the given index and derives the path secrets, node secrets,
