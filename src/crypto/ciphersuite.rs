@@ -2,7 +2,7 @@
 
 use crate::{
     crypto::{
-        aead::{AuthenticatedEncryption, AES128GCM_IMPL},
+        aead::{AeadScheme, AES128GCM_IMPL},
         dh::{DhPrivateKey, DhPublicKey, DiffieHellman, P256_IMPL, X25519_IMPL},
         hash::{HashFunction, SHA256_IMPL},
     },
@@ -34,7 +34,7 @@ pub struct CipherSuite {
     pub(crate) dh_impl: &'static dyn DiffieHellman,
 
     /// The trait object that implements our authenticated encryption functionality
-    pub(crate) aead_impl: &'static dyn AuthenticatedEncryption,
+    pub(crate) aead_impl: &'static AeadScheme,
 
     /// The object that implements our hashing functionality
     pub(crate) hash_impl: &'static HashFunction,

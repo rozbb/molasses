@@ -155,9 +155,10 @@ fn derive_ecies_key_nonce(cs: &CipherSuite, shared_secret_bytes: &[u8]) -> (Aead
     hkdf::expand(cs.hash_impl, &prk, &key_label, &mut key_buf[..]).unwrap();
     hkdf::expand(cs.hash_impl, &prk, &nonce_label, &mut nonce_buf[..]).unwrap();
 
-    let key = cs.aead_impl.key_from_bytes(&key_buf).expect("couldn't derive AEAD key from HKDF");
-    let nonce =
-        cs.aead_impl.nonce_from_bytes(&nonce_buf).expect("couldn't derive AEAD nonce from HKDF");
+    let key = AeadKey::new_from_bytes(cs.aead_impl, &key_buf)
+        .expect("couldn't derive AEAD key from HKDF");
+    let nonce = AeadNonce::new_from_bytes(cs.aead_impl, &nonce_buf)
+        .expect("couldn't derive AEAD nonce from HKDF");
 
     (key, nonce)
 }

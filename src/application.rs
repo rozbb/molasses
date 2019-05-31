@@ -130,8 +130,8 @@ impl ApplicationKeyChain {
             nonce_buf.as_mut_slice(),
         );
 
-        let key = self.group_cs.aead_impl.key_from_bytes(&key_buf)?;
-        let nonce = self.group_cs.aead_impl.nonce_from_bytes(&nonce_buf)?;
+        let key = AeadKey::new_from_bytes(self.group_cs.aead_impl, &key_buf)?;
+        let nonce = AeadNonce::new_from_bytes(self.group_cs.aead_impl, &nonce_buf)?;
         Ok((key, nonce, *generation))
     }
 
@@ -412,7 +412,12 @@ mod test {
         application::{
             decrypt_application_message, encrypt_application_message, ApplicationKeyChain,
         },
-        crypto::{ciphersuite::X25519_SHA256_AES128GCM, hmac::HmacKey, rng::CryptoRng},
+        crypto::{
+            aead::{AeadKey, AeadNonce},
+            ciphersuite::X25519_SHA256_AES128GCM,
+            hmac::HmacKey,
+            rng::CryptoRng,
+        },
         group_state::GroupState,
         ratchet_tree::PathSecret,
         test_utils,
@@ -612,8 +617,8 @@ mod test {
                 // We don't test write_secret directly, because we don't actually expose that
                 // anywhere. Instead, we test the key and nonce values. This ought to be enough
                 // because the key and nonce are derived from the write_secret.
-                let given_key = cs.aead_impl.key_from_bytes(&key_step.key).unwrap();
-                let given_nonce = cs.aead_impl.nonce_from_bytes(&key_step.nonce).unwrap();
+                let given_key = AeadKey::new_from_bytes(cs.aead_impl, &key_step.key).unwrap();
+                let given_nonce = AeadNonce::new_from_bytes(cs.aead_impl, &key_step.nonce).unwrap();
 
                 // Ok so we don't actually test equality of keys or nonces, because I've wrapped
                 // them in a bunch of opaque types. So let's do a sample encryption/decryption

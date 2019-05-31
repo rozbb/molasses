@@ -70,10 +70,10 @@ impl SigSecretKey {
     ///
     /// Returns: `Ok(secret_key)` on success. On error, returns `Error::SignatureError` or
     /// `Error::OutOfEntropy`.
-    pub fn new_from_random(
-        ss: &SignatureScheme,
-        csprng: &mut dyn CryptoRng,
-    ) -> Result<SigSecretKey, Error> {
+    pub fn new_from_random<R>(ss: &SignatureScheme, csprng: &mut R) -> Result<SigSecretKey, Error>
+    where
+        R: CryptoRng,
+    {
         ss.0.secret_key_from_random(csprng)
     }
 }
