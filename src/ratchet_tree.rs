@@ -31,7 +31,10 @@ impl PathSecret {
     }
 
     /// Generates a random `PathSecret` of the appropriate length
-    pub fn new_from_random(cs: &'static CipherSuite, csprng: &mut dyn CryptoRng) -> PathSecret {
+    pub fn new_from_random<R>(cs: &'static CipherSuite, csprng: &mut R) -> PathSecret
+    where
+        R: CryptoRng,
+    {
         let key = HmacKey::new_from_random(cs.hash_impl, csprng);
         PathSecret(key)
     }
