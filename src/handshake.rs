@@ -11,7 +11,7 @@ use crate::{
         sig::{SigSecretKey, Signature},
     },
     error::Error,
-    group_state::WelcomeInfoHash,
+    group_ctx::WelcomeInfoHash,
     ratchet_tree::MemberIdx,
     tls_ser,
 };
@@ -413,7 +413,7 @@ mod test {
             sig::SignatureScheme,
         },
         error::Error,
-        group_state::{GroupContext, Welcome, WelcomeInfo},
+        group_ctx::{GroupContext, Welcome, WelcomeInfo},
         handshake::{Handshake, UserInitKey, MLS_DUMMY_VERSION},
         ratchet_tree::{MemberIdx, PathSecret},
         test_utils,

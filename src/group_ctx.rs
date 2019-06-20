@@ -1241,7 +1241,7 @@ mod test {
             sig::{SigSecretKey, ED25519_IMPL},
         },
         error::Error,
-        group_state::{GroupContext, GroupId, UpdateSecret, Welcome, WelcomeInfoRatchetTree},
+        group_ctx::{GroupContext, GroupId, UpdateSecret, Welcome, WelcomeInfoRatchetTree},
         handshake::{ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
         ratchet_tree::{MemberIdx, RatchetTree},
         test_utils,

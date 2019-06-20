@@ -17,7 +17,7 @@ use molasses::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
-    group_state::{GroupContext, GroupId, Welcome},
+    group_ctx::{GroupContext, GroupId, Welcome},
     handshake::{Handshake, ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
     ratchet_tree::MemberIdx,
     tls_de::TlsDeserializer,

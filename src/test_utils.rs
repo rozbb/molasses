@@ -8,7 +8,7 @@ use crate::{
         rng::CryptoRng,
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
-    group_state::{GroupContext, GroupId},
+    group_ctx::{GroupContext, GroupId},
     handshake::MLS_DUMMY_VERSION,
     ratchet_tree::{MemberIdx, PathSecret, RatchetTree},
     tree_math::TreeIdx,

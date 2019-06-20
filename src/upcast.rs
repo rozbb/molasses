@@ -158,7 +158,7 @@ impl CryptoUpcast for Credential {
     }
 }
 
-impl CryptoUpcast for crate::group_state::WelcomeInfoRatchetNode {
+impl CryptoUpcast for crate::group_ctx::WelcomeInfoRatchetNode {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.public_key.upcast_crypto_values(ctx)?;
         self.credential.upcast_crypto_values(ctx)?;
@@ -167,13 +167,13 @@ impl CryptoUpcast for crate::group_state::WelcomeInfoRatchetNode {
     }
 }
 
-impl CryptoUpcast for crate::group_state::WelcomeInfoRatchetTree {
+impl CryptoUpcast for crate::group_ctx::WelcomeInfoRatchetTree {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.0.upcast_crypto_values(ctx)
     }
 }
 
-impl CryptoUpcast for crate::group_state::WelcomeInfo {
+impl CryptoUpcast for crate::group_ctx::WelcomeInfo {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.tree.upcast_crypto_values(ctx)?;
         // No change in context
@@ -181,7 +181,7 @@ impl CryptoUpcast for crate::group_state::WelcomeInfo {
     }
 }
 
-impl CryptoUpcast for crate::group_state::Welcome {
+impl CryptoUpcast for crate::group_ctx::Welcome {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         let new_ctx = ctx.set_cipher_suite(self.cipher_suite);
         self.encrypted_welcome_info.upcast_crypto_values(&new_ctx)

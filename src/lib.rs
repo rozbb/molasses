@@ -23,7 +23,7 @@ mod codec;
 pub mod credential;
 pub mod crypto;
 pub mod error;
-pub mod group_state;
+pub mod group_ctx;
 pub mod handshake;
 pub mod ratchet_tree;
 pub mod tls_de;

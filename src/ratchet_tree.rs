@@ -11,7 +11,7 @@ use crate::{
         rng::CryptoRng,
     },
     error::Error,
-    group_state::{WelcomeInfoRatchetNode, WelcomeInfoRatchetTree},
+    group_ctx::{WelcomeInfoRatchetNode, WelcomeInfoRatchetTree},
     handshake::{DirectPathMessage, DirectPathNodeMessage},
     tree_math::{self, TreeIdx},
     utils,
