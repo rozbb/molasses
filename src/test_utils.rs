@@ -1,16 +1,17 @@
 use crate::{
-    credential::{self, BasicCredential, Credential, Roster},
+    credential::{self, BasicCredential, Credential},
     crypto::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
+        dh::DhPrivateKey,
         hash::Digest,
         hmac::HmacKey,
         rng::CryptoRng,
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
-    group_state::GroupState,
+    group_state::{GroupContext, GroupId},
     handshake::MLS_DUMMY_VERSION,
-    ratchet_tree::{PathSecret, RatchetTree, RatchetTreeNode},
-    tree_math,
+    ratchet_tree::{MemberIdx, PathSecret, RatchetTree},
+    tree_math::TreeIdx,
 };
 
 use core::convert::TryFrom;
@@ -27,19 +28,22 @@ macro_rules! assert_serialized_eq {
     };
 }
 
-// Generates a random roster index within the given bounds, and guarantees that the output is not in
-// `forbidden_indices`
-pub(crate) fn random_roster_index_with_exceptions<R: rand::Rng>(
-    roster_size: usize,
-    forbidden_indices: &[usize],
+// Generates a random member index within the given bounds, and guarantees that the output is not
+// in `forbidden_indices`
+pub(crate) fn random_member_index_with_exceptions<R: rand::Rng>(
+    group_size: usize,
+    forbidden_indices: &[MemberIdx],
     rng: &mut R,
-) -> u32 {
+) -> MemberIdx {
     loop {
-        let idx = rng.gen_range(0, roster_size);
+        let idx = {
+            let raw_idx = rng.gen_range(0, group_size);
+            MemberIdx::new(u32::try_from(raw_idx).unwrap())
+        };
         if forbidden_indices.contains(&idx) {
             continue;
         } else {
-            return u32::try_from(idx).unwrap();
+            return idx;
         }
     }
 }
@@ -68,42 +72,56 @@ fn random_credential<R: rand::Rng + CryptoRng>(
     (cred, secret_key)
 }
 
-// Generates a random tree of given size
-fn random_tree<R: rand::Rng + CryptoRng>(
+// Generates a random tree of given size and return the identity keys
+pub(crate) fn random_tree<R: rand::Rng + CryptoRng>(
     rng: &mut R,
     cs: &'static CipherSuite,
+    ss: &'static SignatureScheme,
     num_leaves: usize,
-) -> RatchetTree {
-    // Make a tree of Blanks, then fill it with private keys
-    let num_nodes = tree_math::num_nodes_in_tree(num_leaves);
-    let mut tree = RatchetTree {
-        nodes: vec![RatchetTreeNode::Blank; num_nodes],
-    };
+) -> (RatchetTree, Vec<SigSecretKey>) {
+    // Start with an empty tree. The plan is to fill up the leaves with real info, and then
+    // propagate path secrets to make sure no node in the tree is Blank
+    let mut tree = RatchetTree::new_empty(cs.hash_impl);
+    // Make up credentials and identity keys as we generate leaves for the tree
+    let mut identity_keys = Vec::with_capacity(num_leaves);
 
-    // In a random order, fill the tree
-    // We cannot say the word "leaf index" because that means something else
-    let indices_of_leaves = (0..num_leaves).map(|i| i.checked_mul(2).unwrap());
-    for idx in indices_of_leaves {
+    for _ in 0..num_leaves {
+        // Make a leaf with the credential and DH privkey, and add the signing key to the list of
+        // identity keys
+        let (cred, signing_key) = random_credential(rng, ss);
+        let dh_privkey = DhPrivateKey::new_from_random(cs.dh_impl, rng).unwrap();
+        let leaf =
+            crate::ratchet_tree::LeafNode::new_from_private_key(cs.dh_impl, cred, dh_privkey);
+
+        tree.add_leaf_node(leaf).unwrap();
+        identity_keys.push(signing_key);
+    }
+
+    // Propagate path secrets through the tree so we don't have any Blank parents
+    for idx in 0..num_leaves {
+        let member_idx = MemberIdx::new(u32::try_from(idx).unwrap());
+        let tree_idx = TreeIdx::try_from(member_idx).unwrap();
+
         // Random path secret used to derive all private keys up the tree
         let path_secret = {
             let mut buf = [0u8; 32];
             rng.fill_bytes(&mut buf);
             PathSecret::new_from_bytes(&buf)
         };
-        tree.propagate_new_path_secret(cs, path_secret, idx)
+        tree.propagate_new_path_secret(cs, path_secret, tree_idx)
             .expect("couldn't propagate random secrets in a random tree");
     }
 
-    tree
+    (tree, identity_keys)
 }
 
-// Generates a random GroupState object (of at least min_size many members) and all the identity
-// keys associated with the credentials in the roster. The group state generated has all roster
-// entries non-null and all tree nodes Filled with known secrets.
-pub(crate) fn random_full_group_state<R: rand::Rng + CryptoRng>(
+// Generates a random GroupContext object (of at least min_size many members) and all the identity
+// keys associated with the credentials in the tree. The group state generated has all leaf nodes
+// Filled with creds and all parent nodes Filled with known secrets.
+pub(crate) fn random_full_group_ctx<R: rand::Rng + CryptoRng>(
     min_size: u32,
     rng: &mut R,
-) -> (GroupState, Vec<SigSecretKey>) {
+) -> (GroupContext, Vec<SigSecretKey>) {
     // TODO: Expand the number of available ciphersuites once more are available
     let cipher_suites = &[X25519_SHA256_AES128GCM];
     let sig_schemes = &[ED25519_IMPL];
@@ -113,20 +131,11 @@ pub(crate) fn random_full_group_state<R: rand::Rng + CryptoRng>(
 
     // Group size and position in group are random
     let group_size: u32 = rng.gen_range(min_size, 50);
-    let my_roster_idx: u32 = rng.gen_range(0, group_size);
-
-    // Make a full roster (no empty slots) of random creds and store the identity keys
-    let mut roster = Roster(Vec::new());
-    let mut identity_keys = Vec::new();
-    for _ in 0..group_size {
-        let (cred, secret) = random_credential(rng, ss);
-        roster.0.push(Some(cred));
-        identity_keys.push(secret);
-    }
-    let my_identity_key = identity_keys[my_roster_idx as usize].clone();
+    let my_member_idx = MemberIdx::new(rng.gen_range(0, group_size));
 
     // Make a full tree with all secrets known
-    let tree = random_tree(rng, cs, group_size as usize);
+    let (tree, identity_keys) = random_tree(rng, cs, ss, usize::try_from(group_size).unwrap());
+    let my_identity_key = identity_keys[usize::from(my_member_idx)].clone();
 
     // Make a random 16 byte group ID
     let group_id = {
@@ -139,21 +148,24 @@ pub(crate) fn random_full_group_state<R: rand::Rng + CryptoRng>(
     let init_secret = HmacKey::new_from_random(cs.hash_impl, rng);
     let transcript_hash = Digest::new_from_zeros(cs.hash_impl);
 
-    let group_state = GroupState {
-        cs: cs,
+    // Copy the root hash before we move the tree
+    let tree_hash = tree.tree_hash().unwrap();
+
+    let group_ctx = GroupContext {
+        cs,
         protocol_version: MLS_DUMMY_VERSION,
         identity_key: my_identity_key,
-        group_id: group_id.to_vec(),
+        group_id: GroupId::new(group_id.to_vec()),
         epoch: rng.gen(),
-        roster: roster,
-        tree: tree,
-        transcript_hash: transcript_hash,
-        roster_index: Some(my_roster_idx),
+        tree,
+        tree_hash,
+        transcript_hash,
+        member_index: Some(my_member_idx),
         initializing_user_init_key: None,
-        init_secret: init_secret,
+        init_secret,
     };
 
-    (group_state, identity_keys)
+    (group_ctx, identity_keys)
 }
 
 // Returns a randomly-generated Credential along with its corresponding identity key
@@ -184,19 +196,19 @@ pub(crate) fn random_basic_credential<R: rand::Rng + CryptoRng>(
     (cred, identity_key)
 }
 
-// Returns a new GroupState where the roster index is changed to the given `new_index` and the
-// identity key is changed to correspond to that roster index. Requires that the secret keys in
-// `identity_keys` correspond to the public keys in the given group's roster
+// Returns a new GroupContext where the member index is changed to the given `new_index` and the
+// identity key is changed to correspond to that member index. Requires that the secret keys in
+// `identity_keys` correspond to the public keys in the given group's leaves
 pub(crate) fn change_self_index(
-    group_state: &GroupState,
+    group_ctx: &GroupContext,
     identity_keys: &Vec<SigSecretKey>,
-    new_index: u32,
-) -> GroupState {
-    assert!(new_index as usize <= group_state.roster.len());
+    new_index: MemberIdx,
+) -> GroupContext {
+    assert!(usize::from(new_index) <= group_ctx.tree.num_leaves());
 
-    let mut new_group_state = group_state.clone();
-    new_group_state.roster_index = Some(new_index);
-    new_group_state.identity_key = identity_keys[new_index as usize].clone();
+    let mut new_group_ctx = group_ctx.clone();
+    new_group_ctx.member_index = Some(new_index);
+    new_group_ctx.identity_key = identity_keys[usize::from(new_index)].clone();
 
-    new_group_state
+    new_group_ctx
 }

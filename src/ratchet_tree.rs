@@ -1,26 +1,31 @@
 //! Defines `RatchetTree` and all its functionality. Not much public API here.
 
 use crate::{
+    credential::Credential,
     crypto::{
         ciphersuite::CipherSuite,
-        dh::{DhPrivateKey, DhPublicKey},
+        dh::{DhPrivateKey, DhPublicKey, DhScheme},
         ecies,
+        hash::{Digest, HashFunction},
         hmac::HmacKey,
         rng::CryptoRng,
     },
     error::Error,
+    group_state::{WelcomeInfoRatchetNode, WelcomeInfoRatchetTree},
     handshake::{DirectPathMessage, DirectPathNodeMessage},
-    tree_math, utils,
+    tree_math::{self, TreeIdx},
+    utils,
 };
 
+use std::convert::{TryFrom, TryInto};
 use subtle::ConstantTimeEq;
 
-/// This is called the "node secret" (section 5.2). If `Hash` is the current ciphersuite's hash
-/// algorithm, this MUST have length equal to `Hash.length`.
+/// This is called the "node secret" in the "Ratchet Tree Updates" section of the spec. If `Hash`
+/// is the current ciphersuite's hash algorithm, this MUST have length equal to `Hash.length`.
 pub(crate) struct NodeSecret(pub(crate) Vec<u8>);
 
-/// This is called the "path secret" (section 5.2). If `Hash` is the current ciphersuite's hash
-/// algorithm, this MUST have length equal to `Hash.length`.
+/// This is called the "path secret" in the "Ratchet Tree Updates" section of the spec. If `Hash`
+/// is the current ciphersuite's hash algorithm, this MUST have length equal to `Hash.length`.
 #[derive(Clone)]
 pub struct PathSecret(HmacKey);
 
@@ -59,126 +64,624 @@ impl From<PathSecret> for HmacKey {
     }
 }
 
-// Ratchet trees are serialized in DirectPath messages as optional<PublicKey> tree<1..2^32-1> So we
-// encode RatchetTree as a Vec<RatchetTreeNode> with length bound u32, and we encode
-// RatchetTreeNode as enum { Blank, Filled { DhPublicKey } }, which is encoded in the same way as
-// an Option<DhPublicKey> would be.
-
-/// A node in a `RatchetTree`. Every node must have a DH pubkey. It may also optionally contain the
-/// corresponding private key.
-#[derive(Clone, Deserialize, Serialize)]
+/// The index of a member in a group. Equivalently, `MemberIdx(n)` corresponds to the `n`th leaf of
+/// a given tree.
+#[derive(Clone, Copy, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[cfg_attr(test, derive(Debug))]
-#[serde(rename = "RatchetTreeNode__enum_u8")]
+pub struct MemberIdx(u32);
+
+impl MemberIdx {
+    pub fn new(idx: u32) -> MemberIdx {
+        MemberIdx(idx)
+    }
+}
+
+// MemberIdx --> u32 trivially
+impl From<MemberIdx> for u32 {
+    fn from(idx: MemberIdx) -> u32 {
+        idx.0
+    }
+}
+
+// MemberIdx --> usize trivially
+impl From<MemberIdx> for usize {
+    fn from(idx: MemberIdx) -> usize {
+        // This cast casn't fail because molasses doesn't run on <32-bit machines
+        usize::try_from(idx.0).unwrap()
+    }
+}
+
+// Implement PartialEq for usize so that we can implement PartialOrd and so we can ask whether
+// `member_idx == tree.num_leaves()` when processing a GroupAdd
+impl core::cmp::PartialEq<usize> for MemberIdx {
+    fn eq(&self, other: &usize) -> bool {
+        usize::from(*self).eq(other)
+    }
+}
+
+// Implement PartialOrd between MemberIdx and usize so we can ask whether
+// `member_idx < tree.num_leaves()` when processing a GroupAdd
+impl core::cmp::PartialOrd<usize> for MemberIdx {
+    fn partial_cmp(&self, other: &usize) -> Option<core::cmp::Ordering> {
+        usize::from(*self).partial_cmp(other)
+    }
+}
+
+// MemberIdx --> TreeIdx by multiplying by 2
+impl std::convert::TryFrom<MemberIdx> for TreeIdx {
+    type Error = Error;
+
+    /// Converts a member index into its corresponding tree index
+    ///
+    /// Returns: `Ok(tree_idx)` on success. If the resulting member index is out of bounds, returns
+    /// an `Error::ValidationError`.
+    fn try_from(member_idx: MemberIdx) -> Result<TreeIdx, Error> {
+        // This is easy. The nth leaf node is at position 2n
+        // The unwrap below cannot fail because molasses only runs on >32 bit systems
+        usize::from(member_idx)
+            .checked_mul(2)
+            .ok_or(Error::ValidationError("Member index is too large"))
+            .map(TreeIdx::new)
+    }
+}
+
+// TreeIdx --> MemberIdx by dividing by 2
+impl std::convert::TryFrom<TreeIdx> for MemberIdx {
+    type Error = Error;
+
+    /// Converts a tree index that points to a leaf into the member index for that leaf
+    ///
+    /// Returns: `Ok(member_idx)` on success. If something is out of bounds or if `tree_idx`
+    /// doesn't point to a leaf node, returns an `Error::ValidationError`.
+    fn try_from(tree_idx: TreeIdx) -> Result<MemberIdx, Error> {
+        let raw_tree_idx = usize::from(tree_idx);
+        // The index is even iff it's a leaf
+        if raw_tree_idx % 2 == 0 {
+            // Try to convert it down to a u32. If it's too big, that's an error
+            let member_idx = u32::try_from(raw_tree_idx / 2)
+                .map_err(|_| Error::ValidationError("Tree index is out of bounds"))?;
+            Ok(MemberIdx(member_idx))
+        } else {
+            Err(Error::ValidationError("Tree index is not a member index"))
+        }
+    }
+}
+
+/// Represents the constant value of `NODE::hash_type` where `NODE` is `LeafNode` or `ParentNode`
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename = "NodeHashType__enum_u8")]
+enum NodeHashType {
+    /// `LeafNode::hash_type` is defined to be 0u8
+    Leaf,
+    /// `ParentNode::hash_type` is defined to be 0u8
+    Parent,
+}
+
+/// Represents a participant in the group. Contains their identity and pubkey. This is called
+/// `LeafInfo` in the spec.
+#[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct MemberInfo {
+    /// The DH public key of the participant
+    pub(crate) public_key: DhPublicKey,
+
+    /// The identity of the participant
+    pub(crate) credential: Credential,
+
+    /// The DH private key of the participant. This is nonzero iff this leaf is me.
+    #[serde(skip)]
+    pub(crate) private_key: Option<DhPrivateKey>,
+}
+
+/// A (possibly Blank) leaf node in the hash tree. Contains an optional `MemberInfo`.
+#[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct LeafNode {
+    /// This is always NodeHashType::Leaf (which is encoded as 0)
+    hash_type: NodeHashType,
+
+    /// The content of the leaf. This is `None` iff this leaf is Blank.
+    info: Option<MemberInfo>,
+}
+
+impl LeafNode {
+    /// Makes a new `LeafNode` with a known keypair, given the credential and private key
+    pub(crate) fn new_from_private_key(
+        dh_impl: &'static DhScheme,
+        credential: Credential,
+        private_key: DhPrivateKey,
+    ) -> LeafNode {
+        // Derive the pubkey and stick it in the info
+        let public_key = DhPublicKey::new_from_private_key(dh_impl, &private_key);
+        let info = MemberInfo {
+            public_key,
+            credential,
+            private_key: Some(private_key),
+        };
+
+        // Make a non-blank LeafNode with the above info
+        LeafNode {
+            hash_type: NodeHashType::Leaf,
+            info: Some(info),
+        }
+    }
+
+    /// Makes a new `LeafNode` with a known public key and credential
+    pub(crate) fn new_from_public_key(credential: Credential, public_key: DhPublicKey) -> LeafNode {
+        LeafNode {
+            hash_type: NodeHashType::Leaf,
+            info: Some(MemberInfo {
+                public_key,
+                credential,
+                private_key: None,
+            }),
+        }
+    }
+
+    /// Creates a new Blank `LeafNode`
+    pub(crate) fn new_blank() -> LeafNode {
+        LeafNode {
+            hash_type: NodeHashType::Leaf,
+            info: None,
+        }
+    }
+
+    /// Returns `true` iff this `LeafNode` is Blank
+    pub(crate) fn is_blank(&self) -> bool {
+        // A leaf node is Blank iff its `info` field is None
+        self.info.is_none()
+    }
+
+    /// Blanks out this `LeafNode`
+    fn make_blank(&mut self) {
+        self.info = None;
+    }
+
+    /// Returns the node's public key. If the node is Blank, returns `None`.
+    pub(crate) fn get_public_key(&self) -> Option<&DhPublicKey> {
+        self.info.as_ref().map(|info| &info.public_key)
+    }
+
+    /// Returns `Some(&private_key)` iff this leaf node has a known a private key. Otherwise returns
+    /// `None`.
+    pub(crate) fn get_private_key(&self) -> Option<&DhPrivateKey> {
+        self.info.as_ref().and_then(|info| info.private_key.as_ref())
+    }
+
+    /// Updates this `LeafNode`'s public key to the given one
+    ///
+    /// Returns: `Ok(())` on success. Returns an `Error::ValidationError` iff this node is Blank
+    pub(crate) fn update_public_key(&mut self, new_public_key: DhPublicKey) -> Result<(), Error> {
+        match self.info {
+            // Blank leaf nodes have to be initialized with credentials before they we can update
+            // their public key
+            None => {
+                Err(Error::ValidationError("Cannot update the public key of a Blank leaf node"))
+            }
+            // If the leaf is Filled, update the pubkey and remove what we know about the private
+            // key. Really, it should never be the case that we knew the private key beforehand,
+            // since if we did, this leaf would represent us, and we would call update_keypair
+            // instead.
+            Some(ref mut leaf_info) => {
+                leaf_info.public_key = new_public_key;
+                leaf_info.private_key = None;
+                Ok(())
+            }
+        }
+    }
+
+    /// Updates the node's private key to the given one and recalculates the public key
+    ///
+    /// Returns: `Ok(())` on success. Returns an `Error::ValidationError` iff this node is Blank
+    pub(crate) fn update_keypair(
+        &mut self,
+        dh_impl: &'static DhScheme,
+        new_private_key: DhPrivateKey,
+    ) -> Result<(), Error> {
+        match self.info {
+            // Blank leaf nodes have to be initialized with credentials before they we can update
+            // their private key
+            None => {
+                Err(Error::ValidationError("Cannot update the private key of a Blank leaf node"))
+            }
+            // If the leaf is Filled, update the private key and recalculate the pubkey
+            Some(ref mut leaf_info) => {
+                leaf_info.public_key = DhPublicKey::new_from_private_key(dh_impl, &new_private_key);
+                leaf_info.private_key = Some(new_private_key);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// A (possibly Blank) parent node in the hash tree. Contains pubkey info and the hashes of its
+/// children.
+#[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct ParentNode {
+    /// This is always NodeHashType::Parent (which is encoded as 1)
+    hash_type: NodeHashType,
+
+    /// The node's public key. This is `None` iff the node is Blank.
+    public_key: Option<DhPublicKey>,
+
+    /// The node's private key. This is `Some` iff the node is a non-Blank ancestor of ours.
+    #[serde(skip)]
+    private_key: Option<DhPrivateKey>,
+
+    /// The hash of the left subtree of this node
+    left_hash: Digest,
+
+    /// The hash of the right subtree of this node
+    right_hash: Digest,
+}
+
+impl ParentNode {
+    /// Creates a new Blank `ParentNode` whose hashes are initialized to the hashes of the given
+    /// children.
+    ///
+    /// Returns: `Ok(parent_node)` on success. If serialization fails, returns an
+    /// `Error::SerdeError`.
+    fn new_blank(
+        hash_impl: &HashFunction,
+        left_child: &RatchetTreeNode,
+        right_child: &RatchetTreeNode,
+    ) -> Result<ParentNode, Error> {
+        let left_hash = hash_impl.hash_serializable(left_child)?;
+        let right_hash = hash_impl.hash_serializable(right_child)?;
+
+        Ok(ParentNode {
+            hash_type: NodeHashType::Parent,
+            public_key: None,
+            private_key: None,
+            left_hash,
+            right_hash,
+        })
+    }
+
+    // Why can't this take in two RatchetTreeNodes and calculate the hashes themselves? Aliasing.
+    // In normal usage, this parent node will be obtained through a mutable borrow of a
+    // RatchetTree, and the children will be obtained through an immutable borrow of the same tree.
+    // The issue is that all 3 of these things have to be in scope at the same time, which violates
+    // aliasing rules. So instead we force the caller to calculate the hashes first, let the
+    // immutable borrows of the children go out of scope, then do this mutating change.
+    /// Updates the left and right child hashes of this `ParentNode`
+    ///
+    /// Returns: `Ok(())` on success. If serialization fails, returns an `Error::SerdeError`.
+    fn update_hashes(&mut self, left_child_hash: Digest, right_child_hash: Digest) {
+        self.left_hash = left_child_hash;
+        self.right_hash = right_child_hash;
+    }
+
+    /// Returns `true` iff this `ParentNode` is Blank
+    pub(crate) fn is_blank(&self) -> bool {
+        // A parent node is Blank iff its `public_key` field is None
+        self.public_key.is_none()
+    }
+
+    /// Blanks out this `ParentNode`
+    fn make_blank(&mut self) {
+        self.public_key = None;
+    }
+
+    /// Returns the node's public key. If the node is Blank, returns `None`.
+    pub(crate) fn get_public_key(&self) -> Option<&DhPublicKey> {
+        self.public_key.as_ref()
+    }
+
+    /// Returns `Some(&private_key)` iff this `ParentNode` has a known a private key. Otherwise returns
+    /// `None`.
+    pub(crate) fn get_private_key(&self) -> Option<&DhPrivateKey> {
+        self.private_key.as_ref()
+    }
+
+    /// Updates this `ParentNode`'s public key to the given one and erases the private key
+    pub(crate) fn update_public_key(&mut self, new_public_key: DhPublicKey) {
+        self.public_key = Some(new_public_key);
+        self.private_key = None;
+    }
+
+    /// Updates the node's private key to the given one and recalculates the public key
+    ///
+    /// Returns: `Ok(())` on success. Returns an `Error::ValidationError` iff this node is Blank
+    pub(crate) fn update_keypair(
+        &mut self,
+        dh_impl: &'static DhScheme,
+        new_private_key: DhPrivateKey,
+    ) {
+        let pubkey = DhPublicKey::new_from_private_key(dh_impl, &new_private_key);
+        self.public_key = Some(pubkey);
+        self.private_key = Some(new_private_key);
+    }
+}
+
+/// Every node is either a `Parent` or a `Leaf`
+#[derive(Clone, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+#[serde(rename = "RatchetTreeNode__enum_untagged")]
 pub(crate) enum RatchetTreeNode {
-    Blank,
-    Filled {
-        public_key: DhPublicKey,
-        #[serde(skip)]
-        private_key: Option<DhPrivateKey>,
-    },
+    Parent(ParentNode),
+    Leaf(LeafNode),
 }
 
 impl RatchetTreeNode {
-    /// Makes a new node with a known keypair, given the private key
-    pub(crate) fn new_from_private_key(
-        cs: &'static CipherSuite,
-        private_key: DhPrivateKey,
-    ) -> RatchetTreeNode {
-        // Derive the pubkey and stick it in the node
-        let pubkey = DhPublicKey::new_from_private_key(cs.dh_impl, &private_key);
-        RatchetTreeNode::Filled {
-            public_key: pubkey,
-            private_key: Some(private_key),
+    /// Wraps the `get_public_key` methods of `ParentNode` and `LeafNode`
+    fn get_public_key(&self) -> Option<&DhPublicKey> {
+        match self {
+            RatchetTreeNode::Parent(ref p) => p.get_public_key(),
+            RatchetTreeNode::Leaf(ref l) => l.get_public_key(),
         }
     }
 
-    /// Returns `true` iff this is the `Filled` variant
-    #[rustfmt::skip]
+    /// Wraps the `is_blank` methods of `ParentNode` and `LeafNode`
+    pub(crate) fn is_blank(&self) -> bool {
+        match self {
+            RatchetTreeNode::Parent(ref p) => p.is_blank(),
+            RatchetTreeNode::Leaf(ref l) => l.is_blank(),
+        }
+    }
+
+    /// Returns the opposite of `is_blank`
     pub(crate) fn is_filled(&self) -> bool {
-        if let RatchetTreeNode::Filled { .. } = self {
-            true
-        } else {
-            false
-        }
+        !self.is_blank()
     }
 
-    /// Updates the node's public key to the given one. This is the only way to convert a `Blank`
-    /// node into a `Filled` one.
-    pub(crate) fn update_public_key(&mut self, new_public_key: DhPublicKey) {
+    /// Wraps the `make_blank` methods of `ParentNode` and `LeafNode`
+    fn make_blank(&mut self) {
         match self {
-            RatchetTreeNode::Blank => {
-                *self = RatchetTreeNode::Filled {
-                    public_key: new_public_key,
-                    private_key: None,
-                };
-            }
-            RatchetTreeNode::Filled {
-                ref mut public_key,
-                ..
-            } => *public_key = new_public_key,
+            RatchetTreeNode::Parent(ref mut p) => p.make_blank(),
+            RatchetTreeNode::Leaf(ref mut l) => l.make_blank(),
         }
     }
 
-    /// Returns a node's public key. If the node is `Blank`, returns `None`.
-    pub(crate) fn get_public_key(&self) -> Option<&DhPublicKey> {
-        match self {
-            RatchetTreeNode::Blank => None,
-            RatchetTreeNode::Filled {
-                ref public_key,
-                ..
-            } => Some(public_key),
-        }
-    }
-
-    /// Updates the node's private key to the given one
-    ///
-    /// Panics: If the node is `Blank`
-    pub(crate) fn update_private_key(&mut self, new_private_key: DhPrivateKey) {
-        match self {
-            RatchetTreeNode::Blank => panic!("tried to update private key of blank node"),
-            RatchetTreeNode::Filled {
-                ref mut private_key,
-                ..
-            } => {
-                *private_key = Some(new_private_key);
-            }
-        }
-    }
-
-    /// Returns `Some(&private_key)` if the node contains a private key. Otherwise returns `None`.
+    // This wraps the `get_private_key` methods of `ParentNode` and `LeafNode`
+    /// Returns `Some(&private_key)` iff this node has a known a private key. Otherwise returns
+    /// `None`.
     pub(crate) fn get_private_key(&self) -> Option<&DhPrivateKey> {
         match self {
-            RatchetTreeNode::Blank => None,
-            RatchetTreeNode::Filled {
-                ref private_key,
-                ..
-            } => private_key.as_ref(),
+            RatchetTreeNode::Parent(ref p) => p.get_private_key(),
+            RatchetTreeNode::Leaf(ref l) => l.get_private_key(),
+        }
+    }
+
+    // This wraps the `update_keypair` methods of `ParentNode` and `LeafNode`
+    /// Updates the node's private key to the given one and recalculates the public key
+    ///
+    /// Returns: `Ok(())` on success. Returns an `Error::ValidationError` iff this node is Blank
+    /// leaf node.
+    pub(crate) fn update_keypair(
+        &mut self,
+        dh_impl: &'static DhScheme,
+        new_private_key: DhPrivateKey,
+    ) -> Result<(), Error> {
+        match self {
+            RatchetTreeNode::Parent(ref mut p) => {
+                // Updating a parent node can't fail
+                p.update_keypair(dh_impl, new_private_key);
+                Ok(())
+            }
+            // Updating a leaf node can fail. Namely if we tried to update one without a credential
+            RatchetTreeNode::Leaf(ref mut l) => l.update_keypair(dh_impl, new_private_key),
+        }
+    }
+
+    // This wraps the `update_public_key` methods of `ParentNode` and `LeafNode`
+    /// Updates the node's public key to the given one and erases the private key
+    ///
+    /// Returns: `Ok(())` on success. Returns an `Error::ValidationError` iff this node is Blank
+    /// leaf node.
+    pub(crate) fn update_public_key(&mut self, new_public_key: DhPublicKey) -> Result<(), Error> {
+        match self {
+            RatchetTreeNode::Parent(ref mut p) => {
+                // Updating a parent node can't fail
+                p.update_public_key(new_public_key);
+                Ok(())
+            }
+            // Updating a leaf node can fail. Namely if we tried to update one without a credential
+            RatchetTreeNode::Leaf(ref mut l) => l.update_public_key(new_public_key),
         }
     }
 }
 
 /// A left-balanced binary tree of `RatchetTreeNode`s
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct RatchetTree {
-    #[serde(rename = "nodes__bound_u32")]
+    hash_impl: &'static HashFunction,
     pub(crate) nodes: Vec<RatchetTreeNode>,
 }
 
 impl RatchetTree {
+    /// Creates a new `RatchetTree` with no nodes. Only for testing purposes
+    #[cfg(test)]
+    pub(crate) fn new_empty(hash_impl: &'static HashFunction) -> RatchetTree {
+        RatchetTree {
+            hash_impl,
+            nodes: Vec::new(),
+        }
+    }
+
+    /// Creates a new `RatchetTree` with a single node
+    ///
+    /// Returns: `Ok(tree)` on success. If leaf node serialization fails, returns an
+    /// `Error::SerdeError`.
+    pub(crate) fn new_singleton(
+        hash_impl: &'static HashFunction,
+        node: LeafNode,
+    ) -> Result<RatchetTree, Error> {
+        // Make an empty tree
+        let mut tree = RatchetTree {
+            hash_impl,
+            nodes: Vec::new(),
+        };
+        // Add the leaf and return the tree
+        tree.add_leaf_node(node)?;
+        Ok(tree)
+    }
+
+    /// Converts a `WelcomeInfoRatchetTree` into a proper `RatchetTree`
+    pub(crate) fn new_from_welcome_info_ratchet_tree(
+        hash_impl: &'static HashFunction,
+        wi_tree: WelcomeInfoRatchetTree,
+    ) -> Result<RatchetTree, Error> {
+        let mut nodes: Vec<RatchetTreeNode> = Vec::with_capacity(wi_tree.0.len());
+
+        // We consider 3 cases in the loop:
+        // 1. A WelcomeInfoRatchetTree node is None: In this case, we make a Blank node
+        // 2. A WelcomeInfoRatchetTree node is Some and it's a leaf: In this case, we make a Filled
+        //    LeafNode. Note that this requires that the given node's credential must be Some,
+        //    since leaves are tied to identities. A missing credential is considered an error.
+        // 3. A WelcomeInfoRatchetTree node is Some and it'a parent: In this case, we make a Filled
+        //    ParentNode. WelcomeInfo does not come with private key information, so we only have
+        //    to set the parent's pubkey. Still, we check that the given node's credential field is
+        //    None, since a non-None credential for a parent node makes no sense (parent nodes
+        //    aren't tied to any identity)
+        for (i, wi_node_opt) in wi_tree.0.into_iter().enumerate() {
+            // This index is a leaf's iff its node level is 0
+            let curr_idx = TreeIdx::new(i);
+            let is_leaf = tree_math::node_level(curr_idx) == 0;
+
+            let node = match wi_node_opt {
+                // We got a blank node
+                None => {
+                    let blank_node = if is_leaf {
+                        // Blank leaves are easy
+                        RatchetTreeNode::Leaf(LeafNode::new_blank())
+                    } else {
+                        // Make a Blank parent node with dummy hashes. We'll calculate the hashes
+                        // at the end of this function
+                        RatchetTreeNode::Parent(ParentNode {
+                            hash_type: NodeHashType::Parent,
+                            public_key: None,
+                            private_key: None,
+                            left_hash: Digest::new_from_zeros(hash_impl),
+                            right_hash: Digest::new_from_zeros(hash_impl),
+                        })
+                    };
+
+                    blank_node
+                }
+
+                // We got a filled node
+                Some(wi_node) => {
+                    let filled_node = if is_leaf {
+                        // Filled leaves MUST come with a credential
+                        let credential = wi_node.credential.ok_or(Error::ValidationError(
+                            "Non-Blank WelcomeInfoRatchetNodes must have a credential",
+                        ))?;
+                        let leaf = LeafNode::new_from_public_key(credential, wi_node.public_key);
+                        RatchetTreeNode::Leaf(leaf)
+                    } else {
+                        // Do a quick sanity check. It makes no sense for parent nodes to come with
+                        // a credential
+                        if wi_node.credential.is_some() {
+                            return Err(Error::ValidationError(
+                                "Non-leaf WelcomeInfoRatchetNodes cannot have a credential",
+                            ));
+                        }
+                        // Make a Filled parent node with the given public key and dummy hashes.
+                        // We'll calculate the hashes at the end of this function
+                        RatchetTreeNode::Parent(ParentNode {
+                            hash_type: NodeHashType::Parent,
+                            public_key: Some(wi_node.public_key),
+                            private_key: None,
+                            left_hash: Digest::new_from_zeros(hash_impl),
+                            right_hash: Digest::new_from_zeros(hash_impl),
+                        })
+                    };
+
+                    filled_node
+                }
+            };
+
+            nodes.push(node);
+        }
+
+        // Make the tree from its components
+        let mut tree = RatchetTree {
+            hash_impl,
+            nodes,
+        };
+
+        // Final step: calculate the node hash of all the nodes in the tree
+        tree.recalculate_all_hashes()?;
+
+        // All done
+        Ok(tree)
+    }
+
     /// Returns the number of nodes in the tree
     pub(crate) fn size(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Returns the number of members in the tree (i.e., the number of leaves)
+    pub(crate) fn num_leaves(&self) -> usize {
+        tree_math::num_leaves_in_tree(self.size())
+    }
+
     /// Returns the node at the given index
-    pub(crate) fn get(&self, idx: usize) -> Option<&RatchetTreeNode> {
-        self.nodes.get(idx)
+    pub(crate) fn get(&self, idx: TreeIdx) -> Option<&RatchetTreeNode> {
+        self.nodes.get(usize::from(idx))
     }
 
     /// Returns a mutable reference to the node at the given index
-    pub(crate) fn get_mut(&mut self, idx: usize) -> Option<&mut RatchetTreeNode> {
-        self.nodes.get_mut(idx)
+    fn get_mut(&mut self, idx: TreeIdx) -> Option<&mut RatchetTreeNode> {
+        self.nodes.get_mut(usize::from(idx))
+    }
+
+    /// Fetches the credential corresponding to the member at the given index
+    ///
+    /// Returns: `Ok(None)` iff the member at the given index is Blank. Returns `Ok(Some(cred))`
+    /// iff the member at the given index is Filled. Returns `Error::ValidationError` if the given
+    /// index is out of bounds
+    pub(crate) fn get_member_info(
+        &self,
+        member_idx: MemberIdx,
+    ) -> Result<Option<&MemberInfo>, Error> {
+        let tree_idx: TreeIdx = member_idx.try_into()?;
+        // The enum_variant! macro below can only panic if we have a Parent node in the place of a
+        // leaf node, which means that this tree is corrupt anyways
+        let leaf = self
+            .get(tree_idx.into())
+            .ok_or(Error::ValidationError("Member index is out of bounds"))
+            .map(|node| enum_variant!(node, RatchetTreeNode::Leaf))?;
+
+        Ok(leaf.info.as_ref())
+    }
+
+    /// Sets the member info at a given member index and recalculates the hashes in the leaf's
+    /// extended direct path
+    ///
+    /// Returns: `Ok(())` on success. Returns `Error::ValidationError` if the given index is out of
+    /// bounds. Returns `Error::SerdeError` if something goes wrong in recalculating the hashes.
+    /// Returns `Error::ValidationError` if we tried to set the member info of a non-blank node.
+    pub(crate) fn set_member_info(
+        &mut self,
+        member_idx: MemberIdx,
+        info: MemberInfo,
+    ) -> Result<(), Error> {
+        let tree_idx: TreeIdx = member_idx.try_into()?;
+
+        // The enum_variant! macro below can only panic if we have a Parent node in the place of a
+        // leaf node, which means that this tree is corrupt anyways
+        let mut leaf = self
+            .get_mut(tree_idx.into())
+            .ok_or(Error::ValidationError("Member index is out of bounds"))
+            .map(|node| enum_variant!(node, RatchetTreeNode::Leaf))?;
+
+        // Check that we're not overwriting anything. The only time we should be setting member
+        // info is during an Add op, when we have either appended a new blank leaf or are using an
+        // existing blank leaf. Neither of these cases involve overwriting existing MemberInfo.
+        if leaf.info.is_some() {
+            return Err(Error::ValidationError("Tried to overwrite non-blank node"));
+        }
+
+        // Set the field
+        leaf.info = Some(info);
+
+        // Now recalculate the hashes along the extended direct path of the modified leaf
+        self.recalculate_ancestor_hashes(tree_idx)
     }
 
     // It turns out that appending to the tree in this way preserves the left-balanced property
@@ -195,64 +698,165 @@ impl RatchetTree {
     //                                         / \     / \    |
     //                                        A   B   C   D   E
     //                                        0 1 2 3 4 5 6 7 8
-    pub(crate) fn add_leaf_node(&mut self, node: RatchetTreeNode) {
+    /// Appends the given leaf node to the tree, making a new Blank parent node in the process.
+    /// Also recalculates the hashes in the extended direct path of the added leaf.
+    ///
+    /// Returns: `Ok(())` on success. If serialization fails, returns an `Error::SerdeError`.
+    pub(crate) fn add_leaf_node(&mut self, new_leaf: LeafNode) -> Result<(), Error> {
+        let new_leaf = RatchetTreeNode::Leaf(new_leaf);
+
         if self.nodes.is_empty() {
-            self.nodes.push(node);
-            return;
+            // If the tree is empty, the first thing we push is a leaf node
+            self.nodes.push(new_leaf);
         } else {
-            self.nodes.push(RatchetTreeNode::Blank);
-            self.nodes.push(node);
+            // We need to find the two children of the parent node we're about to add in order to
+            // be able to calculate the hashes.
+
+            // The index that the newly added parent node will have; it's just off the end
+            let new_parent_idx = TreeIdx::new(self.size());
+
+            // The left child of the newly added parent node
+            let left_child = {
+                let left_child_idx = tree_math::node_left_child(new_parent_idx);
+                self.get(left_child_idx).unwrap()
+            };
+
+            // Make the parent node. The right child is guaranteed to be the new leaf
+            let new_parent = ParentNode::new_blank(self.hash_impl, left_child, &new_leaf)?;
+
+            // Push the two to the tree
+            self.nodes.push(RatchetTreeNode::Parent(new_parent));
+            self.nodes.push(new_leaf);
         }
+
+        // This is the idx of the leaf we just added. The -1 here can't underflow, since the
+        // tree is nonempty now
+        let new_leaf_idx = TreeIdx::new(self.size() - 1);
+        // Update the hashes of the ancestors of the newly-added leaf
+        self.recalculate_ancestor_hashes(new_leaf_idx)
     }
 
-    /// Blanks out the direct path of the given node, as well as the root node
-    pub(crate) fn propagate_blank(&mut self, start_idx: usize) {
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let direct_path = tree_math::node_extended_direct_path(start_idx, num_leaves);
+    /// Blanks out the extended direct path of the given member and recalculates its hashes
+    ///
+    /// Returns: `Ok(())` on success. Returns an `Error::ValidationError` if something went wrong
+    /// in indexing things.
+    pub(crate) fn propagate_blank(&mut self, member_idx: MemberIdx) -> Result<(), Error> {
+        // This is our starting point in the tree
+        let tree_idx: TreeIdx = member_idx.try_into()?;
 
         // Blank the extended direct path (direct path + root node)
-        for i in direct_path {
+        for i in tree_math::node_extended_direct_path(tree_idx.into(), self.num_leaves()) {
             // No need to check index here. By construction, there's no way this is out of bounds
-            self.nodes[i] = RatchetTreeNode::Blank;
+            self.nodes[usize::from(i)].make_blank();
         }
+
+        // Recalculate along the extended direct path, since those were the only modified nodes
+        self.recalculate_ancestor_hashes(tree_idx)
+    }
+
+    /// Updates the path secret at the given index and derives the path secrets, node secrets,
+    /// private keys, and public keys of all its ancestors. This also recalculates the hashes of
+    /// all the parents of the modified nodes. If anything described here fails, this method will
+    /// _not_ roll back the operation, so the caller should expect this object to be in an invalid
+    /// state.
+    ///
+    /// Requires: `path_secret.len() == cs.hash_alg.output_len`
+    ///
+    /// Panics: If above condition is not satisfied
+    ///
+    /// Returns: `Ok(node_secret)` on success, where `node_secret` is the node secret of the root
+    /// node of the updated ratchet tree.
+    pub(crate) fn propagate_new_path_secret(
+        &mut self,
+        cs: &CipherSuite,
+        mut path_secret: PathSecret,
+        start_idx: TreeIdx,
+    ) -> Result<NodeSecret, Error> {
+        let num_leaves = self.num_leaves();
+        let root_node_idx = tree_math::root_idx(num_leaves);
+
+        let mut current_node_idx = start_idx;
+
+        // Go up the tree, setting the node secrets and keypairs. The last calculated node secret
+        // is that of the root. This is our return value
+        let root_node_secret = loop {
+            let current_node = self
+                .get_mut(current_node_idx.into())
+                .expect("reached invalid node in secret propagation");
+
+            // Derive the new values
+            let (_, node_private_key, node_secret, new_path_secret) =
+                utils::derive_node_values(cs, path_secret)?;
+
+            // Update the current node with the new values
+            current_node.update_keypair(cs.dh_impl, node_private_key)?;
+
+            if current_node_idx == root_node_idx {
+                // If we just updated the root, we're done
+                break node_secret;
+            } else {
+                // Otherwise, take one step up the tree
+                current_node_idx = tree_math::node_parent(current_node_idx, num_leaves);
+                path_secret = new_path_secret;
+            }
+        };
+
+        // Update the hashes of all the ancestors of the starting node
+        self.recalculate_ancestor_hashes(start_idx)?;
+
+        Ok(root_node_secret)
     }
 
     // This always produces a valid tree. To see this, note that truncating to a leaf node when
     // there are >1 non-blank leaf nodes gives you a vector of odd length. All vectors of odd
     // length have a unique interpretation as a binary left-balanced tree. And if there are no
     // non-blank leaf nodes, you get an empty tree.
-    /// Truncates the tree down to the first non-blank leaf node. If there is all blank, this will
-    /// clear the tree.
+    /// Truncates the tree down to the first non-blank leaf node and recalculates the hashes of the
+    /// parents of the rightmost node. If there are only Blank nodes, this will clear the tree.
     pub(crate) fn truncate_to_last_nonblank(&mut self) {
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
+        let num_leaves = self.num_leaves();
 
         // Look for the last non-blank leaf by iterating backwards through the leaves in the tree
-        let mut last_nonblank_leaf = None;
-        for idx in tree_math::tree_leaves(num_leaves).rev() {
-            if self.nodes[idx].is_filled() {
-                last_nonblank_leaf = Some(idx);
+        let mut last_nonblank_leaf: Option<TreeIdx> = None;
+        for tree_leaf_idx in tree_math::tree_leaves(num_leaves).rev() {
+            if self.nodes[usize::from(tree_leaf_idx)].is_filled() {
+                last_nonblank_leaf = Some(tree_leaf_idx);
                 break;
             }
         }
 
         match last_nonblank_leaf {
-            // If there are no nonempty entries in the roster, clear it
-            None => self.nodes.clear(),
+            // If there are no nonempty entries in the tree, clear it
+            None => {
+                // Clear the tree and return early. There are no hashes to recalculate
+                self.nodes.clear();
+                return;
+            }
             Some(i) => {
                 // This can't fail, because i is an index
-                let num_elements_to_retain = i + 1;
+                let num_elements_to_retain = usize::from(i) + 1;
                 self.nodes.truncate(num_elements_to_retain)
             }
         }
+
+        // Get the index of the last member and update the hashes in its extended direct path. The
+        // -1 cannot underflow here, because if the tree were empty, we would have early-returned
+        // in the match statement above.
+        let last_member_idx = TreeIdx::new(self.size() - 1);
+
+        // This unwrap() cannot fail. The only way tree hash calculation fails is via serialization
+        // error. But this tree was valid before the call to this function, and no elements in the
+        // tree have been modified. So serialization cannot fail.
+        self.recalculate_ancestor_hashes(last_member_idx).unwrap();
     }
 
     /// Returns the indices of the resolution of a given node: this an ordered sequence of minimal
     /// set of non-blank nodes that collectively cover (A "covers" B iff A is an ancestor of B) all
     /// non-blank descendants of the given node. The ordering is ascending by node index.
-    pub(crate) fn resolution(&self, idx: usize) -> Vec<usize> {
+    pub(crate) fn resolution(&self, idx: TreeIdx) -> Vec<TreeIdx> {
         // Helper function that accumulates the resolution recursively
-        fn helper(tree: &RatchetTree, i: usize, acc: &mut Vec<usize>) {
-            if let RatchetTreeNode::Blank = tree.nodes[i] {
+        fn helper(tree: &RatchetTree, i: TreeIdx, acc: &mut Vec<TreeIdx>) {
+            if tree.nodes[usize::from(i)].is_blank() {
                 if tree_math::node_level(i) == 0 {
                     // The resolution of a blank leaf node is the empty list
                     return;
@@ -260,7 +864,7 @@ impl RatchetTree {
                     // The resolution of a blank intermediate node is the result of concatinating
                     // the resolution of its left child with the resolution of its right child, in
                     // that order
-                    let num_leaves = tree_math::num_leaves_in_tree(tree.nodes.len());
+                    let num_leaves = tree.num_leaves();
                     helper(tree, tree_math::node_left_child(i), acc);
                     helper(tree, tree_math::node_right_child(i, num_leaves), acc);
                 }
@@ -276,26 +880,27 @@ impl RatchetTree {
         ret
     }
 
-    /// Overwrites all the public keys in the extended (including root) direct path of
+    /// Overwrites all the public keys in the extended (i.e., including root) direct path of
     /// `start_tree_idx` with `public_keys`, stopping before setting the public key at
     /// `stop_before_tree_idx`. If `stop_before_tree_idx` is not found in the direct path, this
     /// will overwrite the public keys of the whole extended direct path.
     ///
     /// Returns: `Ok(())` on success. Returns `Error::ValidationError` if the direct path range of
-    /// `[start_tree_idx, stop_before_tree_idx)` is longer than the `public_keys` iterator.
-    #[must_use]
+    /// `[start_tree_idx, stop_before_tree_idx)` is longer than the `public_keys` iterator, or if
+    /// `start_tree_idx` is a Blank `LeafNode`.
     pub(crate) fn set_public_keys_with_bound<'a, I: Iterator<Item = &'a DhPublicKey>>(
         &mut self,
-        start_tree_idx: usize,
-        stop_before_tree_idx: usize,
+        start_member_idx: MemberIdx,
+        stop_before_tree_idx: TreeIdx,
         mut public_keys: I,
     ) -> Result<(), Error> {
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
         // Update all the public keys of the nodes in the direct path that are below our common
         // ancestor, i.e., all the ones whose secret we don't know. Note that this step is not
         // performed in apply_update, because this only happens when we're not the ones who created
         // the Update operation.
-        let sender_direct_path = tree_math::node_extended_direct_path(start_tree_idx, num_leaves);
+        let start_tree_idx: TreeIdx = start_member_idx.try_into()?;
+        let sender_direct_path =
+            tree_math::node_extended_direct_path(start_tree_idx, self.num_leaves());
         for path_node_idx in sender_direct_path {
             let pubkey = public_keys.next().ok_or(Error::ValidationError(
                 "Partial direct path is longer than public key iterator",
@@ -307,9 +912,12 @@ impl RatchetTree {
                 let node = self
                     .get_mut(path_node_idx)
                     .ok_or(Error::ValidationError("Direct path node is out of range"))?;
-                node.update_public_key(pubkey.clone());
+                node.update_public_key(pubkey.clone())?;
             }
         }
+
+        // Update the hashes of all the ancestors of the starting node
+        self.recalculate_ancestor_hashes(start_tree_idx)?;
 
         Ok(())
     }
@@ -321,18 +929,18 @@ impl RatchetTree {
     /// path. Returns some sort of `Error::ValidationError` otherwise.
     pub(crate) fn validate_direct_path_public_keys<'a, I>(
         &self,
-        start_idx: usize,
+        start_member_idx: MemberIdx,
         mut expected_public_keys: I,
     ) -> Result<(), Error>
     where
         I: Iterator<Item = &'a DhPublicKey>,
     {
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
-
         // Verify that the pubkeys in the message agree with our newly-derived pubkeys all the way
         // up the tree (including the root node). We go through the iterators in lock-step. If one
-        // is longer than the other, that's a problem, and we throw and error.
-        let mut ext_direct_path = tree_math::node_extended_direct_path(start_idx, num_leaves);
+        // goes longer than the other, that's a problem, and we throw and error.
+        let start_tree_idx: TreeIdx = start_member_idx.try_into()?;
+        let mut ext_direct_path =
+            tree_math::node_extended_direct_path(start_tree_idx, self.num_leaves());
         loop {
             match (ext_direct_path.next(), expected_public_keys.next()) {
                 (Some(path_node_idx), Some(expected_pubkey)) => {
@@ -367,28 +975,26 @@ impl RatchetTree {
     }
 
     /// Given a path secret, constructs a `DirectPathMessage` containing encrypted copies of the
-    /// appropriately ratcheted path secret for the rest of the ratchet tree. See section
-    /// 5.2 in the spec for details.
-    ///
-    /// Requires: `starting_tree_idx` to be a leaf node. Otherwise, any child of ours would be
-    /// unable to decrypt this message.
+    /// appropriately ratcheted path secret for the rest of the ratchet tree. See the "Direct
+    /// Paths" section in the spec for details.
     pub(crate) fn encrypt_direct_path_secrets<R>(
         &self,
-        cs: &'static CipherSuite,
-        starting_tree_idx: usize,
+        cs: &CipherSuite,
+        starting_leaf_node: MemberIdx,
         starting_path_secret: PathSecret,
         csprng: &mut R,
     ) -> Result<DirectPathMessage, Error>
     where
         R: CryptoRng,
     {
-        // Check if it's a leaf node
-        if starting_tree_idx % 2 != 0 {
-            return Err(Error::TreeError("Cannot encrypt direct paths of non-leaf nodes"));
+        // Convert the member into to a tree index and check for errors.
+        let starting_tree_idx: TreeIdx = starting_leaf_node.try_into()?;
+        if starting_tree_idx >= self.size() {
+            return Err(Error::TreeError("Encryption starting node index out of range"));
         }
 
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let direct_path = tree_math::node_direct_path(starting_tree_idx as usize, num_leaves);
+        let num_leaves = self.num_leaves();
+        let direct_path = tree_math::node_direct_path(starting_tree_idx, num_leaves);
 
         let mut node_messages = Vec::new();
 
@@ -397,7 +1003,7 @@ impl RatchetTree {
             utils::derive_node_values(cs, starting_path_secret)?;
         node_messages.push(DirectPathNodeMessage {
             public_key: starting_node_public_key.clone(),
-            node_secrets: Vec::with_capacity(0),
+            encrypted_path_secrets: Vec::with_capacity(0),
         });
 
         // Go up the direct path of the starting index
@@ -412,7 +1018,9 @@ impl RatchetTree {
             // indices that are actually in the tree.
             let mut encrypted_path_secrets = Vec::new();
             let copath_node_idx = tree_math::node_sibling(path_node_idx, num_leaves);
-            for res_node in self.resolution(copath_node_idx).iter().map(|&i| &self.nodes[i]) {
+            for res_node_idx in self.resolution(copath_node_idx).into_iter() {
+                // This node must exist in the tree because we just got the idx from resolution()
+                let res_node = &self.nodes[usize::from(res_node_idx)];
                 // We can unwrap() here because self.resolution only returns indices of nodes
                 // that are non-blank, by definition of "resolution"
                 let others_public_key = res_node.get_public_key().unwrap();
@@ -429,7 +1037,7 @@ impl RatchetTree {
             // Push the collection to the message list
             node_messages.push(DirectPathNodeMessage {
                 public_key: parent_public_key.clone(),
-                node_secrets: encrypted_path_secrets,
+                encrypted_path_secrets: encrypted_path_secrets,
             });
 
             // Ratchet up the path secret
@@ -441,48 +1049,45 @@ impl RatchetTree {
         })
     }
 
+    // This function technically makes sense with my_idx being a parent node, but that never
+    // happens in practice, so we restrict the inputs to leaf nodes
     /// Finds the (unique) ciphertext in the given direct path message that is meant for this
-    /// member and decrypts it. `starting_node_idx` is the the index of the starting node of the
-    /// encoded direct path.
+    /// member and decrypts it. `sender_idx` is the the member index of the starting node of the
+    /// encoded direct path. `my_idx` is the member index of us, i.e., a leaf node whose private
+    /// key is known.
     ///
-    /// Requires: `starting_tree_idx` cannot be an ancestor of `my_tree_idx`, nor vice-versa. We
-    /// cannot decrypt messages that violate this.
-    ///
-    /// Returns: `Ok((pt, idx))` where `pt` is the `Result` of decrypting the found ciphertext and
-    /// `idx` is the common ancestor of `starting_tree_idx` and `my_tree_idx`. If no decryptable
-    /// ciphertext exists, returns an `Error::TreeError`. If decryption fails, returns an
-    /// `Error::EncryptionError`.
+    /// Returns: `Ok((pt, ancestor))` where `pt` is the `Result` of decrypting the found ciphertext
+    /// and `ancestor` is the tree index of the common ancestor of `sender_idx` and `my_idx`. If no
+    /// decryptable ciphertext exists, returns an `Error::TreeError`. If decryption fails, returns
+    /// an `Error::EncryptionError`.
     pub(crate) fn decrypt_direct_path_message(
         &self,
-        cs: &'static CipherSuite,
+        cs: &CipherSuite,
         direct_path_msg: &DirectPathMessage,
-        starting_tree_idx: usize,
-        my_tree_idx: usize,
-    ) -> Result<(PathSecret, usize), Error> {
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
+        sender_idx: MemberIdx,
+        my_idx: MemberIdx,
+    ) -> Result<(PathSecret, TreeIdx), Error> {
+        let num_leaves = self.num_leaves();
 
-        if starting_tree_idx >= self.size() || my_tree_idx >= self.size() {
+        // Convert member indices to tree indices and check for errors
+        let my_tree_idx: TreeIdx = my_idx.try_into()?;
+        let sender_tree_idx: TreeIdx = sender_idx.try_into()?;
+        if sender_tree_idx >= self.size() || my_tree_idx >= self.size() {
             return Err(Error::TreeError("Input index out of range"));
         }
 
-        if tree_math::is_ancestor(starting_tree_idx, my_tree_idx, num_leaves)
-            || tree_math::is_ancestor(my_tree_idx, starting_tree_idx, num_leaves)
-        {
-            return Err(Error::TreeError("Cannot decrypt messages from ancestors or descendants"));
-        }
-
         // This is the intermediate node in the direct path whose secret was encrypted for us.
-        let common_ancestor_idx =
-            tree_math::common_ancestor(starting_tree_idx, my_tree_idx, num_leaves);
+        let common_ancestor_tree_idx =
+            tree_math::common_ancestor(sender_tree_idx, my_tree_idx, num_leaves);
 
         // This holds the secret of the intermediate node, encrypted for all the nodes in the
         // resolution of the copath node.
         let node_msg = {
             // To get this value, we have to figure out the correct index into node_message
             let (pos_in_msg_vec, _) =
-                tree_math::node_extended_direct_path(starting_tree_idx, num_leaves)
+                tree_math::node_extended_direct_path(sender_tree_idx, num_leaves)
                     .enumerate()
-                    .find(|&(_, dp_idx)| dp_idx == common_ancestor_idx)
+                    .find(|&(_, dp_idx)| dp_idx == common_ancestor_tree_idx)
                     .expect("common ancestor somehow did not appear in direct path");
             direct_path_msg
                 .node_messages
@@ -490,11 +1095,12 @@ impl RatchetTree {
                 .ok_or(Error::TreeError("Malformed DirectPathMessage"))?
         };
 
-        // This is the unique acnestor of the receiver that is in the copath of the sender. This is
-        // the one whose resolution is used.
+        // This is the unique ancestor of the receiver that is in the copath of the sender. In
+        // other words, this is the child of the common ancestor that's also an ancestor of the
+        // receiver. This is the node whose resolution is used.
         let copath_ancestor_idx = {
-            let left = tree_math::node_left_child(common_ancestor_idx);
-            let right = tree_math::node_right_child(common_ancestor_idx, num_leaves);
+            let left = tree_math::node_left_child(common_ancestor_tree_idx);
+            let right = tree_math::node_right_child(common_ancestor_tree_idx, num_leaves);
             if tree_math::is_ancestor(left, my_tree_idx, num_leaves) {
                 left
             } else {
@@ -518,14 +1124,14 @@ impl RatchetTree {
                 // corresponding ciphertext
                 let decryption_key = res_node.get_private_key().unwrap();
                 let ciphertext_for_me = node_msg
-                    .node_secrets
+                    .encrypted_path_secrets
                     .get(pos_in_res)
                     .ok_or(Error::TreeError("Malformed DirectPathMessage"))?;
 
                 // Finally, decrypt the thing and return the plaintext and common ancestor
                 let plaintext = ecies::decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
                 let path_secret = PathSecret::new_from_bytes(&plaintext);
-                return Ok((path_secret, common_ancestor_idx));
+                return Ok((path_secret, common_ancestor_tree_idx));
             }
         }
 
@@ -533,55 +1139,152 @@ impl RatchetTree {
         Err(Error::TreeError("Cannot find node in resolution with known private key"))
     }
 
-    /// Updates the path secret at the given index and derives the path secrets, node secrets,
-    /// private keys, and public keys of all its ancestors. If this process fails, this method will
-    /// _not_ roll back the operation, so the caller should expect this object to be in an invalid
-    /// state.
+    /// Updates the hashes of the nodes at the given indices in the order given
     ///
-    /// Requires: `path_secret.len() == cs.hash_alg.output_len`
+    /// Returns: `Ok(())` on success. If serialization fails at any point, errors with an
+    /// `Error::SerdeError`.
     ///
-    /// Panics: If above condition is not satisfied
-    ///
-    /// Returns: `Ok(node_secret)` on success, where `node_secret` is the node secret of the root
-    /// node of the updated ratchet tree.
-    pub(crate) fn propagate_new_path_secret(
-        &mut self,
-        cs: &'static CipherSuite,
-        mut path_secret: PathSecret,
-        start_idx: usize,
-    ) -> Result<NodeSecret, Error> {
-        let num_leaves = tree_math::num_leaves_in_tree(self.size());
-        let root_node_idx = tree_math::root_idx(num_leaves);
+    /// Panics: If any of the received indices are out of bounds or if any parent node is not of
+    /// the `RatchetTreeNode::Parent` variant.
+    fn recalculate_hashes<I>(&mut self, node_indices: I) -> Result<(), Error>
+    where
+        I: IntoIterator<Item = TreeIdx>,
+    {
+        // Copy these at the top so we don't have borrowing issues below
+        let num_leaves = self.num_leaves();
+        let hash_impl = self.hash_impl;
 
-        let mut current_node_idx = start_idx;
+        for node_idx in node_indices.into_iter() {
+            let left_child_idx = tree_math::node_left_child(node_idx);
+            let right_child_idx = tree_math::node_right_child(node_idx, num_leaves);
 
-        // Go up the tree, setting the node secrets and keypairs. The last calculated node secret
-        // is that of the root. This is our return value
-        let root_node_secret = loop {
-            let current_node =
-                self.get_mut(current_node_idx).expect("reached invalid node in secret propagation");
+            // Check if this node is a leaf (i.e., if it is its own child). If it's a parent, we
+            // have to tell it what the the hashes of its children are
+            if left_child_idx != node_idx {
+                let (left_child_hash, right_child_hash) = {
+                    // Get the children. This unwrap can't fail, because we got these indices from the
+                    // tree math done above.
+                    let left_child = self.get(left_child_idx).unwrap();
+                    let right_child = self.get(right_child_idx).unwrap();
 
-            // Derive the new values
-            let (node_public_key, node_private_key, node_secret, new_path_secret) =
-                utils::derive_node_values(cs, path_secret)?;
+                    // Calculate their hashes
+                    (
+                        hash_impl.hash_serializable(left_child)?,
+                        hash_impl.hash_serializable(right_child)?,
+                    )
+                };
 
-            // Update the current node with all the new values. Note: the order here matters. You
-            // have to update the public key first, because you can't update a Blank node's secret
-            // key (it must have a public key first)
-            current_node.update_public_key(node_public_key);
-            current_node.update_private_key(node_private_key);
-
-            if current_node_idx == root_node_idx {
-                // If we just updated the root, we're done
-                break node_secret;
-            } else {
-                // Otherwise, take one step up the tree
-                current_node_idx = tree_math::node_parent(current_node_idx, num_leaves);
-                path_secret = new_path_secret;
+                let curr_node = {
+                    // Panic on bad input. Just don't call this function with bad inputs
+                    let node = self.get_mut(node_idx).unwrap();
+                    // This node is not a leaf, so it better be a RatchetTreeNode::Parent,
+                    // otherwise we have a corrupt tree
+                    enum_variant!(node, RatchetTreeNode::Parent)
+                };
+                // Recalculate the hashes
+                curr_node.update_hashes(left_child_hash, right_child_hash);
             }
-        };
+        }
 
-        Ok(root_node_secret)
+        Ok(())
+    }
+
+    /// Updates the hashes of all the ancestors of the given node, including the start node itself
+    ///
+    /// Returns: `Ok(())` on success. If serialization fails at any point, errors with an
+    /// `Error::SerdeError`.
+    ///
+    /// Panics: If the received index is out of bounds or if any parent node is not of the
+    /// `RatchetTreeNode::Parent` variant.
+    fn recalculate_ancestor_hashes(&mut self, start_idx: TreeIdx) -> Result<(), Error> {
+        // Compute the extended direct path and pass it along to the real recalculation method
+        let ext_direct_path = tree_math::node_extended_direct_path(start_idx, self.num_leaves());
+        self.recalculate_hashes(ext_direct_path)
+    }
+
+    /// Updates all the node hashes in the tree
+    ///
+    /// Returns: `Ok(())` on success. If serialization fails at any point, errors with an
+    /// `Error::SerdeError`.
+    ///
+    /// Panics: If any parent node is not of the `RatchetTreeNode::Parent` variant
+    fn recalculate_all_hashes(&mut self) -> Result<(), Error> {
+        // Order matters here, since we only want to calculate hashes over leaves and parents whose
+        // hashes have already been calculated. So we get all the indices of all the nodes in the
+        // tree, and order them by node level in increasing order. Then we run recalculate_hashes
+        // on this array. This way, we end up calculating all the hashes in the tree from the
+        // bottom up.
+        let mut all_indices: Vec<TreeIdx> = (0..self.size()).map(TreeIdx::new).collect();
+        // This is sorted in increasing order, so the leaves (level 0) are evaluated first, then
+        // the parents of the leaves, etc.
+        all_indices.sort_unstable_by_key(|&i| tree_math::node_level(i));
+        // Pass to the real recalculation method
+        self.recalculate_hashes(all_indices)
+    }
+
+    /// Returns the hash of the root node of the tree
+    ///
+    /// Returns: `Ok(())` on success. If serialization of the root node failed, returns
+    /// `Error::SerdeError`.
+    pub(crate) fn tree_hash(&self) -> Result<Digest, Error> {
+        // Get the root node
+        let root_idx = tree_math::root_idx(self.num_leaves());
+        let root_node = self.get(root_idx).unwrap();
+
+        // Hash the serialized form
+        self.hash_impl.hash_serializable(root_node)
+    }
+}
+
+// RatchetTree --> WelcomeInfoRatchetTree
+impl From<&RatchetTree> for WelcomeInfoRatchetTree {
+    fn from(tree: &RatchetTree) -> WelcomeInfoRatchetTree {
+        // Build up the nodes in the same order as they occur in this tree
+        let mut nodes: Vec<Option<WelcomeInfoRatchetNode>> = Vec::with_capacity(tree.size());
+
+        for node in &tree.nodes {
+            // We throw out hash and private key information in this conversion. We just want to
+            // know if this node is Blank, and if not, which public key we can put into the
+            // WelcomeInfoRatchetNode, and whether we can put a credential in.
+            let welcome_node = match node {
+                RatchetTreeNode::Parent(ref p) => {
+                    // All Blank nodes are None
+                    if p.is_blank() {
+                        None
+                    } else {
+                        // Filled parent nodes get their public key copied
+                        Some(WelcomeInfoRatchetNode {
+                            public_key: p.public_key.as_ref().unwrap().clone(),
+                            credential: None,
+                        })
+                    }
+                }
+
+                RatchetTreeNode::Leaf(ref l) => {
+                    // All Blank nodes are None
+                    if l.is_blank() {
+                        None
+                    } else {
+                        // Filled leaf nodes get their public key and credential copied
+                        let MemberInfo {
+                            ref public_key,
+                            ref credential,
+                            ..
+                        } = l.info.as_ref().unwrap();
+                        Some(WelcomeInfoRatchetNode {
+                            public_key: public_key.clone(),
+                            credential: Some(credential.clone()),
+                        })
+                    }
+                }
+            };
+
+            // Add this node to the list
+            nodes.push(welcome_node)
+        }
+
+        // All done. Make a tree out of these nodes.
+        WelcomeInfoRatchetTree(nodes)
     }
 }
 
@@ -589,16 +1292,20 @@ impl RatchetTree {
 mod test {
     use super::*;
     use crate::{
+        credential::{BasicCredential, Credential, Identity},
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
-            dh::{DhPublicKey, DhPublicKeyRaw},
+            dh::{DhPublicKey, X25519_IMPL},
+            hash::SHA256_IMPL,
+            sig::{SigPublicKey, SigPublicKeyRaw, SignatureScheme, ED25519_IMPL},
         },
+        test_utils,
         tls_de::TlsDeserializer,
     };
 
     use quickcheck_macros::quickcheck;
+    use rand::Rng;
     use rand::SeedableRng;
-    use rand::{Rng, RngCore};
     use serde::Deserialize;
 
     // The following test vector is from
@@ -653,55 +1360,47 @@ mod test {
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         let num_leaves = num_leaves as usize;
-        let num_nodes = tree_math::num_nodes_in_tree(num_leaves);
 
-        // Fill a tree with Blanks
-        let mut tree = RatchetTree {
-            nodes: Vec::new(),
-        };
-        for _ in 0..num_leaves {
-            tree.add_leaf_node(RatchetTreeNode::Blank);
-        }
-
-        // Fill the tree with deterministic path secrets
         let cs: &'static CipherSuite = &X25519_SHA256_AES128GCM;
-        for i in 0..num_leaves {
-            // This is the index of a leaf in the tree
-            let tree_idx = 2 * i;
-            let initial_path_secret = PathSecret::new_from_bytes(&vec![i as u8; 32]);
-            tree.propagate_new_path_secret(cs, initial_path_secret, tree_idx).unwrap();
-        }
+        let ss: &'static SignatureScheme = &ED25519_IMPL;
+
+        let (tree, _) = test_utils::random_tree(&mut rng, cs, ss, num_leaves);
 
         // Come up with sender and receiver indices. The sender must be a leaf node, because
         // encryption function requires it. The receiver must be different from the sender, because
-        // the decryption function requires it. Also the receiver cannot be an ancestor of the
-        // sender, because then it doesn't lie in the copath (and also it would have no need to
-        // decrypt the message, since it knows its own secret)
-        let sender_tree_idx = 2 * rng.gen_range(0, num_leaves);
-        let receiver_tree_idx = loop {
-            let idx = rng.gen_range(0, num_nodes);
-            if idx != sender_tree_idx && !tree_math::is_ancestor(idx, sender_tree_idx, num_leaves) {
-                break idx;
-            }
-        };
+        // the decryption function requires it.
+        let sender_member_idx = MemberIdx(rng.gen_range(0, num_leaves as u32));
+        let receiver_member_idx = test_utils::random_member_index_with_exceptions(
+            num_leaves,
+            &[sender_member_idx],
+            &mut rng,
+        );
 
         // Come up with a new path secret and encrypt it to the receiver
-        let sender_path_secret = {
-            let mut buf = [0u8; 32];
-            rng.fill_bytes(&mut buf);
-            PathSecret::new_from_bytes(&buf)
-        };
+        let sender_path_secret = PathSecret::new_from_random(cs, &mut rng);
         let direct_path_msg = tree
-            .encrypt_direct_path_secrets(cs, sender_tree_idx, sender_path_secret.clone(), &mut rng)
+            .encrypt_direct_path_secrets(
+                cs,
+                sender_member_idx,
+                sender_path_secret.clone(),
+                &mut rng,
+            )
             .expect("failed to encrypt direct path secrets");
         // Decrypt the path secret closest to the receiver
-        let (derived_path_secret, common_ancestor_idx) = tree
-            .decrypt_direct_path_message(cs, &direct_path_msg, sender_tree_idx, receiver_tree_idx)
+        let (derived_path_secret, common_ancestor) = tree
+            .decrypt_direct_path_message(
+                cs,
+                &direct_path_msg,
+                sender_member_idx,
+                receiver_member_idx,
+            )
             .expect("failed to decrypt direct path secret");
 
         // Make sure it really is the common ancestor
+        let sender_tree_idx: TreeIdx = sender_member_idx.try_into().unwrap();
+        let receiver_tree_idx: TreeIdx = receiver_member_idx.try_into().unwrap();
         assert_eq!(
-            common_ancestor_idx,
+            common_ancestor,
             tree_math::common_ancestor(sender_tree_idx, receiver_tree_idx, num_leaves)
         );
 
@@ -712,7 +1411,7 @@ mod test {
             let mut path_secret = sender_path_secret;
 
             // Ratchet up the tree until we find the common ancestor
-            while idx != common_ancestor_idx {
+            while idx != common_ancestor {
                 idx = tree_math::node_parent(idx, num_leaves);
                 let (_, _, _, new_path_secret) =
                     utils::derive_node_values(cs, path_secret).unwrap();
@@ -727,11 +1426,12 @@ mod test {
     #[test]
     fn official_resolution_kat() {
         // Helper function
-        fn u8_resolution(tree: &RatchetTree, idx: usize) -> Vec<u8> {
+        fn u8_resolution(tree: &RatchetTree, idx: TreeIdx) -> Vec<u8> {
             tree.resolution(idx)
                 .into_iter()
                 .map(|i| {
-                    // These had better be small indices
+                    // Convert to usize and then u8. These had better be small indices
+                    let i = usize::from(i);
                     if i > core::u8::MAX as usize {
                         panic!("resolution node indices are too big to fit into a u8");
                     } else {
@@ -741,25 +1441,68 @@ mod test {
                 .collect()
         }
 
-        // Helper function
+        // Helper function. Makes a RatchetTree from an integer, where each bit corresopnds to a
+        // Blank or Filled node in the tree. The values of the nodes do not matter.
         fn make_tree_from_int(t: usize, num_nodes: usize) -> RatchetTree {
             let mut nodes: Vec<RatchetTreeNode> = Vec::new();
-            let mut bit_mask = 0x01;
 
-            for _ in 0..num_nodes {
+            for node_idx in (0..num_nodes).map(TreeIdx::new) {
+                let bit_mask = 0x01 << usize::from(node_idx);
                 if t & bit_mask == 0 {
-                    nodes.push(RatchetTreeNode::Blank);
+                    // Make a Blank node
+                    let blank = if tree_math::node_level(node_idx) == 0 {
+                        // It's a leaf
+                        RatchetTreeNode::Leaf(LeafNode::new_blank())
+                    } else {
+                        // It's a parent. Make a dummy child
+                        let child = RatchetTreeNode::Leaf(LeafNode::new_blank());
+                        let parent = ParentNode::new_blank(&SHA256_IMPL, &child, &child).unwrap();
+                        RatchetTreeNode::Parent(parent)
+                    };
+
+                    // Add the Blank node
+                    nodes.push(blank);
                 } else {
-                    // TODO: Make a better way to put dummy values in the tree than invalid DH pubkeys
-                    nodes.push(RatchetTreeNode::Filled {
-                        public_key: DhPublicKey::Raw(DhPublicKeyRaw(Vec::new())),
-                        private_key: None,
-                    });
+                    // Make a random dummy keypair
+                    let dummy_dh_privkey =
+                        DhPrivateKey::new_from_random(&X25519_IMPL, &mut rand::thread_rng())
+                            .unwrap();
+                    let dummy_dh_pubkey =
+                        DhPublicKey::new_from_private_key(&X25519_IMPL, &dummy_dh_privkey);
+                    let filled = if tree_math::node_level(node_idx) == 0 {
+                        // It's a leaf. Make a dummy credentials and identity key.
+                        let dummy_cred = {
+                            let sig_pubkey = SigPublicKey::Raw(SigPublicKeyRaw(Vec::new()));
+                            let id = Identity::from_bytes(b"dummy".to_vec());
+                            let bc = BasicCredential::new(id, &ED25519_IMPL, sig_pubkey);
+                            Credential::Basic(bc)
+                        };
+
+                        // Now make the leaf with all these values and return it
+                        let dummy_leaf = LeafNode::new_from_private_key(
+                            &X25519_IMPL,
+                            dummy_cred,
+                            dummy_dh_privkey,
+                        );
+                        RatchetTreeNode::Leaf(dummy_leaf)
+                    } else {
+                        // It's a parent. Make a dummy child
+                        let child = RatchetTreeNode::Leaf(LeafNode::new_blank());
+                        let mut dummy_parent =
+                            ParentNode::new_blank(&SHA256_IMPL, &child, &child).unwrap();
+
+                        // Now give the parent a dummy pubkey
+                        dummy_parent.public_key = Some(dummy_dh_pubkey);
+                        RatchetTreeNode::Parent(dummy_parent)
+                    };
+
+                    // Add the Filled node
+                    nodes.push(filled);
                 }
-                bit_mask <<= 1;
             }
 
             RatchetTree {
+                hash_impl: &SHA256_IMPL,
                 nodes,
             }
         }
@@ -776,7 +1519,7 @@ mod test {
 
             // We compute the resolution of every node in the tree
             for (idx, expected_resolution) in case.0.into_iter().enumerate() {
-                let derived_resolution = u8_resolution(&tree, idx);
+                let derived_resolution = u8_resolution(&tree, TreeIdx::new(idx));
                 assert_eq!(derived_resolution, expected_resolution.0);
             }
         }

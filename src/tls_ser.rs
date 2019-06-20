@@ -306,6 +306,9 @@ impl<'a> Serializer for &'a mut TlsSerializer {
             // Make sure the variant index isn't out of our range
             let byte = u8::try_from(variant_index).expect("enum variant index out of bounds");
             self.serialize_u8(byte)
+        } else if name.ends_with("__enum_untagged") {
+            // Untagged enums don't get their variant index serialized
+            Ok(())
         } else {
             let err = <Error as serde::ser::Error>::custom(
                 "don't know how to serialize a non-__enum_u8 enum",
@@ -577,6 +580,13 @@ pub(crate) mod test {
         g: Draxx,
     }
 
+    #[derive(Debug, Eq, PartialEq, Serialize)]
+    #[serde(rename = "Blam__enum_untagged")]
+    enum Blamm {
+        Ba(Biff),
+        Da(Draxx),
+    }
+
     // This represents the known Biff data structure that's returned by make_biff()
     #[rustfmt::skip]
     pub(crate) const BIFF_BYTES: &'static [u8] = &[
@@ -640,5 +650,24 @@ pub(crate) mod test {
         let expected_bytes = BIFF_BYTES;
 
         assert_eq!(serialized.as_slice(), expected_bytes);
+    }
+
+    // Make sure that the untagged enums are indeed untagged
+    #[test]
+    fn untagged_kat() {
+        // Wrap a Biff in a Ba
+        let ba = Blamm::Ba(make_biff());
+        let da = Blamm::Da(Draxx::Them);
+
+        let ba_serialized = serialize_to_bytes(&ba).unwrap();
+        let da_serialized = serialize_to_bytes(&da).unwrap();
+
+        // Draxx::Them
+        let expected_da_bytes = &[0x00];
+
+        // The wrapped Biff should be identical to an unwrapped Biff
+        assert_eq!(ba_serialized, BIFF_BYTES);
+        // Ditto for a Da
+        assert_eq!(da_serialized, expected_da_bytes);
     }
 }

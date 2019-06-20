@@ -68,7 +68,7 @@ mod test {
     //   * The State argument should be initialized with the following contents:
     //     * group_id and transcript_hash: The zero-length octet string
     //     * epoch: 0
-    //     * roster, tree: Zero-length vectors
+    //     * tree: Zero-length vector
     //   * That is, the state should serialize to a sequence of 14 zeros
     // * Derive-Key-Pair
     // * ECIES

@@ -93,3 +93,32 @@ impl HmacSigningContext {
         self.ctx.sign().into()
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::crypto::{
+        hash::SHA256_IMPL,
+        hmac::{self, HmacKey},
+    };
+
+    use quickcheck_macros::quickcheck;
+
+    // Test that the streaming API is equivalent to doing a MAC over the concatenation of messages
+    #[quickcheck]
+    fn mac_streaming(key_bytes: Vec<u8>, msg1: Vec<u8>, msg2: Vec<u8>) {
+        let hash_impl = &SHA256_IMPL;
+        let key = HmacKey::new_from_bytes(&key_bytes);
+        let concatted_msgs: Vec<u8> = [msg1.as_slice(), msg2.as_slice()].concat();
+
+        // Compute HMAC_k over msg1 and then msg2, separately
+        let streaming_mac = {
+            let mut ctx = hmac::new_signing_context(hash_impl, &key);
+            ctx.feed_bytes(&msg1);
+            ctx.feed_bytes(&msg2);
+            ctx.finalize()
+        };
+
+        // Test that the above is the same as computing HMAC_k(msg1 || msg2)
+        hmac::verify(hash_impl, &key, &concatted_msgs, &streaming_mac).unwrap();
+    }
+}

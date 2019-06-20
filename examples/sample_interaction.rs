@@ -17,8 +17,9 @@ use molasses::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
-    group_state::{GroupState, Welcome},
+    group_state::{GroupContext, GroupId, Welcome},
     handshake::{Handshake, ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
+    ratchet_tree::MemberIdx,
     tls_de::TlsDeserializer,
     tls_ser::TlsSerializer,
     upcast::{CryptoCtx, CryptoUpcast},
@@ -146,8 +147,8 @@ fn delivery_service(
     passthrough();
 
     // Carol --UserInitKey--> Alice
-    // Carol <--Welcome-- Alice
-    // Carol <--Add-- Alice
+    // Carol <----Welcome---- Alice
+    // Carol <------Add------ Alice
     pause_for_effect();
     passthrough();
     passthrough();
@@ -163,14 +164,14 @@ fn delivery_service(
 fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     let mut rng = rand::thread_rng();
 
-    // First order of business, make a GroupState
+    // First order of business, make a GroupContext
     // Make up an identity key
     let identity_secret_key = SigSecretKey::new_from_random(COMMON_SIG_SCHEME, &mut rng).unwrap();
     let identity_public_key =
         SigPublicKey::new_from_secret_key(COMMON_SIG_SCHEME, &identity_secret_key);
 
     // Make up a group ID
-    let group_id = b"suspicions_rising".to_vec();
+    let group_id = GroupId::new(b"suspicions_rising".to_vec());
 
     // Make up a credential
     let credential = {
@@ -178,7 +179,7 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
         let basic_cred = BasicCredential::new(identity, COMMON_SIG_SCHEME, identity_public_key);
         Credential::Basic(basic_cred)
     };
-    let group_state = GroupState::new_singleton_group(
+    let group_ctx = GroupContext::new_singleton_group(
         COMMON_CIPHER_SUITE,
         COMMON_PROTOCOL_VERSION,
         identity_secret_key,
@@ -194,15 +195,15 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Add Bob to the Group
     // First, make and send a Welcome
     let (welcome, welcome_info_hash) =
-        Welcome::from_group_state(&group_state, &bob_user_init_key, &mut rng).unwrap();
+        Welcome::from_group_ctx(&group_ctx, &bob_user_init_key, &mut rng).unwrap();
     tx.send(serialize(&welcome)).unwrap();
     println!("ALICE SEND Welcome");
 
     // Then make an Add Handshake, letting the resulting group state be the new group state.
     // Bob will have roster index 1. Recall Alice is at roster index 0.
-    let bob_roster_idx = 1;
-    let (add_handshake, group_state, mut app_key_chain) = group_state
-        .create_and_apply_add_handshake(bob_roster_idx, bob_user_init_key, &welcome_info_hash)
+    let bob_member_idx = MemberIdx::new(1);
+    let (add_handshake, group_ctx, mut app_key_chain) = group_ctx
+        .create_and_apply_add_handshake(bob_member_idx, bob_user_init_key, &welcome_info_hash)
         .unwrap();
     tx.send(serialize(&add_handshake)).unwrap();
     println!("ALICE SEND Add");
@@ -210,20 +211,20 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Now time for Alice's first message
     let msg = b"Lbh fnvq ab zber pybja fpubby";
     let app_msg =
-        encrypt_application_message(msg.to_vec(), &group_state, &mut app_key_chain).unwrap();
+        encrypt_application_message(msg.to_vec(), &group_ctx, &mut app_key_chain).unwrap();
     tx.send(serialize(&app_msg)).unwrap();
     println!("ALICE SEND ApplicationMessage");
 
     // Receive Bob's response
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
-    let plaintext = decrypt_application_message(app_msg, &group_state, &mut app_key_chain).unwrap();
+    let plaintext = decrypt_application_message(app_msg, &group_ctx, &mut app_key_chain).unwrap();
     println!(r#"ALICE RECV ApplicationMessage "{}""#, bytes_to_str(&plaintext));
 
     // Alice's response
     let msg =
         b"Gura jul gur uryy unf Pneby orra pnyyvat gur ynaqyvar, thfuvat nobhg lbhe cebterff?";
     let app_msg =
-        encrypt_application_message(msg.to_vec(), &group_state, &mut app_key_chain).unwrap();
+        encrypt_application_message(msg.to_vec(), &group_ctx, &mut app_key_chain).unwrap();
     tx.send(serialize(&app_msg)).unwrap();
     println!("ALICE SEND ApplicationMessage");
 
@@ -234,21 +235,21 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Add Carol to the Group:
     // First, make and send a Welcome
     let (welcome, welcome_info_hash) =
-        Welcome::from_group_state(&group_state, &carol_user_init_key, &mut rng).unwrap();
+        Welcome::from_group_ctx(&group_ctx, &carol_user_init_key, &mut rng).unwrap();
     tx.send(serialize(&welcome)).unwrap();
     println!("ALICE SEND Welcome");
 
     // Then make an Add Handshake, letting the resulting group state be the new group state.
-    let carol_roster_idx = 2;
-    let (add_handshake, group_state, mut app_key_chain) = group_state
-        .create_and_apply_add_handshake(carol_roster_idx, carol_user_init_key, &welcome_info_hash)
+    let carol_member_idx = MemberIdx::new(2);
+    let (add_handshake, group_ctx, mut app_key_chain) = group_ctx
+        .create_and_apply_add_handshake(carol_member_idx, carol_user_init_key, &welcome_info_hash)
         .unwrap();
     tx.send(serialize(&add_handshake)).unwrap();
     println!("ALICE SEND Add");
 
     // Receive Carol's message
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
-    let plaintext = decrypt_application_message(app_msg, &group_state, &mut app_key_chain).unwrap();
+    let plaintext = decrypt_application_message(app_msg, &group_ctx, &mut app_key_chain).unwrap();
     println!(r#"ALICE RECV ApplicationMessage "{}""#, bytes_to_str(&plaintext));
 }
 
@@ -287,30 +288,30 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Receive the Welcome message
     let welcome: Welcome = deserialize(&rx.recv().unwrap());
     println!("BOB   RECV Welcome");
-    // Make a preliminary GroupState out of it
-    let group_state =
-        GroupState::from_welcome(welcome, identity_secret_key, user_init_key).unwrap();
+    // Make a preliminary GroupContext out of it
+    let group_ctx =
+        GroupContext::from_welcome(welcome, identity_secret_key, user_init_key).unwrap();
 
     // Now receive the Add and process the Handshake
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
     println!("BOB   RECV Add");
-    let (group_state, mut app_key_chain) = group_state.process_handshake(&add_handshake).unwrap();
+    let (group_ctx, mut app_key_chain) = group_ctx.process_handshake(&add_handshake).unwrap();
 
     // Time to receive the first ApplicationMessage
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
-    let plaintext = decrypt_application_message(app_msg, &group_state, &mut app_key_chain).unwrap();
+    let plaintext = decrypt_application_message(app_msg, &group_ctx, &mut app_key_chain).unwrap();
     println!(r#"BOB   RECV ApplicationMessage "{}""#, bytes_to_str(&plaintext));
 
     // Respond
     let msg = b"V qvq, naq V'ir fgbccrq. Pbyq ghexrl fvapr Sroehnel";
     let app_msg =
-        encrypt_application_message(msg.to_vec(), &group_state, &mut app_key_chain).unwrap();
+        encrypt_application_message(msg.to_vec(), &group_ctx, &mut app_key_chain).unwrap();
     tx.send(serialize(&app_msg)).unwrap();
     println!("BOB   SEND ApplicationMessage");
 
     // Get rebuked by Alice
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
-    let plaintext = decrypt_application_message(app_msg, &group_state, &mut app_key_chain).unwrap();
+    let plaintext = decrypt_application_message(app_msg, &group_ctx, &mut app_key_chain).unwrap();
     println!(r#"BOB   RECV ApplicationMessage "{}""#, bytes_to_str(&plaintext));
 
     // Silently ignore Carol's UserInitKey
@@ -321,11 +322,11 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Process Carol's addition to the group
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
     println!("BOB   RECV Add");
-    let (group_state, mut app_key_chain) = group_state.process_handshake(&add_handshake).unwrap();
+    let (group_ctx, mut app_key_chain) = group_ctx.process_handshake(&add_handshake).unwrap();
 
     // Get Carol's first message
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
-    let plaintext = decrypt_application_message(app_msg, &group_state, &mut app_key_chain).unwrap();
+    let plaintext = decrypt_application_message(app_msg, &group_ctx, &mut app_key_chain).unwrap();
     println!(r#"BOB   RECV ApplicationMessage "{}""#, bytes_to_str(&plaintext));
 }
 
@@ -373,19 +374,19 @@ fn carol(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Receive the Welcome message
     let welcome: Welcome = deserialize(&rx.recv().unwrap());
     println!("CAROL RECV Welcome");
-    // Make a preliminary GroupState out of it
-    let group_state =
-        GroupState::from_welcome(welcome, identity_secret_key, user_init_key).unwrap();
+    // Make a preliminary GroupContext out of it
+    let group_ctx =
+        GroupContext::from_welcome(welcome, identity_secret_key, user_init_key).unwrap();
 
     // Now receive the Add and process the Handshake
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
     println!("CAROL RECV Add");
-    let (group_state, mut app_key_chain) = group_state.process_handshake(&add_handshake).unwrap();
+    let (group_ctx, mut app_key_chain) = group_ctx.process_handshake(&add_handshake).unwrap();
 
     // Carol's first message
     let msg = b"Uv rirelbar V'z whfg ernyyl tynq gb or urer.";
     let app_msg =
-        encrypt_application_message(msg.to_vec(), &group_state, &mut app_key_chain).unwrap();
+        encrypt_application_message(msg.to_vec(), &group_ctx, &mut app_key_chain).unwrap();
     tx.send(serialize(&app_msg)).unwrap();
     println!("CAROL SEND ApplicationMessage");
 }

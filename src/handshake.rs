@@ -12,6 +12,7 @@ use crate::{
     },
     error::Error,
     group_state::WelcomeInfoHash,
+    ratchet_tree::MemberIdx,
     tls_ser,
 };
 
@@ -26,18 +27,19 @@ pub const MLS_DUMMY_VERSION: ProtocolVersion = ProtocolVersion(0xba);
 
 /// Contains a node's new public key and the new node's secret, encrypted for everyone in that
 /// node's resolution
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct DirectPathNodeMessage {
     pub(crate) public_key: DhPublicKey,
-    // ECIESCiphertext node_secrets<0..2^16-1>;
-    #[serde(rename = "node_secrets__bound_u16")]
-    pub(crate) node_secrets: Vec<EciesCiphertext>,
+    // ECIESCiphertext encrypted_path_secrets<0..2^16-1>;
+    #[serde(rename = "encrypted_path_secrets__bound_u16")]
+    pub(crate) encrypted_path_secrets: Vec<EciesCiphertext>,
 }
 
-/// Contains a direct path of node messages. The length of `node_secrets` for the first
+// This is called a DirectPath in the spec
+/// Contains a direct path of node messages. The length of `encrypted_path_secrets` for the first
 /// `DirectPathNodeMessage` MUST be zero.
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct DirectPathMessage {
     // DirectPathNodeMessage nodes<0..2^16-1>;
@@ -176,7 +178,6 @@ impl UserInitKey {
     ///
     /// Returns: `Ok(())` on success, `Error::SignatureError` on verification failure, and
     /// `Error::SerdeError` on some serialization failure.
-    #[must_use]
     pub(crate) fn verify_sig(&self) -> Result<(), Error> {
         let partial = PartialUserInitKey {
             user_init_key_id: self.user_init_key_id.as_slice(),
@@ -199,7 +200,6 @@ impl UserInitKey {
     // client."
 
     /// Validates the invariants that `UserInitKey` must satisfy, as in section 7 of the MLS spec
-    #[must_use]
     pub(crate) fn validate(&self) -> Result<(), Error> {
         // All three of supported_versions, cipher_suites, and init_keys MUST have the same length.
         // And if private_keys is non-null, it must have the same length as the other three.
@@ -341,9 +341,9 @@ pub(crate) struct GroupInit;
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct GroupAdd {
     // uint32 index;
-    /// Indicates where to add the new member. This may index into an empty roster entry or be equal
-    /// to the size of the roster.
-    pub(crate) roster_index: u32,
+    /// Indicates where to add the new member. This may index into a Blank leaf or be equal to the
+    /// number of leaves.
+    pub(crate) member_index: MemberIdx,
 
     // UserInitKey init_key;
     /// Contains the public key used to add the new member
@@ -365,8 +365,8 @@ pub(crate) struct GroupUpdate {
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct GroupRemove {
-    /// The roster index of the removed member
-    pub(crate) removed_roster_index: u32,
+    /// The member index of the removed member
+    pub(crate) removed_member_index: MemberIdx,
 
     /// New entropy for the tree
     pub(crate) path: DirectPathMessage,
@@ -389,18 +389,18 @@ pub(crate) enum GroupOperation {
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
 pub struct Handshake {
-    /// This is equal to the epoch of the current `GroupState`
+    /// This is equal to the epoch of the current `GroupContext`
     pub(crate) prior_epoch: u32,
     /// The operation this `Handshake` is perofrming
     pub(crate) operation: GroupOperation,
-    /// Position of the signer in the roster
-    pub(crate) signer_index: u32,
+    /// Member index of the signer
+    pub(crate) signer_index: MemberIdx,
     /// Signature over the `Group`'s history:
-    /// `Handshake.signature = Sign(identity_key, GroupState.transcript_hash)`
+    /// `Handshake.signature = Sign(identity_key, GroupContext.transcript_hash)`
     pub(crate) signature: Signature,
     // opaque confirmation<1..255>;
     /// HMAC over the group state and `Handshake` signature
-    /// `confirmation_data = GroupState.transcript_hash || Handshake.signature`
+    /// `confirmation_data = GroupContext.transcript_hash || Handshake.signature`
     /// `Handshake.confirmation = HMAC(confirmation_key, confirmation_data)`
     pub(crate) confirmation: Mac,
 }
@@ -413,9 +413,9 @@ mod test {
             sig::SignatureScheme,
         },
         error::Error,
-        group_state::{GroupState, Welcome, WelcomeInfo},
-        handshake::{Handshake, ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
-        ratchet_tree::PathSecret,
+        group_state::{GroupContext, Welcome, WelcomeInfo},
+        handshake::{Handshake, UserInitKey, MLS_DUMMY_VERSION},
+        ratchet_tree::{MemberIdx, PathSecret},
         test_utils,
         tls_de::TlsDeserializer,
         tls_ser,
@@ -434,28 +434,28 @@ mod test {
     fn update_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group of at least 2 people
-        let (group_state1, identity_keys) = test_utils::random_full_group_state(2, &mut rng);
+        let (group_ctx1, identity_keys) = test_utils::random_full_group_ctx(2, &mut rng);
 
         // Make a copy of this group, but from another perspective. That is, we want the same group
-        // but with a different roster index
-        let new_index = test_utils::random_roster_index_with_exceptions(
-            group_state1.roster.len(),
-            &[group_state1.roster_index.unwrap() as usize],
+        // but with a different member index
+        let new_index = test_utils::random_member_index_with_exceptions(
+            group_ctx1.tree.num_leaves(),
+            &[group_ctx1.member_index.unwrap()],
             &mut rng,
         );
-        let group_state2 = test_utils::change_self_index(&group_state1, &identity_keys, new_index);
+        let group_ctx2 = test_utils::change_self_index(&group_ctx1, &identity_keys, new_index);
 
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
-        let new_path_secret = PathSecret::new_from_random(group_state1.cs, &mut rng);
-        let (handshake, group_state1, _) =
-            group_state1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+        let (handshake, group_ctx1, _) =
+            group_ctx1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
         // Apply the Handshake to the clone of the first group
-        let (group_state2, _) = group_state2.process_handshake(&handshake).unwrap();
+        let (group_ctx2, _) = group_ctx2.process_handshake(&handshake).unwrap();
 
         // Now see if the group states agree
-        assert_serialized_eq!(group_state1, group_state2, "GroupStates disagree after Update");
+        assert_serialized_eq!(group_ctx1, group_ctx2, "GroupContexts disagree after Update");
     }
 
     // Check that Remove operations are consistent
@@ -463,29 +463,29 @@ mod test {
     fn remove_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group of at least 3 members
-        let (starting_group, identity_keys) = test_utils::random_full_group_state(3, &mut rng);
+        let (starting_group, identity_keys) = test_utils::random_full_group_ctx(3, &mut rng);
 
-        // Let's remove someone from the group who isn't us. Pick the roster index of the removed
+        // Let's remove someone from the group who isn't us. Pick the member index of the removed
         // member here
-        let remove_roster_idx = test_utils::random_roster_index_with_exceptions(
-            starting_group.roster.len(),
-            &[starting_group.roster_index.unwrap() as usize],
+        let remove_member_idx = test_utils::random_member_index_with_exceptions(
+            starting_group.tree.num_leaves(),
+            &[starting_group.member_index.unwrap()],
             &mut rng,
         );
         // Let's also make a new group that isn't the removed party and isn't the starting party.
-        // Pick their roster index here.
-        let other_roster_idx = test_utils::random_roster_index_with_exceptions(
-            starting_group.roster.len(),
-            &[starting_group.roster_index.unwrap() as usize, remove_roster_idx as usize],
+        // Pick their member index here.
+        let other_member_idx = test_utils::random_member_index_with_exceptions(
+            starting_group.tree.num_leaves(),
+            &[starting_group.member_index.unwrap(), remove_member_idx],
             &mut rng,
         );
 
         // Make a group from the perspective of the removed person and a group from the perspective
         // of that other person
         let removed_group =
-            test_utils::change_self_index(&starting_group, &identity_keys, remove_roster_idx);
+            test_utils::change_self_index(&starting_group, &identity_keys, remove_member_idx);
         let other_group =
-            test_utils::change_self_index(&starting_group, &identity_keys, other_roster_idx);
+            test_utils::change_self_index(&starting_group, &identity_keys, other_member_idx);
 
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
@@ -493,7 +493,7 @@ mod test {
 
         // Make a Remove handshake and let starting_group reflect the change
         let (remove_handshake, starting_group, _) = starting_group
-            .create_and_apply_remove_handshake(remove_roster_idx, new_path_secret, &mut rng)
+            .create_and_apply_remove_handshake(remove_member_idx, new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
 
         // Apply the Handshake to the removed group. Since this is the party that got removed, this
@@ -509,7 +509,7 @@ mod test {
         let (other_group, _) = other_group.process_handshake(&remove_handshake).unwrap();
 
         // See if the non-removed group states agree after the remove
-        assert_serialized_eq!(starting_group, other_group, "GroupStates disagree after Remove");
+        assert_serialized_eq!(starting_group, other_group, "GroupContexts disagree after Remove");
 
         // Now run an update on the non-removed groups just to make sure everything is working
         let new_path_secret = PathSecret::new_from_random(starting_group.cs, &mut rng);
@@ -522,7 +522,7 @@ mod test {
         assert_serialized_eq!(
             starting_group,
             other_group,
-            "GroupStates disagree after post-Remove Update"
+            "GroupContexts disagree after post-Remove Update"
         );
     }
 
@@ -534,66 +534,62 @@ mod test {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
         // Make a starting group of at least 3 members
-        let (mut group_state1, identity_keys) = test_utils::random_full_group_state(3, &mut rng);
+        let (mut group_ctx1, identity_keys) = test_utils::random_full_group_ctx(3, &mut rng);
 
         // Designate another person in the group to be someone we care about. We won't remove them.
-        let non_removed_member_idx = test_utils::random_roster_index_with_exceptions(
-            group_state1.roster.len(),
-            &[group_state1.roster_index.unwrap() as usize],
+        let non_removed_member_idx = test_utils::random_member_index_with_exceptions(
+            group_ctx1.tree.num_leaves(),
+            &[group_ctx1.member_index.unwrap()],
             &mut rng,
         );
-        let mut group_state2 =
-            test_utils::change_self_index(&group_state1, &identity_keys, non_removed_member_idx);
+        let mut group_ctx2 =
+            test_utils::change_self_index(&group_ctx1, &identity_keys, non_removed_member_idx);
 
-        // The maximum (i.e., rightmost) of the two roster indices we have. We will remove everyone
+        // The maximum (i.e., rightmost) of the two member indices we have. We will remove everyone
         // to the right of this person
-        let max_roster_idx =
-            core::cmp::max(group_state1.roster_index.unwrap(), group_state2.roster_index.unwrap());
+        let max_member_idx =
+            core::cmp::max(group_ctx1.member_index.unwrap(), group_ctx2.member_index.unwrap());
 
         // Starting after max(person1, person2), remove members from the group 1 by 1
-        for remove_idx in (max_roster_idx as usize + 1)..(group_state1.roster.len()) {
+        for remove_idx in (usize::from(max_member_idx) + 1)..group_ctx1.tree.num_leaves() {
             // Remove the member at the current index
-            let remove_idx = u32::try_from(remove_idx).unwrap();
-            let new_path_secret = PathSecret::new_from_random(group_state1.cs, &mut rng);
+            let remove_idx = MemberIdx::new(u32::try_from(remove_idx).unwrap());
+            let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
 
             // Create the handshake and apply it to both groups
-            let (remove_handshake, new_group_state1, _) = group_state1
+            let (remove_handshake, new_group_ctx1, _) = group_ctx1
                 .create_and_apply_remove_handshake(remove_idx, new_path_secret, &mut rng)
                 .unwrap();
-            let (new_group_state2, _) = group_state2.process_handshake(&remove_handshake).unwrap();
+            let (new_group_ctx2, _) = group_ctx2.process_handshake(&remove_handshake).unwrap();
 
             // Update the groups (remember, the above methods are non-mutating)
-            group_state1 = new_group_state1;
-            group_state2 = new_group_state2;
+            group_ctx1 = new_group_ctx1;
+            group_ctx2 = new_group_ctx2;
         }
 
         // See if the group states agree after the removals
         assert_serialized_eq!(
-            group_state1,
-            group_state2,
-            "GroupStates disagree after multiple Removes"
+            group_ctx1,
+            group_ctx2,
+            "GroupContexts disagree after multiple Removes"
         );
 
-        // The last removal should've truncated the roster down to max(person1, person2). Check
-        // that this is true
-        assert_eq!(group_state1.roster.len(), max_roster_idx as usize + 1);
-
-        // It also should've truncated the tree down to the max(person1, person2)
-        let max_tree_idx = GroupState::roster_index_to_tree_index(max_roster_idx).unwrap();
-        assert_eq!(group_state1.tree.size(), max_tree_idx + 1);
+        // The last removal should've truncated the tree leaves down to max(person1, person2).
+        // Check that this is true
+        assert_eq!(group_ctx1.tree.num_leaves(), usize::from(max_member_idx) + 1);
 
         // Now run an update on the non-removed groups just to make sure everything is working
-        let new_path_secret = PathSecret::new_from_random(group_state1.cs, &mut rng);
-        let (update_handshake, group_state1, _) = group_state1
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+        let (update_handshake, group_ctx1, _) = group_ctx1
             .create_and_apply_update_handshake(new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
-        let (group_state2, _) = group_state2.process_handshake(&update_handshake).unwrap();
+        let (group_ctx2, _) = group_ctx2.process_handshake(&update_handshake).unwrap();
 
         // See if our group states agree after the update
         assert_serialized_eq!(
-            group_state1,
-            group_state2,
-            "GroupStates disagree after post-Remove Update"
+            group_ctx1,
+            group_ctx2,
+            "GroupContexts disagree after post-Remove Update"
         );
     }
 
@@ -602,23 +598,45 @@ mod test {
     fn self_remove_failure(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
-        // Make a starting group of at least 1 members
-        let (group_state, _) = test_utils::random_full_group_state(1, &mut rng);
-        let my_roster_index = group_state.roster_index.unwrap();
+        // Make a starting group of at least 2 members
+        let (group_ctx1, identity_keys) = test_utils::random_full_group_ctx(2, &mut rng);
+        let my_member_idx = group_ctx1.member_index.unwrap();
 
-        // Now try to remove myself
-        let new_path_secret = PathSecret::new_from_random(group_state.cs, &mut rng);
-        let res = group_state.create_and_apply_remove_handshake(
-            my_roster_index,
-            new_path_secret,
+        // Pick a member that we're gonna remove
+        let member_to_remove = test_utils::random_member_index_with_exceptions(
+            group_ctx1.tree.num_leaves(),
+            &[my_member_idx],
+            &mut rng,
+        );
+        let group_ctx2 =
+            test_utils::change_self_index(&group_ctx1, &identity_keys, member_to_remove);
+
+        // Prep for a removal
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+
+        // First try to remove myself. This should error with a ValidationError
+        let res = group_ctx1.create_and_apply_remove_handshake(
+            my_member_idx,
+            new_path_secret.clone(),
             &mut rng,
         );
 
-        // The middle case is what we expect
+        // An attempt at self-removal should result in a ValidationError
         match res {
+            Err(Error::ValidationError(_)) => (),
             Ok(_) => panic!("self removal didn't give an error at all!"),
+            Err(e) => panic!("self removal gave an unexpected error {}", e),
+        }
+
+        // Now try to remove the other member. This part should succeed
+        let (handshake, _, _) = group_ctx1
+            .create_and_apply_remove_handshake(member_to_remove, new_path_secret, &mut rng)
+            .unwrap();
+        // The removed member should try to process this Handshake and get an Error::IAmRemoved
+        match group_ctx2.process_handshake(&handshake) {
             Err(Error::IAmRemoved) => (),
-            Err(e) => panic!("self removal didn't give an Error::IAmRemoved, instead got {}", e),
+            Ok(_) => panic!("receipt of a Remove of myself didn't given an error at all!"),
+            Err(e) => panic!("receipt of a Remove of myself gave an unexpected Error: {}", e),
         }
     }
 
@@ -637,32 +655,28 @@ mod test {
     fn add_correctness(rng_seed: u64) {
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         // Make a starting group of at least 1 person
-        let (mut group_state1, _) = test_utils::random_full_group_state(1, &mut rng);
+        let (mut group_ctx1, _) = test_utils::random_full_group_ctx(1, &mut rng);
 
-        // Pick data for a new member of this group. The new member's roster index cannot be the
-        // same as that of the current member's. The index can also be equal to the roster size,
-        // which signifies an appending Add.
-        let new_roster_index = test_utils::random_roster_index_with_exceptions(
-            group_state1.roster.len() + 1,
-            &[group_state1.roster_index.unwrap() as usize],
+        // Pick data for a new member of this group. The new member's index cannot be the same as
+        // that of the current member's. The index can also be equal to the number of leaves, which
+        // signifies an appending Add.
+        let new_member_idx = test_utils::random_member_index_with_exceptions(
+            group_ctx1.tree.num_leaves() + 1,
+            &[group_ctx1.member_index.unwrap()],
             &mut rng,
-        ) as usize;
+        );
         let (new_credential, new_identity_key) = test_utils::random_basic_credential(&mut rng);
 
         // Quick modification: if we're gonna do an in-place Add, the node we overwrite to better
         // be blank. So let's just blank that direct path out right now
-        let is_in_place = new_roster_index < group_state1.roster.len();
+        let is_in_place = new_member_idx < group_ctx1.tree.num_leaves();
         if is_in_place {
-            let new_tree_index =
-                GroupState::roster_index_to_tree_index(u32::try_from(new_roster_index).unwrap())
-                    .unwrap();
-            group_state1.tree.propagate_blank(new_tree_index);
-            group_state1.roster.0[new_roster_index] = None;
+            group_ctx1.tree.propagate_blank(new_member_idx).unwrap();
         }
 
         // Make the data necessary for a Welcome message
         let cipher_suites = vec![&X25519_SHA256_AES128GCM];
-        let supported_versions: Vec<ProtocolVersion> = vec![MLS_DUMMY_VERSION; cipher_suites.len()];
+        let supported_versions = vec![MLS_DUMMY_VERSION; cipher_suites.len()];
         // Key ID is random
         let user_init_key_id = {
             let mut buf = [0u8; 16];
@@ -683,29 +697,25 @@ mod test {
 
         // Make the welcome object
         let (welcome, welcome_info_hash) =
-            Welcome::from_group_state(&group_state1, &init_key, &mut rng).unwrap();
+            Welcome::from_group_ctx(&group_ctx1, &init_key, &mut rng).unwrap();
 
         // Make the add op and use the new group state
-        let (add_handshake, group_state1, _) = group_state1
-            .create_and_apply_add_handshake(
-                u32::try_from(new_roster_index).unwrap(),
-                init_key.clone(),
-                &welcome_info_hash,
-            )
+        let (add_handshake, group_ctx1, _) = group_ctx1
+            .create_and_apply_add_handshake(new_member_idx, init_key.clone(), &welcome_info_hash)
             .unwrap();
 
-        // Now unwrap the Welcome back a GroupState. This should be identical to the starting group
-        // state, except maybe for the roster_index, credential, initiailizing UserInitKey, and
+        // Now unwrap the Welcome back a GroupContext. This should be identical to the starting group
+        // state, except maybe for the member_idx, credential, initiailizing UserInitKey, and
         // identity key. None of those things are serialized though, since they are unique to each
         // member's perspective.
-        let group_state2 = GroupState::from_welcome(welcome, new_identity_key, init_key).unwrap();
+        let group_ctx2 = GroupContext::from_welcome(welcome, new_identity_key, init_key).unwrap();
 
         // Apply the Add operation on group 2
-        let (new_group_state2, _) = group_state2.process_handshake(&add_handshake).unwrap();
-        let group_state2 = new_group_state2;
+        let (new_group_ctx2, _) = group_ctx2.process_handshake(&add_handshake).unwrap();
+        let group_ctx2 = new_group_ctx2;
 
         // Now see if the resulting group states agree
-        assert_serialized_eq!(group_state1, group_state2, "GroupStates disagree after Add");
+        assert_serialized_eq!(group_ctx1, group_ctx2, "GroupContexts disagree after Add");
     }
 
     // File: messages.bin

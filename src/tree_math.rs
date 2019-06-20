@@ -8,6 +8,38 @@
 // bound is 2^(63) leaves, which gives a tree with 2^(64)-1 nodes.
 pub(crate) const MAX_LEAVES: usize = (std::usize::MAX >> 1) + 1;
 
+/// The index of a node in the tree
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(test, derive(Debug))]
+pub(crate) struct TreeIdx(usize);
+
+impl TreeIdx {
+    pub(crate) const fn new(idx: usize) -> TreeIdx {
+        TreeIdx(idx)
+    }
+}
+
+// TreeIdx --> usize trivially
+impl From<TreeIdx> for usize {
+    fn from(idx: TreeIdx) -> usize {
+        idx.0
+    }
+}
+
+// So we can ask whether tree_idx == tree.size()
+impl core::cmp::PartialEq<usize> for TreeIdx {
+    fn eq(&self, other: &usize) -> bool {
+        usize::from(*self).eq(other)
+    }
+}
+
+// So we can ask whether tree_idx < tree.size()
+impl core::cmp::PartialOrd<usize> for TreeIdx {
+    fn partial_cmp(&self, other: &usize) -> Option<core::cmp::Ordering> {
+        usize::from(*self).partial_cmp(other)
+    }
+}
+
 /// Returns `Some(floor(log2(x))` when `x != 0`, and `None` otherwise
 fn log2(x: usize) -> Option<usize> {
     // The log2 of x is the position of its most significant bit
@@ -16,12 +48,12 @@ fn log2(x: usize) -> Option<usize> {
 }
 
 /// Computes the level of a given node in a binary left-balanced tree. Leaves are level 0, their
-/// parents are level 1, etc. If a node's children are at different level, then its level is the
-/// max level of its children plus one.
-pub(crate) fn node_level(idx: usize) -> usize {
+/// parents are level 1, etc. If a node's children are at different levels, then the node's level
+/// is the max of its childrens', plus one.
+pub(crate) fn node_level(idx: TreeIdx) -> usize {
     // The level of idx is equal to the number of trialing 1s in its binary representation.
     // Equivalently, this is just the number of trailing zeros of (NOT idx)
-    (!idx).trailing_zeros() as usize
+    (!idx.0).trailing_zeros() as usize
 }
 
 /// Computes the number of nodes needed to represent a tree with `num_leaves` many leaves
@@ -45,17 +77,17 @@ pub(crate) fn num_leaves_in_tree(num_nodes: usize) -> usize {
 /// Computes the index of the root node of a tree with `num_leaves` many leaves
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES`
-pub(crate) fn root_idx(num_leaves: usize) -> usize {
+pub(crate) fn root_idx(num_leaves: usize) -> TreeIdx {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     // Root nodes are always index 2^n - 1 where n is the smallest number such that the size of the
     // tree is less than the next power of 2, i.e., 2^(n+1).
     let n = num_nodes_in_tree(num_leaves);
-    (1 << log2(n).unwrap()) - 1
+    TreeIdx::new((1 << log2(n).unwrap()) - 1)
 }
 
 /// Computes the index of the left child of a given node. This does not depend on the size of the
 /// tree. The child of a leaf is itself.
-pub(crate) fn node_left_child(idx: usize) -> usize {
+pub(crate) fn node_left_child(idx: TreeIdx) -> TreeIdx {
     let lvl = node_level(idx);
     // The child of a leaf is itself
     if lvl == 0 {
@@ -64,7 +96,7 @@ pub(crate) fn node_left_child(idx: usize) -> usize {
         // Being on the n-th level (index 0) means your index is of the form xyz..01111...1 where
         // x,y,z are arbitrary, and there are n-many ones at the end. Stepping to the left is
         // equivalent to clearing the highest trailing 1.
-        idx ^ (0x01 << (lvl - 1))
+        TreeIdx::new(idx.0 ^ (0x01 << (lvl - 1)))
     }
 }
 
@@ -72,7 +104,7 @@ pub(crate) fn node_left_child(idx: usize) -> usize {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `idx >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn node_right_child(idx: usize, num_leaves: usize) -> usize {
+pub(crate) fn node_right_child(idx: TreeIdx, num_leaves: usize) -> TreeIdx {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(idx < num_nodes_in_tree(num_leaves));
 
@@ -90,7 +122,7 @@ pub(crate) fn node_right_child(idx: usize, num_leaves: usize) -> usize {
         // is guaranteed to terminate, because if it didn't, there couldn't be any nodes with index
         // higher than the parent, which violates the invariant that every non-leaf node has two
         // children.
-        let mut r = idx ^ (0x03 << (lvl - 1));
+        let mut r = TreeIdx::new(idx.0 ^ (0x03 << (lvl - 1)));
         let idx_threshold = num_nodes_in_tree(num_leaves);
         while r >= idx_threshold {
             r = node_left_child(r);
@@ -104,7 +136,7 @@ pub(crate) fn node_right_child(idx: usize, num_leaves: usize) -> usize {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `idx >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn node_parent(idx: usize, num_leaves: usize) -> usize {
+pub(crate) fn node_parent(idx: TreeIdx, num_leaves: usize) -> TreeIdx {
     // The immediate parent of a node. May be beyond the right edge of the tree. This means weird
     // overflowing behavior when i == usize::MAX. However, this case is caught by the check below
     // that idx == root_idx(num_leaves). We hit the overflowing case iff idx is usize::MAX, which
@@ -119,7 +151,7 @@ pub(crate) fn node_parent(idx: usize, num_leaves: usize) -> usize {
         // This might be off the edge of the tree, since if, say, we have a tree on 3 leaves, the
         // rightmost leaf is idx 4, whose parent according to this algorithm would be idx 5, which
         // doesn't exist.
-        let lvl = node_level(i);
+        let lvl = node_level(TreeIdx::new(i));
         let bit_to_clear = i & (0x01 << (lvl + 1));
         let bit_to_set = 0x01 << lvl;
 
@@ -134,7 +166,7 @@ pub(crate) fn node_parent(idx: usize, num_leaves: usize) -> usize {
     } else {
         // First assume we're in a full tree. This means we're assuming the direct path of this
         // node is maximally long.
-        let mut p = parent_step(idx);
+        let mut p = parent_step(idx.0);
         let idx_threshold = num_nodes_in_tree(num_leaves);
         // This must terminate, since stepping up will eventually land us at the root node of the
         // tree, and parent_step increases the level at every step. The algorithm is correct, since
@@ -145,7 +177,7 @@ pub(crate) fn node_parent(idx: usize, num_leaves: usize) -> usize {
             p = parent_step(p);
         }
 
-        p
+        TreeIdx::new(p)
     }
 }
 
@@ -154,13 +186,13 @@ pub(crate) fn node_parent(idx: usize, num_leaves: usize) -> usize {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or `idx1 >=
 /// num_nodes_in_tree(num_leaves)` or `idx2 >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn common_ancestor(idx1: usize, idx2: usize, num_leaves: usize) -> usize {
+pub(crate) fn common_ancestor(idx1: TreeIdx, idx2: TreeIdx, num_leaves: usize) -> TreeIdx {
     // We will compute the direct paths of both and find the first location where they begin to
     // agree. If they never agree, then their common ancestor is the root node
 
     // We have to allocate because our implementation of node_direct_path isn't reversible as-is
-    let idx1_dp: Vec<usize> = node_direct_path(idx1, num_leaves).collect();
-    let idx2_dp: Vec<usize> = node_direct_path(idx2, num_leaves).collect();
+    let idx1_dp: Vec<TreeIdx> = node_direct_path(idx1, num_leaves).collect();
+    let idx2_dp: Vec<TreeIdx> = node_direct_path(idx2, num_leaves).collect();
 
     // We iterate backwards through the direct paths and stop after we find the first place where
     // they disagree
@@ -181,7 +213,7 @@ pub(crate) fn common_ancestor(idx1: usize, idx2: usize, num_leaves: usize) -> us
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or `idx1 >=
 /// num_nodes_in_tree(num_leaves)` or `idx2 >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn is_ancestor(a: usize, b: usize, num_leaves: usize) -> bool {
+pub(crate) fn is_ancestor(a: TreeIdx, b: TreeIdx, num_leaves: usize) -> bool {
     let mut curr_idx = b;
     let root = root_idx(num_leaves);
 
@@ -203,7 +235,7 @@ pub(crate) fn is_ancestor(a: usize, b: usize, num_leaves: usize) -> bool {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `idx >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn node_sibling(idx: usize, num_leaves: usize) -> usize {
+pub(crate) fn node_sibling(idx: TreeIdx, num_leaves: usize) -> TreeIdx {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(idx < num_nodes_in_tree(num_leaves));
 
@@ -228,7 +260,10 @@ pub(crate) fn node_sibling(idx: usize, num_leaves: usize) -> usize {
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
-pub(crate) fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iterator<Item = usize> {
+pub(crate) fn node_direct_path(
+    start_idx: TreeIdx,
+    num_leaves: usize,
+) -> impl Iterator<Item = TreeIdx> + Clone + Copy {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     assert!(start_idx < num_nodes_in_tree(num_leaves));
 
@@ -249,23 +284,27 @@ pub(crate) fn node_direct_path(start_idx: usize, num_leaves: usize) -> impl Iter
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES` or
 /// `start_idx >= num_nodes_in_tree(num_leaves)`
 pub(crate) fn node_extended_direct_path(
-    start_idx: usize,
+    start_idx: TreeIdx,
     num_leaves: usize,
-) -> impl Iterator<Item = usize> {
+) -> impl Iterator<Item = TreeIdx> + Clone {
     let root = std::iter::once(root_idx(num_leaves));
     node_direct_path(start_idx, num_leaves).chain(root)
 }
 
 /// An iterator for direct paths
+#[derive(Clone, Copy)]
 struct DirectPathIter {
+    /// Number of leaves in the tree
     num_leaves: usize,
-    successive_parent: usize,
+
+    /// Keeps track of current position in the tree
+    successive_parent: TreeIdx,
 }
 
 impl Iterator for DirectPathIter {
-    type Item = usize;
+    type Item = TreeIdx;
 
-    fn next(&mut self) -> Option<usize> {
+    fn next(&mut self) -> Option<TreeIdx> {
         // If we're not at the root, return where we are, then move up one level
         if self.successive_parent != root_idx(self.num_leaves) {
             let ret = self.successive_parent;
@@ -282,16 +321,18 @@ impl Iterator for DirectPathIter {
 /// index order.
 ///
 /// Panics: when `num_leaves == 0` or `num_leaves > MAX_LEAVES`
-pub(crate) fn tree_leaves(num_leaves: usize) -> impl DoubleEndedIterator<Item = usize> {
+pub(crate) fn tree_leaves(num_leaves: usize) -> impl DoubleEndedIterator<Item = TreeIdx> {
     assert!(num_leaves > 0 && num_leaves <= MAX_LEAVES);
     // The leaves are just all the even indices
-    (0..num_leaves).map(|i| 2 * i)
+    (0..num_leaves).map(|i| TreeIdx::new(2 * i))
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
     use crate::tls_de::TlsDeserializer;
+
+    use core::convert::TryFrom;
 
     use quickcheck::TestResult;
     use quickcheck_macros::quickcheck;
@@ -358,9 +399,9 @@ mod test {
         let num_nodes = num_nodes_in_tree(num_leaves);
 
         // This is our starting node
-        let me: usize = {
+        let me: TreeIdx = {
             let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-            rng.gen_range(0, num_nodes)
+            TreeIdx::new(rng.gen_range(0, num_nodes))
         };
         let my_sibling = node_sibling(me, num_leaves);
         let my_parent = node_parent(my_sibling, num_leaves);
@@ -414,11 +455,11 @@ mod test {
         let num_nodes = num_nodes_in_tree(num_leaves);
 
         // The two nodes we want to test. This test is for cases where idx1 != idx2
-        let idx1 = rng.gen_range(0, num_nodes);
+        let idx1 = TreeIdx::new(rng.gen_range(0, num_nodes));
         let idx2 = loop {
             let i = rng.gen_range(0, num_nodes);
-            if i != idx1 {
-                break i;
+            if i != idx1.0 {
+                break TreeIdx::new(i);
             }
         };
 
@@ -437,8 +478,8 @@ mod test {
         // Make the setup idx1 <= idx2 <= num_leaves
         let mut indices = [a, b, c];
         indices.sort();
-        let idx1 = indices[0];
-        let idx2 = indices[1];
+        let idx1 = TreeIdx::new(indices[0]);
+        let idx2 = TreeIdx::new(indices[1]);
         let num_leaves = indices[2];
 
         // idx2 has to index into the tree, and num_leaves can't be too big
@@ -463,38 +504,54 @@ mod test {
     //  / \     / \    |
     // 0   2   4   6   8
 
+    // Name some nodes so we can use them in the tests
+    const N0: TreeIdx = TreeIdx::new(0);
+    const N1: TreeIdx = TreeIdx::new(1);
+    const N2: TreeIdx = TreeIdx::new(2);
+    const N3: TreeIdx = TreeIdx::new(3);
+    const N4: TreeIdx = TreeIdx::new(4);
+    const N5: TreeIdx = TreeIdx::new(5);
+    const N6: TreeIdx = TreeIdx::new(6);
+    const N7: TreeIdx = TreeIdx::new(7);
+    const N8: TreeIdx = TreeIdx::new(8);
+
+    // Node names for a different tree
+    const N10: TreeIdx = TreeIdx::new(10);
+    const N11: TreeIdx = TreeIdx::new(11);
+    const N12: TreeIdx = TreeIdx::new(12);
+
     // See above tree for a diagram
     #[test]
     fn node_level_simple_kat() {
-        assert_eq!(node_level(0), 0);
-        assert_eq!(node_level(1), 1);
-        assert_eq!(node_level(2), 0);
-        assert_eq!(node_level(3), 2);
-        assert_eq!(node_level(4), 0);
-        assert_eq!(node_level(5), 1);
-        assert_eq!(node_level(6), 0);
-        assert_eq!(node_level(7), 3);
-        assert_eq!(node_level(8), 0);
+        assert_eq!(node_level(N0), 0);
+        assert_eq!(node_level(N1), 1);
+        assert_eq!(node_level(N2), 0);
+        assert_eq!(node_level(N3), 2);
+        assert_eq!(node_level(N4), 0);
+        assert_eq!(node_level(N5), 1);
+        assert_eq!(node_level(N6), 0);
+        assert_eq!(node_level(N7), 3);
+        assert_eq!(node_level(N8), 0);
     }
 
     // See above tree for a diagram
     #[test]
     fn direct_path_kat() {
-        // Convenience function
-        fn direct_path_vec(start_idx: usize) -> Vec<usize> {
+        // Convenience function. Collects a direct path
+        fn direct_path_vec(start_idx: TreeIdx) -> Vec<TreeIdx> {
             let num_leaves = 5;
-            node_direct_path(start_idx, num_leaves).collect::<Vec<usize>>()
+            node_direct_path(start_idx, num_leaves).collect()
         }
 
-        assert_eq!(direct_path_vec(0), vec![0, 1, 3]);
-        assert_eq!(direct_path_vec(1), vec![1, 3]);
-        assert_eq!(direct_path_vec(2), vec![2, 1, 3]);
-        assert_eq!(direct_path_vec(3), vec![3]);
-        assert_eq!(direct_path_vec(4), vec![4, 5, 3]);
-        assert_eq!(direct_path_vec(5), vec![5, 3]);
-        assert_eq!(direct_path_vec(6), vec![6, 5, 3]);
-        assert_eq!(direct_path_vec(7), vec![]);
-        assert_eq!(direct_path_vec(8), vec![8]);
+        assert_eq!(direct_path_vec(N0), vec![N0, N1, N3]);
+        assert_eq!(direct_path_vec(N1), vec![N1, N3]);
+        assert_eq!(direct_path_vec(N2), vec![N2, N1, N3]);
+        assert_eq!(direct_path_vec(N3), vec![N3]);
+        assert_eq!(direct_path_vec(N4), vec![N4, N5, N3]);
+        assert_eq!(direct_path_vec(N5), vec![N5, N3]);
+        assert_eq!(direct_path_vec(N6), vec![N6, N5, N3]);
+        assert_eq!(direct_path_vec(N8), vec![N8]);
+        assert!(direct_path_vec(N7).is_empty());
     }
 
     // See above tree for a diagram
@@ -503,50 +560,50 @@ mod test {
         let num_leaves = 5;
 
         // Test parent relations
-        assert_eq!(node_parent(0, num_leaves), 1);
-        assert_eq!(node_parent(2, num_leaves), 1);
-        assert_eq!(node_parent(4, num_leaves), 5);
-        assert_eq!(node_parent(6, num_leaves), 5);
-        assert_eq!(node_parent(1, num_leaves), 3);
-        assert_eq!(node_parent(5, num_leaves), 3);
-        assert_eq!(node_parent(3, num_leaves), 7);
-        assert_eq!(node_parent(8, num_leaves), 7);
-        assert_eq!(node_parent(7, num_leaves), 7);
+        assert_eq!(node_parent(N0, num_leaves), N1);
+        assert_eq!(node_parent(N2, num_leaves), N1);
+        assert_eq!(node_parent(N4, num_leaves), N5);
+        assert_eq!(node_parent(N6, num_leaves), N5);
+        assert_eq!(node_parent(N1, num_leaves), N3);
+        assert_eq!(node_parent(N5, num_leaves), N3);
+        assert_eq!(node_parent(N3, num_leaves), N7);
+        assert_eq!(node_parent(N8, num_leaves), N7);
+        assert_eq!(node_parent(N7, num_leaves), N7);
 
         // Test leaf child relations
-        assert_eq!(node_left_child(0), 0);
-        assert_eq!(node_right_child(0, num_leaves), 0);
-        assert_eq!(node_left_child(2), 2);
-        assert_eq!(node_right_child(2, num_leaves), 2);
-        assert_eq!(node_left_child(4), 4);
-        assert_eq!(node_right_child(4, num_leaves), 4);
-        assert_eq!(node_left_child(6), 6);
-        assert_eq!(node_right_child(6, num_leaves), 6);
-        assert_eq!(node_left_child(8), 8);
-        assert_eq!(node_right_child(8, num_leaves), 8);
+        assert_eq!(node_left_child(N0), N0);
+        assert_eq!(node_right_child(N0, num_leaves), N0);
+        assert_eq!(node_left_child(N2), N2);
+        assert_eq!(node_right_child(N2, num_leaves), N2);
+        assert_eq!(node_left_child(N4), N4);
+        assert_eq!(node_right_child(N4, num_leaves), N4);
+        assert_eq!(node_left_child(N6), N6);
+        assert_eq!(node_right_child(N6, num_leaves), N6);
+        assert_eq!(node_left_child(N8), N8);
+        assert_eq!(node_right_child(N8, num_leaves), N8);
 
         // Test the non-leaf left relations
-        assert_eq!(node_left_child(7), 3);
-        assert_eq!(node_left_child(3), 1);
-        assert_eq!(node_left_child(1), 0);
-        assert_eq!(node_left_child(5), 4);
+        assert_eq!(node_left_child(N7), N3);
+        assert_eq!(node_left_child(N3), N1);
+        assert_eq!(node_left_child(N1), N0);
+        assert_eq!(node_left_child(N5), N4);
 
         // Test the non-leaf right relations
-        assert_eq!(node_right_child(7, num_leaves), 8);
-        assert_eq!(node_right_child(3, num_leaves), 5);
-        assert_eq!(node_right_child(1, num_leaves), 2);
-        assert_eq!(node_right_child(5, num_leaves), 6);
+        assert_eq!(node_right_child(N7, num_leaves), N8);
+        assert_eq!(node_right_child(N3, num_leaves), N5);
+        assert_eq!(node_right_child(N1, num_leaves), N2);
+        assert_eq!(node_right_child(N5, num_leaves), N6);
 
         // Test sibling relations
-        assert_eq!(node_sibling(0, num_leaves), 2);
-        assert_eq!(node_sibling(2, num_leaves), 0);
-        assert_eq!(node_sibling(4, num_leaves), 6);
-        assert_eq!(node_sibling(6, num_leaves), 4);
-        assert_eq!(node_sibling(1, num_leaves), 5);
-        assert_eq!(node_sibling(5, num_leaves), 1);
-        assert_eq!(node_sibling(8, num_leaves), 3);
-        assert_eq!(node_sibling(3, num_leaves), 8);
-        assert_eq!(node_sibling(7, num_leaves), 7);
+        assert_eq!(node_sibling(N0, num_leaves), N2);
+        assert_eq!(node_sibling(N2, num_leaves), N0);
+        assert_eq!(node_sibling(N4, num_leaves), N6);
+        assert_eq!(node_sibling(N6, num_leaves), N4);
+        assert_eq!(node_sibling(N1, num_leaves), N5);
+        assert_eq!(node_sibling(N5, num_leaves), N1);
+        assert_eq!(node_sibling(N8, num_leaves), N3);
+        assert_eq!(node_sibling(N3, num_leaves), N8);
+        assert_eq!(node_sibling(N7, num_leaves), N7);
     }
 
     // See above tree for diagram
@@ -557,63 +614,71 @@ mod test {
         // If common_ancestor(a, b, num_leaves) was tested, there's no need to test
         // common_ancestor(b, a, num_leaves), since symmetry was already tested above
 
-        assert_eq!(common_ancestor(0, 0, num_leaves), 0);
-        assert_eq!(common_ancestor(0, 1, num_leaves), 1);
-        assert_eq!(common_ancestor(0, 2, num_leaves), 1);
-        assert_eq!(common_ancestor(0, 3, num_leaves), 3);
-        assert_eq!(common_ancestor(0, 4, num_leaves), 3);
-        assert_eq!(common_ancestor(0, 5, num_leaves), 3);
-        assert_eq!(common_ancestor(0, 6, num_leaves), 3);
-        assert_eq!(common_ancestor(0, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(0, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N0, N0, num_leaves), N0);
+        assert_eq!(common_ancestor(N0, N1, num_leaves), N1);
+        assert_eq!(common_ancestor(N0, N2, num_leaves), N1);
+        assert_eq!(common_ancestor(N0, N3, num_leaves), N3);
+        assert_eq!(common_ancestor(N0, N4, num_leaves), N3);
+        assert_eq!(common_ancestor(N0, N5, num_leaves), N3);
+        assert_eq!(common_ancestor(N0, N6, num_leaves), N3);
+        assert_eq!(common_ancestor(N0, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N0, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(1, 1, num_leaves), 1);
-        assert_eq!(common_ancestor(1, 2, num_leaves), 1);
-        assert_eq!(common_ancestor(1, 3, num_leaves), 3);
-        assert_eq!(common_ancestor(1, 4, num_leaves), 3);
-        assert_eq!(common_ancestor(1, 5, num_leaves), 3);
-        assert_eq!(common_ancestor(1, 6, num_leaves), 3);
-        assert_eq!(common_ancestor(1, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(1, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N1, N1, num_leaves), N1);
+        assert_eq!(common_ancestor(N1, N2, num_leaves), N1);
+        assert_eq!(common_ancestor(N1, N3, num_leaves), N3);
+        assert_eq!(common_ancestor(N1, N4, num_leaves), N3);
+        assert_eq!(common_ancestor(N1, N5, num_leaves), N3);
+        assert_eq!(common_ancestor(N1, N6, num_leaves), N3);
+        assert_eq!(common_ancestor(N1, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N1, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(2, 2, num_leaves), 2);
-        assert_eq!(common_ancestor(2, 3, num_leaves), 3);
-        assert_eq!(common_ancestor(2, 4, num_leaves), 3);
-        assert_eq!(common_ancestor(2, 5, num_leaves), 3);
-        assert_eq!(common_ancestor(2, 6, num_leaves), 3);
-        assert_eq!(common_ancestor(2, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(2, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N2, N2, num_leaves), N2);
+        assert_eq!(common_ancestor(N2, N3, num_leaves), N3);
+        assert_eq!(common_ancestor(N2, N4, num_leaves), N3);
+        assert_eq!(common_ancestor(N2, N5, num_leaves), N3);
+        assert_eq!(common_ancestor(N2, N6, num_leaves), N3);
+        assert_eq!(common_ancestor(N2, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N2, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(3, 3, num_leaves), 3);
-        assert_eq!(common_ancestor(3, 4, num_leaves), 3);
-        assert_eq!(common_ancestor(3, 5, num_leaves), 3);
-        assert_eq!(common_ancestor(3, 6, num_leaves), 3);
-        assert_eq!(common_ancestor(3, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(3, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N3, N3, num_leaves), N3);
+        assert_eq!(common_ancestor(N3, N4, num_leaves), N3);
+        assert_eq!(common_ancestor(N3, N5, num_leaves), N3);
+        assert_eq!(common_ancestor(N3, N6, num_leaves), N3);
+        assert_eq!(common_ancestor(N3, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N3, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(4, 4, num_leaves), 4);
-        assert_eq!(common_ancestor(4, 5, num_leaves), 5);
-        assert_eq!(common_ancestor(4, 6, num_leaves), 5);
-        assert_eq!(common_ancestor(4, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(4, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N4, N4, num_leaves), N4);
+        assert_eq!(common_ancestor(N4, N5, num_leaves), N5);
+        assert_eq!(common_ancestor(N4, N6, num_leaves), N5);
+        assert_eq!(common_ancestor(N4, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N4, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(5, 5, num_leaves), 5);
-        assert_eq!(common_ancestor(5, 6, num_leaves), 5);
-        assert_eq!(common_ancestor(5, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(5, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N5, N5, num_leaves), N5);
+        assert_eq!(common_ancestor(N5, N6, num_leaves), N5);
+        assert_eq!(common_ancestor(N5, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N5, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(6, 6, num_leaves), 6);
-        assert_eq!(common_ancestor(6, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(6, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N6, N6, num_leaves), N6);
+        assert_eq!(common_ancestor(N6, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N6, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(7, 7, num_leaves), 7);
-        assert_eq!(common_ancestor(7, 8, num_leaves), 7);
+        assert_eq!(common_ancestor(N7, N7, num_leaves), N7);
+        assert_eq!(common_ancestor(N7, N8, num_leaves), N7);
 
-        assert_eq!(common_ancestor(8, 8, num_leaves), 8);
+        assert_eq!(common_ancestor(N8, N8, num_leaves), N8);
 
         // Regression tests
-        assert!(is_ancestor(11, 12, 7));
-        assert_eq!(common_ancestor(12, 10, 7), 11);
+        let num_leaves = 7;
+        assert!(is_ancestor(N11, N12, num_leaves));
+        assert_eq!(common_ancestor(N12, N10, num_leaves), N11);
+    }
+
+    // Implement PartialEq so we can compare a Vec<TreeIdx> to a Vec<u32> in official_tree_math_kat
+    impl core::cmp::PartialEq<u32> for TreeIdx {
+        fn eq(&self, other: &u32) -> bool {
+            u32::try_from(self.0).unwrap().eq(other)
+        }
     }
 
     // TODO: Add Panic tests
@@ -666,20 +731,21 @@ mod test {
         let mut deserializer = TlsDeserializer::from_reader(&mut f);
         let test_vec = TreeMathTestVectors::deserialize(&mut deserializer).unwrap();
 
-        let size = test_vec.tree_size as usize;
+        let tree_size = test_vec.tree_size as usize;
         let num_root_ops = test_vec.root.len();
         let num_left_ops = test_vec.left.len();
         let num_right_ops = test_vec.right.len();
         let num_parent_ops = test_vec.parent.len();
         let num_sibling_ops = test_vec.sibling.len();
 
-        let root: Vec<u32> = (1..=num_root_ops).map(|i| root_idx(i) as u32).collect();
-        let left: Vec<u32> = (0..num_left_ops).map(|i| node_left_child(i) as u32).collect();
-        let right: Vec<u32> =
-            (0..num_right_ops).map(|i| node_right_child(i, size) as u32).collect();
-        let parent: Vec<u32> = (0..num_parent_ops).map(|i| node_parent(i, size) as u32).collect();
-        let sibling: Vec<u32> =
-            (0..num_sibling_ops).map(|i| node_sibling(i, size) as u32).collect();
+        let root: Vec<TreeIdx> = (1..=num_root_ops).map(root_idx).collect();
+        let left: Vec<TreeIdx> = (0..num_left_ops).map(TreeIdx::new).map(node_left_child).collect();
+        let right: Vec<TreeIdx> =
+            (0..num_right_ops).map(|i| node_right_child(TreeIdx::new(i), tree_size)).collect();
+        let parent: Vec<TreeIdx> =
+            (0..num_parent_ops).map(|i| node_parent(TreeIdx::new(i), tree_size)).collect();
+        let sibling: Vec<TreeIdx> =
+            (0..num_sibling_ops).map(|i| node_sibling(TreeIdx::new(i), tree_size)).collect();
 
         assert_eq!(root, test_vec.root);
         assert_eq!(left, test_vec.left);

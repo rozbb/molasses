@@ -14,14 +14,13 @@
 //! it.
 
 use crate::{
-    credential::{self, Credential},
+    credential::Credential,
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
         sig::{SigPublicKey, Signature, SignatureScheme},
     },
     error::Error,
-    ratchet_tree,
 };
 
 /// The context necessary for a `CryptoUpcast`. This specifies the ambient ciphersuite and
@@ -66,7 +65,6 @@ impl CryptoCtx {
 /// of `UserInitKey::signature` and `UserInitKey::credential::signature_scheme`). We need a way to
 /// propogate that information, so we send it back up to the caller.
 pub trait CryptoUpcast {
-    #[must_use]
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error>;
 }
 
@@ -144,33 +142,6 @@ impl<T: CryptoUpcast> CryptoUpcast for Vec<T> {
     }
 }
 
-impl CryptoUpcast for credential::Roster {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        self.0.upcast_crypto_values(ctx)
-    }
-}
-
-impl CryptoUpcast for ratchet_tree::RatchetTreeNode {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        if let ratchet_tree::RatchetTreeNode::Filled {
-            ref mut public_key,
-            ref mut private_key,
-        } = self
-        {
-            public_key.upcast_crypto_values(ctx)?;
-            private_key.upcast_crypto_values(ctx)?;
-        }
-        // No change in context
-        Ok(*ctx)
-    }
-}
-
-impl CryptoUpcast for ratchet_tree::RatchetTree {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        self.nodes.upcast_crypto_values(ctx)
-    }
-}
-
 impl CryptoUpcast for crate::credential::BasicCredential {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         let new_ctx = ctx.set_signature_scheme(self.signature_scheme);
@@ -187,9 +158,23 @@ impl CryptoUpcast for Credential {
     }
 }
 
+impl CryptoUpcast for crate::group_state::WelcomeInfoRatchetNode {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        self.public_key.upcast_crypto_values(ctx)?;
+        self.credential.upcast_crypto_values(ctx)?;
+        // No change in context
+        Ok(*ctx)
+    }
+}
+
+impl CryptoUpcast for crate::group_state::WelcomeInfoRatchetTree {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        self.0.upcast_crypto_values(ctx)
+    }
+}
+
 impl CryptoUpcast for crate::group_state::WelcomeInfo {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        self.roster.upcast_crypto_values(ctx)?;
         self.tree.upcast_crypto_values(ctx)?;
         // No change in context
         Ok(*ctx)
@@ -239,7 +224,7 @@ impl CryptoUpcast for crate::handshake::UserInitKey {
 impl CryptoUpcast for crate::handshake::DirectPathNodeMessage {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.public_key.upcast_crypto_values(ctx)?;
-        for ct in self.node_secrets.iter_mut() {
+        for ct in self.encrypted_path_secrets.iter_mut() {
             ct.upcast_crypto_values(ctx)?;
         }
         // No change to context

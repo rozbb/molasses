@@ -36,7 +36,7 @@ macro_rules! enum_variant {
 /// Returns: `Ok((public_key, private_key, ns, ps))` on success. If above condition is not
 /// satisfied, returns an `Error::ValidationError`.
 pub(crate) fn derive_node_values(
-    cs: &'static CipherSuite,
+    cs: &CipherSuite,
     path_secret: PathSecret,
 ) -> Result<(DhPublicKey, DhPrivateKey, NodeSecret, PathSecret), Error> {
     let digest_size = cs.hash_impl.digest_size();
