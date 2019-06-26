@@ -6,7 +6,7 @@ use crate::{
         hmac::HmacKey,
     },
     error::Error,
-    ratchet_tree::{NodeSecret, PathSecret},
+    ratchet_tree::PathSecret,
 };
 
 /// Unwraps an enum into an expected variant. Panics if the supplied value is not of the expected
@@ -33,12 +33,12 @@ macro_rules! enum_variant {
 ///
 /// Requires: `path_secret.len() == cs.hash_impl.digest_size()`
 ///
-/// Returns: `Ok((public_key, private_key, ns, ps))` on success. If above condition is not
-/// satisfied, returns an `Error::ValidationError`.
+/// Returns: `Ok((public_key, private_key, ps))` on success. If above condition is not satisfied,
+/// returns an `Error::ValidationError`.
 pub(crate) fn derive_node_values(
     cs: &CipherSuite,
     path_secret: PathSecret,
-) -> Result<(DhPublicKey, DhPrivateKey, NodeSecret, PathSecret), Error> {
+) -> Result<(DhPublicKey, DhPrivateKey, PathSecret), Error> {
     let digest_size = cs.hash_impl.digest_size();
     if path_secret.len() != digest_size {
         return Err(Error::ValidationError("Path secret length != Hash.length"));
@@ -48,18 +48,17 @@ pub(crate) fn derive_node_values(
     let prk: HmacKey = path_secret.into();
 
     // node_secret[n] = HKDF-Expand-Label(path_secret[n], "node", "", Hash.Length)
-    let mut node_secret_buf = vec![0u8; digest_size];
-    hkdf::expand_label(cs.hash_impl, &prk, b"node", b"", &mut node_secret_buf);
+    let mut node_secret = vec![0u8; digest_size];
+    hkdf::expand_label(cs.hash_impl, &prk, b"node", b"", &mut node_secret);
 
     // path_secret[n] = HKDF-Expand-Label(path_secret[n-1], "path", "", Hash.Length)
     let mut path_secret_buf = vec![0u8; digest_size];
     hkdf::expand_label(cs.hash_impl, &prk, b"path", b"", &mut path_secret_buf);
 
     // Derive the private and public keys and assign them to the node
-    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret_buf)?;
+    let (node_public_key, node_private_key) = cs.derive_key_pair(&node_secret)?;
 
     // Wrap the new values and return them
-    let node_secret = NodeSecret(node_secret_buf);
     let new_path_secret = PathSecret::new_from_bytes(&path_secret_buf);
-    Ok((node_public_key, node_private_key, node_secret, new_path_secret))
+    Ok((node_public_key, node_private_key, new_path_secret))
 }

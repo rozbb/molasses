@@ -20,14 +20,10 @@ use crate::{
 use std::convert::{TryFrom, TryInto};
 use subtle::ConstantTimeEq;
 
-/// This is called the "node secret" in the "Ratchet Tree Updates" section of the spec. If `Hash`
-/// is the current ciphersuite's hash algorithm, this MUST have length equal to `Hash.length`.
-pub(crate) struct NodeSecret(pub(crate) Vec<u8>);
-
 /// This is called the "path secret" in the "Ratchet Tree Updates" section of the spec. If `Hash`
 /// is the current ciphersuite's hash algorithm, this MUST have length equal to `Hash.length`.
 #[derive(Clone)]
-pub struct PathSecret(HmacKey);
+pub struct PathSecret(pub(crate) HmacKey);
 
 impl PathSecret {
     /// Wraps a `Vec<u8>` with a `ClearOnDrop` and makes it a `PathSecret`
@@ -764,28 +760,28 @@ impl RatchetTree {
     ///
     /// Panics: If above condition is not satisfied
     ///
-    /// Returns: `Ok(node_secret)` on success, where `node_secret` is the node secret of the root
-    /// node of the updated ratchet tree.
+    /// Returns: `Ok(path_secret)` on success, where `path_secret` is the path secret of the parent
+    /// of the root node in the updated ratchet tree.
     pub(crate) fn propagate_new_path_secret(
         &mut self,
         cs: &CipherSuite,
         mut path_secret: PathSecret,
         start_idx: TreeIdx,
-    ) -> Result<NodeSecret, Error> {
+    ) -> Result<PathSecret, Error> {
         let num_leaves = self.num_leaves();
         let root_node_idx = tree_math::root_idx(num_leaves);
 
         let mut current_node_idx = start_idx;
 
-        // Go up the tree, setting the node secrets and keypairs. The last calculated node secret
-        // is that of the root. This is our return value
-        let root_node_secret = loop {
+        // Go up the tree, setting the node secrets and keypairs. The last calculated path secret
+        // is the next one after the root (the "parent" of the root). This is our return value.
+        let grand_root_path_secret = loop {
             let current_node = self
                 .get_mut(current_node_idx.into())
                 .expect("reached invalid node in secret propagation");
 
             // Derive the new values
-            let (_, node_private_key, node_secret, new_path_secret) =
+            let (_, node_private_key, new_path_secret) =
                 utils::derive_node_values(cs, path_secret)?;
 
             // Update the current node with the new values
@@ -793,7 +789,7 @@ impl RatchetTree {
 
             if current_node_idx == root_node_idx {
                 // If we just updated the root, we're done
-                break node_secret;
+                break new_path_secret;
             } else {
                 // Otherwise, take one step up the tree
                 current_node_idx = tree_math::node_parent(current_node_idx, num_leaves);
@@ -804,7 +800,7 @@ impl RatchetTree {
         // Update the hashes of all the ancestors of the starting node
         self.recalculate_ancestor_hashes(start_idx)?;
 
-        Ok(root_node_secret)
+        Ok(grand_root_path_secret)
     }
 
     // This always produces a valid tree. To see this, note that truncating to a leaf node when
@@ -999,7 +995,7 @@ impl RatchetTree {
         let mut node_messages = Vec::new();
 
         // The first message should be just the starting node's pubkey and no encrypted messages
-        let (starting_node_public_key, _, _, mut parent_path_secret) =
+        let (starting_node_public_key, _, mut parent_path_secret) =
             utils::derive_node_values(cs, starting_path_secret)?;
         node_messages.push(DirectPathNodeMessage {
             public_key: starting_node_public_key.clone(),
@@ -1010,7 +1006,7 @@ impl RatchetTree {
         for path_node_idx in direct_path {
             // We need to derive the new parent's public key to send in the same message as the
             // encrypted copies of the parent's path_secret
-            let (parent_public_key, _, _, grandparent_path_secret) =
+            let (parent_public_key, _, grandparent_path_secret) =
                 utils::derive_node_values(cs, parent_path_secret.clone())?;
 
             // Encrypt the path secret at the current node's parent for everyone in the resolution
@@ -1413,8 +1409,7 @@ mod test {
             // Ratchet up the tree until we find the common ancestor
             while idx != common_ancestor {
                 idx = tree_math::node_parent(idx, num_leaves);
-                let (_, _, _, new_path_secret) =
-                    utils::derive_node_values(cs, path_secret).unwrap();
+                let (_, _, new_path_secret) = utils::derive_node_values(cs, path_secret).unwrap();
                 path_secret = new_path_secret;
             }
             path_secret

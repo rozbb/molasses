@@ -1,8 +1,9 @@
 //! Defines `SignatureScheme` and other related digital signature-related data structures and
 //! algorithms used in MLS
 
-use crate::crypto::rng::CryptoRng;
-use crate::error::Error;
+use crate::{crypto::rng::CryptoRng, error::Error, tls_ser};
+
+use serde::ser::Serialize;
 
 /// The canonical instantiation of the ed25519 `SignatureScheme`. Things that use this algorithm
 /// should use `&'static` references to this.
@@ -157,6 +158,20 @@ impl SignatureScheme {
     /// Computes a signature of the given message under the given secret key
     pub(crate) fn sign(&self, secret: &SigSecretKey, msg: &[u8]) -> Signature {
         self.0.sign(secret, msg)
+    }
+
+    /// Computes the signature of the serialized form of the given structure
+    ///
+    /// Returns: `Ok(sig)` on success. If something goes wrong during serialization, returns an
+    /// `Error::SerdeError`.
+    pub(crate) fn sign_serializable<S: Serialize>(
+        &self,
+        secret: &SigSecretKey,
+        msg: &S,
+    ) -> Result<Signature, Error> {
+        // Serialize the thing and pass to sign()
+        let bytes = tls_ser::serialize_to_bytes(msg)?;
+        Ok(self.sign(secret, &bytes))
     }
 
     // This just passes through to `SignatureSchemeInterface::verify`

@@ -18,7 +18,7 @@ use crate::{
     handshake::{
         GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion, UserInitKey,
     },
-    ratchet_tree::{LeafNode, MemberIdx, MemberInfo, NodeSecret, PathSecret, RatchetTree},
+    ratchet_tree::{LeafNode, MemberIdx, MemberInfo, PathSecret, RatchetTree},
     tls_de::TlsDeserializer,
     tls_ser,
     tree_math::TreeIdx,
@@ -33,9 +33,8 @@ use subtle::ConstantTimeEq;
 /// This is called the `application_secret` in the MLS key schedule
 pub(crate) struct ApplicationSecret(HmacKey);
 
-// HmacKey --> ApplicationSecret trivially
-impl From<HmacKey> for ApplicationSecret {
-    fn from(key: HmacKey) -> ApplicationSecret {
+impl ApplicationSecret {
+    pub(crate) fn new(key: HmacKey) -> ApplicationSecret {
         ApplicationSecret(key)
     }
 }
@@ -50,9 +49,8 @@ impl From<ApplicationSecret> for HmacKey {
 /// This is called the `confirmation_key` in the MLS key schedule
 pub(crate) struct ConfirmationKey(HmacKey);
 
-// HmacKey --> ConfirmationKey trivially
-impl From<HmacKey> for ConfirmationKey {
-    fn from(key: HmacKey) -> ConfirmationKey {
+impl ConfirmationKey {
+    fn new(key: HmacKey) -> ConfirmationKey {
         ConfirmationKey(key)
     }
 }
@@ -79,10 +77,10 @@ impl UpdateSecret {
     }
 }
 
-// NodeSecret --> UpdateSecret by rewrapping the underlying vectors
-impl From<NodeSecret> for UpdateSecret {
-    fn from(n: NodeSecret) -> UpdateSecret {
-        UpdateSecret(n.0)
+// PathSecret --> UpdateSecret by rewrapping the underlying vector
+impl From<PathSecret> for UpdateSecret {
+    fn from(n: PathSecret) -> UpdateSecret {
+        UpdateSecret((n.0).0)
     }
 }
 
@@ -383,32 +381,33 @@ impl GroupContext {
         self.init_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"init", self)?;
 
         // application_secret = Derive-Secret(epoch_secret, "app", GroupContext_[n])
-        let application_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"app", self)?;
+        let app_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"app", self)?;
 
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupContext_[n])
-        let confirmation_key = hkdf::derive_secret(hash_impl, &epoch_secret, b"confirm", self)?;
+        let conf_key = hkdf::derive_secret(hash_impl, &epoch_secret, b"confirm", self)?;
 
-        Ok((application_secret.into(), confirmation_key.into()))
+        Ok((ApplicationSecret::new(app_secret), ConfirmationKey::new(conf_key)))
     }
 
-    /// Performs an update operation on the `GroupContext`, where `new_path_secret` is the node
-    /// secret we will propagate starting at the index `start_idx`. This is the core updating logic
-    /// that is used in `process_incoming_update_op` and `create_and_apply_update_op`.
+    /// Propagates `new_path_secret` through the ratchet tree, beginning at `start_idx`. This is
+    /// the core updating logic that is used in `process_incoming_update_op`,
+    /// `create_and_apply_update_op`, and `create_and_apply_remove_op`.
     ///
     /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets
-    fn apply_update(
+    /// necessary for generating new epoch secrets. Here, this is equal to the path secret of the
+    /// "parent" of the root node.
+    fn apply_path_secret(
         &mut self,
         new_path_secret: PathSecret,
         start_idx: TreeIdx,
     ) -> Result<UpdateSecret, Error> {
         // The main part of doing an update is updating node secrets, private keys, and public keys
-        let root_node_secret =
+        let grand_root_path_secret =
             self.tree.propagate_new_path_secret(self.cs, new_path_secret, start_idx)?;
 
-        // "The update secret resulting from this change is the secret for the root node of the
-        // ratchet tree."
-        Ok(UpdateSecret::from(root_node_secret))
+        // "The update_secret resulting from this change is the path_secret[i+1] derived from the
+        // path_secret[i] associated to the root node."
+        Ok(UpdateSecret::from(grand_root_path_secret))
     }
 
     /// Performs and validates an incoming (i.e., one we did not generate) Update operation on the
@@ -438,12 +437,12 @@ impl GroupContext {
             sender_idx,
             my_member_idx,
         )?;
-        let update_secret = self.apply_update(path_secret, common_ancestor)?;
+        let update_secret = self.apply_path_secret(path_secret, common_ancestor)?;
 
         // Update all the public keys of the nodes in the direct path that are below our common
         // ancestor, i.e., all the ones whose secret we don't know. Note that this step is not
-        // performed in apply_update, because this only happens when we're not the ones who created
-        // the Update operation.
+        // performed in apply_path_secret, because this only happens when we're not the ones who
+        // created the Update operation.
         let direct_path_public_keys =
             update.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
         self.tree.set_public_keys_with_bound(
@@ -768,7 +767,8 @@ impl GroupContext {
         let my_tree_idx: TreeIdx = my_member_idx.try_into()?;
 
         // Do the update
-        let update_secret = new_group_ctx.apply_update(new_path_secret.clone(), my_tree_idx)?;
+        let update_secret =
+            new_group_ctx.apply_path_secret(new_path_secret.clone(), my_tree_idx)?;
 
         // Now package the update into a GroupUpdate structure
         let direct_path_msg = new_group_ctx.tree.encrypt_direct_path_secrets(
@@ -881,7 +881,8 @@ impl GroupContext {
 
         // Now that the removed user has been blanked out, apply fresh entropy to the tree
         let my_tree_idx: TreeIdx = my_member_idx.try_into()?;
-        let update_secret = new_group_ctx.apply_update(new_path_secret.clone(), my_tree_idx)?;
+        let update_secret =
+            new_group_ctx.apply_path_secret(new_path_secret.clone(), my_tree_idx)?;
 
         // Encrypt the new entropy for everyone else to see
         let direct_path_msg = new_group_ctx.tree.encrypt_direct_path_secrets(

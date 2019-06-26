@@ -418,7 +418,7 @@ mod test {
             hmac::HmacKey,
             rng::CryptoRng,
         },
-        group_ctx::GroupContext,
+        group_ctx::{ApplicationSecret, GroupContext},
         ratchet_tree::{MemberIdx, PathSecret},
         test_utils,
         tls_de::TlsDeserializer,
@@ -584,7 +584,10 @@ mod test {
 
         // These values hold for all test vectors
         let num_members = test_vecs.num_members as usize;
-        let app_secret = HmacKey::new_from_bytes(&test_vecs.application_secret).into();
+        let app_secret = {
+            let key = HmacKey::new_from_bytes(&test_vecs.application_secret);
+            ApplicationSecret::new(key)
+        };
 
         // Test the X25519 case
         // TODO: Test P256 when it's ready
