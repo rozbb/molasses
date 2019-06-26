@@ -98,7 +98,7 @@ impl core::fmt::Debug for SigSecretKey {
     }
 }
 
-// opaque UserInitKey::signature<0..2^16-1>
+// opaque ClientInitKey::signature<0..2^16-1>
 /// The form that all `Signature`s take when being sent or received over the wire
 #[derive(Clone, Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]

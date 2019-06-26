@@ -161,7 +161,7 @@ pub(crate) fn random_full_group_ctx<R: rand::Rng + CryptoRng>(
         tree_hash,
         transcript_hash,
         member_index: Some(my_member_idx),
-        initializing_user_init_key: None,
+        initializing_client_init_key: None,
         init_secret,
     };
 

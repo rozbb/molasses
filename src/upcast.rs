@@ -62,8 +62,8 @@ impl CryptoCtx {
 ///
 /// The reason the method below returns a `CryptoCtx` is because sometimes the signature scheme of
 /// one field of the struct is determined by the signature scheme of the other (namely, in the case
-/// of `UserInitKey::signature` and `UserInitKey::credential::signature_scheme`). We need a way to
-/// propogate that information, so we send it back up to the caller.
+/// of `ClientInitKey::signature` and `ClientInitKey::credential::signature_scheme`). We need a way
+/// to propogate that information, so we send it back up to the caller.
 pub trait CryptoUpcast {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error>;
 }
@@ -188,7 +188,7 @@ impl CryptoUpcast for crate::group_ctx::Welcome {
     }
 }
 
-impl CryptoUpcast for crate::handshake::UserInitKey {
+impl CryptoUpcast for crate::handshake::ClientInitKey {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         // Try to upcast the private keys if they're around
         if let Some(ref mut private_keys) = self.private_keys {

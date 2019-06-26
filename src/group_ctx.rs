@@ -16,7 +16,8 @@ use crate::{
     },
     error::Error,
     handshake::{
-        GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake, ProtocolVersion, UserInitKey,
+        ClientInitKey, GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake,
+        ProtocolVersion,
     },
     ratchet_tree::{LeafNode, MemberIdx, MemberInfo, PathSecret, RatchetTree},
     tls_de::TlsDeserializer,
@@ -140,11 +141,11 @@ pub struct GroupContext {
     #[serde(skip)]
     pub(crate) member_index: Option<MemberIdx>,
 
-    /// The `UserInitKey` used in the creation of this group from a `Welcome`. This is `Some` iff
+    /// The `ClientInitKey` used in the creation of this group from a `Welcome`. This is `Some` iff
     /// this `GroupContext` is in a preliminary state, i.e., if it is between a `Welcome` and `Add`
     /// operation.
     #[serde(skip)]
-    pub(crate) initializing_user_init_key: Option<UserInitKey>,
+    pub(crate) initializing_client_init_key: Option<ClientInitKey>,
 
     /// The initial secret used to derive `application_secret` and `confirmation_key`
     #[serde(skip)]
@@ -218,17 +219,17 @@ impl GroupContext {
             tree_hash,
             transcript_hash,
             member_index: Some(member_idx),
-            initializing_user_init_key: None,
+            initializing_client_init_key: None,
             init_secret,
         })
     }
 
     /// Initializes a preliminary `GroupContext` with the given `WelcomeInfo` information, this
-    /// member's identity key, and the `UserInitKey` used to encrypt the `Welcome` that the
+    /// member's identity key, and the `ClientInitKey` used to encrypt the `Welcome` that the
     /// `WelcomeInfo` came from.
     ///
     /// Returns: `Ok(group_ctx)` on success, where `group_ctx` is a `GroupContext` in a
-    /// "preliminary state", meaning that `member_index` is `None` and `initializing_user_init_key`
+    /// "preliminary state", meaning that `member_index` is `None` and `initializing_client_init_key`
     /// is `Some`. The only thing to do with a preliminary `GroupContext` is give it an `Add`
     /// operation to add yourself to it. If there was an error in converting the ratchet tree in
     /// the given `WelcomeInfo` to a real `RatchetTree`, this returns some other `Error`.
@@ -238,11 +239,11 @@ impl GroupContext {
         cs: &'static CipherSuite,
         w: WelcomeInfo,
         my_identity_key: SigSecretKey,
-        initializing_user_init_key: UserInitKey,
+        initializing_client_init_key: ClientInitKey,
     ) -> Result<GroupContext, Error> {
         let tree = RatchetTree::new_from_welcome_info_ratchet_tree(cs.hash_impl, w.tree)?;
         let tree_hash = tree.tree_hash()?;
-        // Make a new preliminary group (notice how member_index is None and initializing_user_init_key
+        // Make a new preliminary group (notice how member_index is None and initializing_client_init_key
         // is Some)
         Ok(GroupContext {
             cs,
@@ -254,23 +255,23 @@ impl GroupContext {
             transcript_hash: w.transcript_hash,
             tree,
             member_index: None,
-            initializing_user_init_key: Some(initializing_user_init_key),
+            initializing_client_init_key: Some(initializing_client_init_key),
             init_secret: w.init_secret,
         })
     }
 
     /// Creates a new `GroupContext` from a `Welcome` message, this member's identity key, and the
-    /// `UserInitKey` this member used to introduce themselves to the group
+    /// `ClientInitKey` this member used to introduce themselves to the group
     ///
-    /// Requires: That the `init_key` is the `UserInitKey` that the `Welcome` was encrypted with
-    /// (i.e., `init_key.user_init_key_id == self.user_init_key_id`) and `init_key.private_keys`
+    /// Requires: That the `init_key` is the `ClientInitKey` that the `Welcome` was encrypted with
+    /// (i.e., `init_key.client_init_key_id == self.client_init_key_id`) and `init_key.private_keys`
     /// is not `None`
     // This is just a convenient wrapper around welcome.into_welcome_info_cipher_suite and
     // GroupContext::from_welcome_info
     pub fn from_welcome(
         welcome: Welcome,
         identity_secret_key: SigSecretKey,
-        init_key: UserInitKey,
+        init_key: ClientInitKey,
     ) -> Result<GroupContext, Error> {
         // Decrypt the `WelcomeInfo` and make a group out of it
         let (welcome_info, cipher_suite) = welcome.into_welcome_info_cipher_suite(&init_key)?;
@@ -296,7 +297,7 @@ impl GroupContext {
         // We look for our credential first, since this contains our signature scheme. If this is a
         // preliminary group, i.e., if this group was just created from a WelcomeInfo, then we
         // don't know our member index, so we can't get our credential from the tree. In this case,
-        // we look in the initializing UserInitKey for our credential. For any valid GroupContext,
+        // we look in the initializing ClientInitKey for our credential. For any valid GroupContext,
         // precisely one of these has to happen, so this function is always well-defined.
 
         let my_credential = if let Some(member_idx) = self.member_index {
@@ -309,12 +310,12 @@ impl GroupContext {
             // My own credential. This also better exist.
             &my_leaf.expect("this member's leaf entry is empty").credential
         } else {
-            // initializing_user_init_key is Some iff self.member_index is None
-            let uik = self
-                .initializing_user_init_key
+            // initializing_client_init_key is Some iff self.member_index is None
+            let cik = self
+                .initializing_client_init_key
                 .as_ref()
-                .expect("group has no member index or initializing user init key");
-            &uik.credential
+                .expect("group has no member index or initializing client init key");
+            &cik.credential
         };
 
         my_credential.get_signature_scheme()
@@ -544,29 +545,29 @@ impl GroupContext {
 
         // Check if we're a "preliminary" GroupContext, i.e., whether or not we were just created
         // by a Welcome. This is true iff self.member_index is null and iff
-        // self.initializing_user_init_key is non-null.
+        // self.initializing_client_init_key is non-null.
         let is_preliminary = self.member_index.is_none();
 
-        // Check all the UserInitKeys involved
+        // Check all the ClientInitKeys involved
         add.init_key.verify_sig()?;
         add.init_key.validate()?;
-        self.initializing_user_init_key.as_ref().map(|uik| uik.verify_sig()).transpose()?;
-        self.initializing_user_init_key.as_ref().map(|uik| uik.validate()).transpose()?;
+        self.initializing_client_init_key.as_ref().map(|cik| cik.verify_sig()).transpose()?;
+        self.initializing_client_init_key.as_ref().map(|cik| cik.validate()).transpose()?;
 
-        // If we just received a WelcomeInfo, we want to use the UserInitKey we created, since it
+        // If we just received a WelcomeInfo, we want to use the ClientInitKey we created, since it
         // contains the private key to our ratchet tree node
         let init_key = if is_preliminary {
-            let uik = self.initializing_user_init_key.as_ref().ok_or(Error::ValidationError(
-                "Preliminary GroupContext has no initializing UserInitKey",
+            let cik = self.initializing_client_init_key.as_ref().ok_or(Error::ValidationError(
+                "Preliminary GroupContext has no initializing ClientInitKey",
             ))?;
             // If it's an initializing key, let's make sure that its ID matches that of the
-            // provided UserInitKey
-            if uik.user_init_key_id != add.init_key.user_init_key_id {
+            // provided ClientInitKey
+            if cik.client_init_key_id != add.init_key.client_init_key_id {
                 return Err(Error::ValidationError(
-                    "Add's UserInitKey and GroupContext's initialized UserInitKey differ",
+                    "Add's ClientInitKey and GroupContext's initialized ClientInitKey differ",
                 ));
             }
-            uik
+            cik
         } else {
             &add.init_key
         };
@@ -595,7 +596,7 @@ impl GroupContext {
         let public_key = init_key
             .get_public_key(self.cs)?
             .ok_or(Error::ValidationError(
-                "UserInitKey has no public keys for group's ciphersuite",
+                "ClientInitKey has no public keys for group's ciphersuite",
             ))?
             .clone();
         let private_key: Option<DhPrivateKey> = init_key.get_private_key(self.cs)?.cloned();
@@ -610,9 +611,9 @@ impl GroupContext {
         self.tree.set_member_info(add_member_idx, new_member_info)?;
 
         // Alright, we're done with the init_key. Make sure that we don't have our initializing
-        // UserInitKey hanging around after this
+        // ClientInitKey hanging around after this
         // TODO: Make this erasure secure
-        self.initializing_user_init_key = None;
+        self.initializing_client_init_key = None;
 
         // "The update secret resulting from this change is an all-zero octet string of length
         // Hash.length."
@@ -812,7 +813,7 @@ impl GroupContext {
     pub(crate) fn create_and_apply_add_op(
         &self,
         new_member_idx: MemberIdx,
-        init_key: UserInitKey,
+        init_key: ClientInitKey,
         prior_welcome_info_hash: &WelcomeInfoHash,
     ) -> Result<(GroupContext, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
         // Ugh, a full group context clone, I know
@@ -999,7 +1000,7 @@ impl GroupContext {
     pub fn create_and_apply_add_handshake(
         &self,
         new_member_idx: MemberIdx,
-        init_key: UserInitKey,
+        init_key: ClientInitKey,
         prior_welcome_info_hash: &WelcomeInfoHash,
     ) -> Result<(Handshake, GroupContext, ApplicationKeyChain), Error> {
         let (new_group_ctx, app_key_chain, add_op, conf_key) =
@@ -1107,26 +1108,26 @@ impl subtle::ConstantTimeEq for WelcomeInfoHash {
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
 pub struct Welcome {
-    // opaque user_init_key_id<0..255>;
-    #[serde(rename = "user_init_key_id__bound_u8")]
-    user_init_key_id: Vec<u8>,
+    // opaque client_init_key_id<0..255>;
+    #[serde(rename = "client_init_key_id__bound_u8")]
+    client_init_key_id: Vec<u8>,
     pub(crate) cipher_suite: &'static CipherSuite,
     pub(crate) encrypted_welcome_info: EciesCiphertext,
 }
 
 impl Welcome {
     /// Packages up a `WelcomeInfo` object with a preferred cipher suite, and encrypts it to the
-    /// specified `UserInitKey` (under the appropriate public key)
+    /// specified `ClientInitKey` (under the appropriate public key)
     fn from_welcome_info<R>(
         cs: &'static CipherSuite,
-        init_key: &UserInitKey,
+        init_key: &ClientInitKey,
         welcome_info: &WelcomeInfo,
         csprng: &mut R,
     ) -> Result<Welcome, Error>
     where
         R: CryptoRng,
     {
-        // Get the public key from the supplied UserInitKey corresponding to the given cipher suite
+        // Get the public key from the supplied ClientInitKey corresponding to the given cipher suite
         let public_key = init_key
             .get_public_key(cs)?
             .ok_or(Error::ValidationError("No corresponding public key for given ciphersuite"))?;
@@ -1137,13 +1138,13 @@ impl Welcome {
 
         // All done
         Ok(Welcome {
-            user_init_key_id: init_key.user_init_key_id.clone(),
+            client_init_key_id: init_key.client_init_key_id.clone(),
             cipher_suite: cs,
             encrypted_welcome_info: ciphertext,
         })
     }
 
-    /// Creates a `Welcome` object for the target `UserInitKey`. The `Welcome` contains all the
+    /// Creates a `Welcome` object for the target `ClientInitKey`. The `Welcome` contains all the
     /// current state information. This operation ordinarily precedes an `Add`.
     ///
     /// Returns: `Ok((welcome, welcome_info_hash))` on success where `welcome` is a `Welcome`
@@ -1153,7 +1154,7 @@ impl Welcome {
     // Welcome::from_welcome_info
     pub fn from_group_ctx<R>(
         group_ctx: &GroupContext,
-        init_key: &UserInitKey,
+        init_key: &ClientInitKey,
         csprng: &mut R,
     ) -> Result<(Welcome, WelcomeInfoHash), Error>
     where
@@ -1173,24 +1174,26 @@ impl Welcome {
         Ok((welcome, welcome_info_hash.into()))
     }
 
-    /// Decrypts the `Welcome` with the given `UserInitKey`
+    /// Decrypts the `Welcome` with the given `ClientInitKey`
     ///
-    /// Requires: That the `init_key` is the `UserInitKey` that the `Welcome` was encrypted with
-    /// (i.e., `init_key.user_init_key_id == self.user_init_key_id`) and `init_key.private_keys`
+    /// Requires: That the `init_key` is the `ClientInitKey` that the `Welcome` was encrypted with
+    /// (i.e., `init_key.client_init_key_id == self.client_init_key_id`) and `init_key.private_keys`
     /// is not `None`
     ///
     /// Returns: `Ok((welcome_info, cs))` on success, where `welcome_info` is the decrypted
     /// `WelcomeInfo` that this `Welcome` contained, and `cs` is this group's cipher suite
     fn into_welcome_info_cipher_suite(
         self,
-        init_key: &UserInitKey,
+        init_key: &ClientInitKey,
     ) -> Result<(WelcomeInfo, &'static CipherSuite), Error> {
-        // Verify the UserInitKey signature and validate its contents
+        // Verify the ClientInitKey signature and validate its contents
         init_key.verify_sig()?;
         init_key.validate()?;
-        // Verify that the supplied UserInitKey is the one that the Welcome message references
-        if self.user_init_key_id != init_key.user_init_key_id {
-            return Err(Error::ValidationError("Supplied UserInitKey ID doesn't match Welcome's"));
+        // Verify that the supplied ClientInitKey is the one that the Welcome message references
+        if self.client_init_key_id != init_key.client_init_key_id {
+            return Err(Error::ValidationError(
+                "Supplied ClientInitKey ID doesn't match Welcome's",
+            ));
         }
         // Get the ciphersuite and private key we'll use to decrypt the wrapped WelcomeInfo
         let cs = self.cipher_suite;
@@ -1219,16 +1222,16 @@ impl Welcome {
         let supported_version = init_key.get_supported_version(cs)?.unwrap();
         if welcome_info.protocol_version != supported_version {
             return Err(Error::ValidationError(
-                "WelcomeInfo's supported protocol version does not match the UserInitKey's",
+                "WelcomeInfo's supported protocol version does not match the ClientInitKey's",
             ));
         }
 
         Ok((welcome_info, cs))
     }
 
-    /// Returns the `user_init_key_id` associated with this `Welcome`
-    pub fn get_user_init_key_id(&self) -> &[u8] {
-        self.user_init_key_id.as_slice()
+    /// Returns the `client_init_key_id` associated with this `Welcome`
+    pub fn get_client_init_key_id(&self) -> &[u8] {
+        self.client_init_key_id.as_slice()
     }
 }
 
@@ -1243,7 +1246,7 @@ mod test {
         },
         error::Error,
         group_ctx::{GroupContext, GroupId, UpdateSecret, Welcome, WelcomeInfoRatchetTree},
-        handshake::{ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
+        handshake::{ClientInitKey, ProtocolVersion, MLS_DUMMY_VERSION},
         ratchet_tree::{MemberIdx, RatchetTree},
         test_utils,
         tls_de::TlsDeserializer,
@@ -1269,16 +1272,16 @@ mod test {
         // GroupContexts after the Welcome
         let (new_credential, new_identity_key) = test_utils::random_basic_credential(&mut rng);
         // Key ID is random
-        let user_init_key_id = {
+        let client_init_key_id = {
             let mut buf = [0u8; 16];
             rng.fill_bytes(&mut buf);
             buf.to_vec()
         };
-        // The UserInitKey has all the key / identity information necessary to add a new member to
+        // The ClientInitKey has all the key / identity information necessary to add a new member to
         // the group and Welcome them
-        let init_key = UserInitKey::new_from_random(
+        let init_key = ClientInitKey::new_from_random(
             &new_identity_key,
-            user_init_key_id,
+            client_init_key_id,
             new_credential.clone(),
             cipher_suites,
             supported_versions,
@@ -1292,7 +1295,7 @@ mod test {
             Welcome::from_welcome_info(group_ctx1.cs, &init_key, &welcome_info, &mut rng).unwrap();
 
         // Now unwrap the Welcome back into a GroupContext. This should be identical to the starting
-        // group context, except maybe for the member_index, credential, initiailizing UserInitKey,
+        // group context, except maybe for the member_index, credential, initiailizing ClientInitKey,
         // and identity key. None of those things are serialized though, since they are unique to
         // each member's perspective
         let group_ctx2 = GroupContext::from_welcome(welcome, new_identity_key, init_key).unwrap();
@@ -1335,7 +1338,7 @@ mod test {
             transcript_hash: tgs.transcript_hash,
             tree,
             member_index: Some(MemberIdx::new(0)),
-            initializing_user_init_key: None,
+            initializing_client_init_key: None,
             init_secret: HmacKey::new_from_zeros(cs.hash_impl),
         }
     }

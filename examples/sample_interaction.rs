@@ -1,11 +1,11 @@
 // This file is going to implement the following MLS interaction:
 //
 // Alice creates a Group.
-// Alice receives a UserInitKey from Bob.
+// Alice receives a ClientInitKey from Bob.
 // Alice adds Bob
 // Alice sends an application message
 // Bob sends an application message
-// Alice receives a UserInitKey from Carol
+// Alice receives a ClientInitKey from Carol
 // Alice sends an application message
 // Alice adds Carol
 // Carol sends an application message
@@ -18,7 +18,7 @@ use molasses::{
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
     group_ctx::{GroupContext, GroupId, Welcome},
-    handshake::{Handshake, ProtocolVersion, UserInitKey, MLS_DUMMY_VERSION},
+    handshake::{ClientInitKey, Handshake, ProtocolVersion, MLS_DUMMY_VERSION},
     ratchet_tree::MemberIdx,
     tls_de::TlsDeserializer,
     tls_ser::TlsSerializer,
@@ -122,7 +122,7 @@ fn delivery_service(
         }
     };
 
-    // Bob --UserInitKey--> Alice
+    // Bob --ClientInitKey--> Alice
     pause_for_effect();
     passthrough();
 
@@ -146,7 +146,7 @@ fn delivery_service(
     pause_for_effect();
     passthrough();
 
-    // Carol --UserInitKey--> Alice
+    // Carol --ClientInitKey--> Alice
     // Carol <----Welcome---- Alice
     // Carol <------Add------ Alice
     pause_for_effect();
@@ -189,13 +189,13 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     )
     .unwrap();
 
-    // Get Bob's UserInitKey
-    let bob_user_init_key: UserInitKey = deserialize(&rx.recv().unwrap());
+    // Get Bob's ClientInitKey
+    let bob_client_init_key: ClientInitKey = deserialize(&rx.recv().unwrap());
 
     // Add Bob to the Group
     // First, make and send a Welcome
     let (welcome, welcome_info_hash) =
-        Welcome::from_group_ctx(&group_ctx, &bob_user_init_key, &mut rng).unwrap();
+        Welcome::from_group_ctx(&group_ctx, &bob_client_init_key, &mut rng).unwrap();
     tx.send(serialize(&welcome)).unwrap();
     println!("ALICE SEND Welcome");
 
@@ -203,7 +203,7 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Bob will have roster index 1. Recall Alice is at roster index 0.
     let bob_member_idx = MemberIdx::new(1);
     let (add_handshake, group_ctx, mut app_key_chain) = group_ctx
-        .create_and_apply_add_handshake(bob_member_idx, bob_user_init_key, &welcome_info_hash)
+        .create_and_apply_add_handshake(bob_member_idx, bob_client_init_key, &welcome_info_hash)
         .unwrap();
     tx.send(serialize(&add_handshake)).unwrap();
     println!("ALICE SEND Add");
@@ -228,21 +228,21 @@ fn alice(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     tx.send(serialize(&app_msg)).unwrap();
     println!("ALICE SEND ApplicationMessage");
 
-    // Get Carol's UserInitKey
-    let carol_user_init_key: UserInitKey = deserialize(&rx.recv().unwrap());
-    println!("ALICE RECV UserInitKey");
+    // Get Carol's ClientInitKey
+    let carol_client_init_key: ClientInitKey = deserialize(&rx.recv().unwrap());
+    println!("ALICE RECV ClientInitKey");
 
     // Add Carol to the Group:
     // First, make and send a Welcome
     let (welcome, welcome_info_hash) =
-        Welcome::from_group_ctx(&group_ctx, &carol_user_init_key, &mut rng).unwrap();
+        Welcome::from_group_ctx(&group_ctx, &carol_client_init_key, &mut rng).unwrap();
     tx.send(serialize(&welcome)).unwrap();
     println!("ALICE SEND Welcome");
 
     // Then make an Add Handshake, letting the resulting group state be the new group state.
     let carol_member_idx = MemberIdx::new(2);
     let (add_handshake, group_ctx, mut app_key_chain) = group_ctx
-        .create_and_apply_add_handshake(carol_member_idx, carol_user_init_key, &welcome_info_hash)
+        .create_and_apply_add_handshake(carol_member_idx, carol_client_init_key, &welcome_info_hash)
         .unwrap();
     tx.send(serialize(&add_handshake)).unwrap();
     println!("ALICE SEND Add");
@@ -267,13 +267,13 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
         let basic_cred = BasicCredential::new(identity, COMMON_SIG_SCHEME, identity_public_key);
         Credential::Basic(basic_cred)
     };
-    // Make a UserInitKey
-    let user_init_key_id = b"bob_user_init_key".to_vec();
+    // Make a ClientInitKey
+    let client_init_key_id = b"bob_client_init_key".to_vec();
     let cipher_suites = vec![COMMON_CIPHER_SUITE];
     let supported_versions = vec![COMMON_PROTOCOL_VERSION];
-    let user_init_key = UserInitKey::new_from_random(
+    let client_init_key = ClientInitKey::new_from_random(
         &identity_secret_key,
-        user_init_key_id,
+        client_init_key_id,
         credential,
         cipher_suites,
         supported_versions,
@@ -281,16 +281,16 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     )
     .unwrap();
 
-    // Send the UserInitKey
-    tx.send(serialize(&user_init_key)).unwrap();
-    println!("BOB   SEND UserInitKey");
+    // Send the ClientInitKey
+    tx.send(serialize(&client_init_key)).unwrap();
+    println!("BOB   SEND ClientInitKey");
 
     // Receive the Welcome message
     let welcome: Welcome = deserialize(&rx.recv().unwrap());
     println!("BOB   RECV Welcome");
     // Make a preliminary GroupContext out of it
     let group_ctx =
-        GroupContext::from_welcome(welcome, identity_secret_key, user_init_key).unwrap();
+        GroupContext::from_welcome(welcome, identity_secret_key, client_init_key).unwrap();
 
     // Now receive the Add and process the Handshake
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
@@ -314,7 +314,7 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     let plaintext = decrypt_application_message(app_msg, &group_ctx, &mut app_key_chain).unwrap();
     println!(r#"BOB   RECV ApplicationMessage "{}""#, bytes_to_str(&plaintext));
 
-    // Silently ignore Carol's UserInitKey
+    // Silently ignore Carol's ClientInitKey
     rx.recv().unwrap();
     // Silently ignore Alice's Welcome
     rx.recv().unwrap();
@@ -353,13 +353,13 @@ fn carol(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
         let basic_cred = BasicCredential::new(identity, COMMON_SIG_SCHEME, identity_public_key);
         Credential::Basic(basic_cred)
     };
-    // Make a UserInitKey
-    let user_init_key_id = b"carol_user_init_key".to_vec();
+    // Make a ClientInitKey
+    let client_init_key_id = b"carol_client_init_key".to_vec();
     let cipher_suites = vec![COMMON_CIPHER_SUITE];
     let supported_versions = vec![COMMON_PROTOCOL_VERSION];
-    let user_init_key = UserInitKey::new_from_random(
+    let client_init_key = ClientInitKey::new_from_random(
         &identity_secret_key,
-        user_init_key_id,
+        client_init_key_id,
         credential,
         cipher_suites,
         supported_versions,
@@ -367,16 +367,16 @@ fn carol(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     )
     .unwrap();
 
-    // Send the UserInitKey
-    tx.send(serialize(&user_init_key)).unwrap();
-    println!("CAROL SEND UserInitKey");
+    // Send the ClientInitKey
+    tx.send(serialize(&client_init_key)).unwrap();
+    println!("CAROL SEND ClientInitKey");
 
     // Receive the Welcome message
     let welcome: Welcome = deserialize(&rx.recv().unwrap());
     println!("CAROL RECV Welcome");
     // Make a preliminary GroupContext out of it
     let group_ctx =
-        GroupContext::from_welcome(welcome, identity_secret_key, user_init_key).unwrap();
+        GroupContext::from_welcome(welcome, identity_secret_key, client_init_key).unwrap();
 
     // Now receive the Add and process the Handshake
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
