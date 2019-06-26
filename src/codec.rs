@@ -1,6 +1,7 @@
 //! Defines specialized serialization and deserialization routines for various types
 
 use crate::crypto::{
+    aead::{AeadNonce, AeadNonceRaw},
     ciphersuite::{CipherSuite, P256_SHA256_AES128GCM, X25519_SHA256_AES128GCM},
     dh::{DhPublicKey, DhPublicKeyRaw},
     sig::{
@@ -160,5 +161,22 @@ impl<'de> Deserialize<'de> for Signature {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
         SignatureRaw::deserialize(deserializer).map(Signature::Raw)
+    }
+}
+
+impl Serialize for AeadNonce {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // If it's not already, convert it to a Raw signature, then serialize that
+        match self {
+            AeadNonce::Raw(p) => p.serialize(serializer),
+            p => AeadNonceRaw(p.as_bytes().to_vec()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for AeadNonce {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
+        AeadNonceRaw::deserialize(deserializer).map(AeadNonce::Raw)
     }
 }

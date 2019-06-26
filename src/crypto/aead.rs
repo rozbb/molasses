@@ -35,10 +35,18 @@ impl core::fmt::Debug for AeadKey {
     }
 }
 
+// opaque sender_data_nonce<0..255>
+/// This is the form that all `AeadNonce`s take when being sent or received over the wire
+#[derive(Clone, Deserialize, Serialize)]
+#[cfg_attr(test, derive(Debug))]
+#[serde(rename = "AeadNonceRaw")]
+pub(crate) struct AeadNonceRaw(pub(crate) Vec<u8>);
+
 /// An enum of possible types for an AEAD nonce, depending on the underlying algorithm
 pub(crate) enum AeadNonce {
     /// A nonce in AES-128-GCM
     Aes128GcmNonce(ring::aead::Nonce),
+    Raw(AeadNonceRaw),
 }
 
 impl AeadNonce {
@@ -50,6 +58,17 @@ impl AeadNonce {
     /// `Error::EncryptionError`.
     pub(crate) fn new_from_bytes(scheme: &AeadScheme, bytes: &[u8]) -> Result<AeadNonce, Error> {
         scheme.0.nonce_from_bytes(bytes)
+    }
+
+    /// Returns a byte-representation of this nonce
+    ///
+    /// WARNING: Do not use this method unless you are absolutely sure you need it. Copying these
+    /// bytes makes it very easy to reuse a nonce.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        match self {
+            AeadNonce::Raw(v) => v.0.as_slice(),
+            AeadNonce::Aes128GcmNonce(n) => n.as_ref(),
+        }
     }
 }
 
