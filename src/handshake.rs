@@ -5,8 +5,8 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
-        ecies::EciesCiphertext,
         hmac::Mac,
+        hpke::HpkeCiphertext,
         rng::CryptoRng,
         sig::{SigSecretKey, Signature},
     },
@@ -31,9 +31,9 @@ pub const MLS_DUMMY_VERSION: ProtocolVersion = ProtocolVersion(0xba);
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct DirectPathNodeMessage {
     pub(crate) public_key: DhPublicKey,
-    // ECIESCiphertext encrypted_path_secrets<0..2^16-1>;
+    // HPKECiphertext encrypted_path_secrets<0..2^16-1>;
     #[serde(rename = "encrypted_path_secrets__bound_u16")]
-    pub(crate) encrypted_path_secrets: Vec<EciesCiphertext>,
+    pub(crate) encrypted_path_secrets: Vec<HpkeCiphertext>,
 }
 
 // This is called a DirectPath in the spec

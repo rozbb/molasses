@@ -117,7 +117,7 @@ impl CryptoUpcast for Signature {
     }
 }
 
-impl CryptoUpcast for crate::crypto::ecies::EciesCiphertext {
+impl CryptoUpcast for crate::crypto::hpke::HpkeCiphertext {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.ephemeral_public_key.upcast_crypto_values(ctx)
     }

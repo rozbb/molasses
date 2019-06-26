@@ -7,10 +7,10 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
-        ecies::{self, EciesCiphertext},
         hash::Digest,
         hkdf,
         hmac::{self, HmacKey},
+        hpke::{self, HpkeCiphertext},
         rng::CryptoRng,
         sig::{SigSecretKey, SignatureScheme},
     },
@@ -1112,7 +1112,7 @@ pub struct Welcome {
     #[serde(rename = "client_init_key_id__bound_u8")]
     client_init_key_id: Vec<u8>,
     pub(crate) cipher_suite: &'static CipherSuite,
-    pub(crate) encrypted_welcome_info: EciesCiphertext,
+    pub(crate) encrypted_welcome_info: HpkeCiphertext,
 }
 
 impl Welcome {
@@ -1134,7 +1134,7 @@ impl Welcome {
 
         // Serialize and encrypt the WelcomeInfo
         let serialized_welcome_info = tls_ser::serialize_to_bytes(welcome_info)?;
-        let ciphertext = ecies::encrypt(cs, &public_key, serialized_welcome_info, csprng)?;
+        let ciphertext = hpke::encrypt(cs, &public_key, serialized_welcome_info, csprng)?;
 
         // All done
         Ok(Welcome {
@@ -1202,7 +1202,7 @@ impl Welcome {
             .ok_or(Error::ValidationError("Can't decrypt Welcome without a private key"))?;
 
         // Decrypt the WelcomeInfo, deserialize it, upcast it, and return it
-        let welcome_info_bytes = ecies::decrypt(cs, dh_private_key, self.encrypted_welcome_info)?;
+        let welcome_info_bytes = hpke::decrypt(cs, dh_private_key, self.encrypted_welcome_info)?;
         let welcome_info = {
             let mut cursor = welcome_info_bytes.as_slice();
             let mut deserializer = TlsDeserializer::from_reader(&mut cursor);

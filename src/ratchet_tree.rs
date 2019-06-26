@@ -5,9 +5,9 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey, DhScheme},
-        ecies,
         hash::{Digest, HashFunction},
         hmac::HmacKey,
+        hpke,
         rng::CryptoRng,
     },
     error::Error,
@@ -1021,7 +1021,7 @@ impl RatchetTree {
                 // that are non-blank, by definition of "resolution"
                 let others_public_key = res_node.get_public_key().unwrap();
                 // Encrypt the parent's path secret with the resolution node's pubkey
-                let ciphertext = ecies::encrypt(
+                let ciphertext = hpke::encrypt(
                     cs,
                     others_public_key,
                     parent_path_secret.as_bytes().to_vec(), // TODO: Make this not copy secrets
@@ -1125,7 +1125,7 @@ impl RatchetTree {
                     .ok_or(Error::TreeError("Malformed DirectPathMessage"))?;
 
                 // Finally, decrypt the thing and return the plaintext and common ancestor
-                let plaintext = ecies::decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
+                let plaintext = hpke::decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
                 let path_secret = PathSecret::new_from_bytes(&plaintext);
                 return Ok((path_secret, common_ancestor_tree_idx));
             }
