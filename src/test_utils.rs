@@ -1,4 +1,5 @@
 use crate::{
+    client_init_key::MLS_DUMMY_VERSION,
     credential::{self, BasicCredential, Credential},
     crypto::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
@@ -9,7 +10,6 @@ use crate::{
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
     group_ctx::{GroupContext, GroupId},
-    handshake::MLS_DUMMY_VERSION,
     ratchet_tree::{MemberIdx, PathSecret, RatchetTree},
     tree_math::TreeIdx,
 };

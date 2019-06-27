@@ -67,7 +67,7 @@ impl From<PathSecret> for HmacKey {
 pub struct MemberIdx(u32);
 
 impl MemberIdx {
-    pub fn new(idx: u32) -> MemberIdx {
+    pub const fn new(idx: u32) -> MemberIdx {
         MemberIdx(idx)
     }
 }

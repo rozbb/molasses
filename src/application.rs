@@ -443,7 +443,8 @@ mod test {
         *group1 = new_group1;
 
         // Process the handshake and update group2
-        let (new_group2, keychain2) = group2.process_handshake(&handshake).unwrap();
+        let member_idx1 = group1.member_index.unwrap();
+        let (new_group2, keychain2) = group2.process_handshake(&handshake, member_idx1).unwrap();
         *group2 = new_group2;
 
         (keychain1, keychain2)

@@ -12,13 +12,14 @@
 
 use molasses::{
     application::{decrypt_application_message, encrypt_application_message, ApplicationMessage},
+    client_init_key::{ClientInitKey, ProtocolVersion, MLS_DUMMY_VERSION},
     credential::{BasicCredential, Credential, Identity},
     crypto::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
     group_ctx::{GroupContext, GroupId, Welcome},
-    handshake::{ClientInitKey, Handshake, ProtocolVersion, MLS_DUMMY_VERSION},
+    handshake::Handshake,
     ratchet_tree::MemberIdx,
     tls_de::TlsDeserializer,
     tls_ser::TlsSerializer,
@@ -36,6 +37,9 @@ use serde::ser::Serialize;
 const COMMON_CIPHER_SUITE: &'static CipherSuite = &X25519_SHA256_AES128GCM;
 const COMMON_SIG_SCHEME: &'static SignatureScheme = &ED25519_IMPL;
 const COMMON_PROTOCOL_VERSION: ProtocolVersion = MLS_DUMMY_VERSION;
+
+// We need this until we have full support for message framing
+const ALICE_MEMBER_IDX: MemberIdx = MemberIdx::new(0);
 
 // Pauses the main thread until the user presses Enter
 fn pause_for_effect() {
@@ -295,7 +299,8 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Now receive the Add and process the Handshake
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
     println!("BOB   RECV Add");
-    let (group_ctx, mut app_key_chain) = group_ctx.process_handshake(&add_handshake).unwrap();
+    let (group_ctx, mut app_key_chain) =
+        group_ctx.process_handshake(&add_handshake, ALICE_MEMBER_IDX).unwrap();
 
     // Time to receive the first ApplicationMessage
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
@@ -322,7 +327,8 @@ fn bob(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Process Carol's addition to the group
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
     println!("BOB   RECV Add");
-    let (group_ctx, mut app_key_chain) = group_ctx.process_handshake(&add_handshake).unwrap();
+    let (group_ctx, mut app_key_chain) =
+        group_ctx.process_handshake(&add_handshake, ALICE_MEMBER_IDX).unwrap();
 
     // Get Carol's first message
     let app_msg: ApplicationMessage = deserialize(&rx.recv().unwrap());
@@ -381,7 +387,8 @@ fn carol(tx: channel::Sender<Vec<u8>>, rx: channel::Receiver<Vec<u8>>) {
     // Now receive the Add and process the Handshake
     let add_handshake: Handshake = deserialize(&rx.recv().unwrap());
     println!("CAROL RECV Add");
-    let (group_ctx, mut app_key_chain) = group_ctx.process_handshake(&add_handshake).unwrap();
+    let (group_ctx, mut app_key_chain) =
+        group_ctx.process_handshake(&add_handshake, ALICE_MEMBER_IDX).unwrap();
 
     // Carol's first message
     let msg = b"Uv rirelbar V'z whfg ernyyl tynq gb or urer.";

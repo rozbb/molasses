@@ -3,6 +3,7 @@
 
 use crate::{
     application::ApplicationKeyChain,
+    client_init_key::{ClientInitKey, ProtocolVersion},
     credential::Credential,
     crypto::{
         ciphersuite::CipherSuite,
@@ -15,10 +16,7 @@ use crate::{
         sig::{SigSecretKey, SignatureScheme},
     },
     error::Error,
-    handshake::{
-        ClientInitKey, GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake,
-        ProtocolVersion,
-    },
+    handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake},
     ratchet_tree::{LeafNode, MemberIdx, MemberInfo, PathSecret, RatchetTree},
     tls_de::TlsDeserializer,
     tls_ser,
@@ -229,10 +227,11 @@ impl GroupContext {
     /// `WelcomeInfo` came from.
     ///
     /// Returns: `Ok(group_ctx)` on success, where `group_ctx` is a `GroupContext` in a
-    /// "preliminary state", meaning that `member_index` is `None` and `initializing_client_init_key`
-    /// is `Some`. The only thing to do with a preliminary `GroupContext` is give it an `Add`
-    /// operation to add yourself to it. If there was an error in converting the ratchet tree in
-    /// the given `WelcomeInfo` to a real `RatchetTree`, this returns some other `Error`.
+    /// "preliminary state", meaning that `member_index` is `None` and
+    /// `initializing_client_init_key` is `Some`. The only thing to do with a preliminary
+    /// `GroupContext` is give it an `Add` operation to add yourself to it. If there was an error
+    /// in converting the ratchet tree in the given `WelcomeInfo` to a real `RatchetTree`, this
+    /// returns some other `Error`.
     // This is different from new_from_parts in that the epoch is not 0, the transcript hash is not
     // 0, the init secret is not 0, and the member index is None
     pub(crate) fn from_welcome_info(
@@ -243,8 +242,8 @@ impl GroupContext {
     ) -> Result<GroupContext, Error> {
         let tree = RatchetTree::new_from_welcome_info_ratchet_tree(cs.hash_impl, w.tree)?;
         let tree_hash = tree.tree_hash()?;
-        // Make a new preliminary group (notice how member_index is None and initializing_client_init_key
-        // is Some)
+        // Make a new preliminary group (notice how member_index is None and
+        // initializing_client_init_key is Some)
         Ok(GroupContext {
             cs,
             protocol_version: w.protocol_version,
@@ -630,33 +629,11 @@ impl GroupContext {
     /// `ApplicationKeyChain` belonging to `group_ctx`. Returns `Error::IAmRemoved` iff this
     /// member is the subject of a group `Remove` operation. Otherwise, returns some other sort of
     /// `Error`.
-    // According to the spec, this is how we process handshakes:
-    // 1. Verify that the prior_epoch field of the Handshake message is equal the epoch field of
-    //    the current GroupContext object.
-    // 2. Use the operation message to produce an updated, provisional GroupContext object
-    //    incorporating the proposed changes.
-    // 3. Look up the public key for slot index signer_index from the roster in the current
-    //    GroupContext object (before the update).
-    // 4. Use that public key to verify the signature field in the Handshake message, with the
-    //    updated GroupContext object as input.
-    // 5. If the signature fails to verify, discard the updated GroupContext object and consider
-    //    the Handshake message invalid.
-    // 6. Use the confirmation_key for the new group context to compute the confirmation MAC for
-    //    this message, as described below, and verify that it is the same as the confirmation
-    //    field.
-    // 7. If the the above checks are successful, consider the updated GroupContext object as the
-    //    current state of the group.
     pub fn process_handshake(
         &self,
         handshake: &Handshake,
+        sender_idx: MemberIdx,
     ) -> Result<(GroupContext, ApplicationKeyChain), Error> {
-        if handshake.prior_epoch != self.epoch {
-            return Err(Error::ValidationError("Handshake's prior epoch isn't the current epoch"));
-        }
-        if handshake.signer_index >= self.tree.num_leaves() {
-            return Err(Error::ValidationError("Handshake sender tree index is out of range"));
-        }
-
         // Make a preliminary new state and  update its epoch and transcript hash. The state is
         // further mutated in the branches of the match statement below
         let mut new_group_ctx = self.clone();
@@ -664,7 +641,6 @@ impl GroupContext {
         // Get the sender's public key and preferred signature scheme from the tree. There are two
         // things that can go wrong here: either the sender index is bad, or the index is good but
         // the leaf entry is empty.
-        let sender_idx: MemberIdx = handshake.signer_index;
         let sender_info: &MemberInfo = self
             .tree
             .get_member_info(sender_idx)
@@ -714,22 +690,12 @@ impl GroupContext {
         // Make the state immutable for the rest of this function
         let new_group_ctx = new_group_ctx;
 
-        // Check the signature. From section 7 of the spec:
-        // signature_data = GroupContext.transcript_hash
-        // Handshake.signature = Sign(identity_key, signature_data)
-        let sig_data = new_group_ctx.transcript_hash.as_bytes();
-        sender_ss.verify(sender_public_key, sig_data, &handshake.signature)?;
-
-        // Check the MAC. From section 7 of the spec:
-        // confirmation_data = GroupContext.transcript_hash || Handshake.signature
-        // Handshake.confirmation = HMAC(confirmation_key, confirmation_data)
-        let confirmation_data: Vec<u8> =
-            [new_group_ctx.transcript_hash.as_bytes().to_vec(), handshake.signature.as_bytes()]
-                .concat();
+        // Check the MAC:
+        // MLSPlaintext.confirmation = HMAC(confirmation_key, GroupContext.transcript_hash)
         hmac::verify(
             self.cs.hash_impl,
             &confirmation_key.0,
-            &confirmation_data,
+            &new_group_ctx.transcript_hash.as_bytes(),
             &handshake.confirmation,
         )?;
 
@@ -913,51 +879,6 @@ impl GroupContext {
 
         Ok((new_group_ctx, app_key_chain, op, confirmation_key))
     }
-
-    /// Creates a `Handshake` message by packaging the given `GroupOperation`
-    ///
-    /// Requires: For correctness, that the given `GroupOperation` has already been applied to this
-    /// `GroupContext`.
-    ///
-    /// NOTE: This is intended to be called only on objects returned from `create_and_apply_*_op`,
-    /// where `*` is `add` or `update` or `remove`. This makes no sense otherwise.
-    fn create_handshake(
-        &self,
-        prior_epoch: u32,
-        operation: GroupOperation,
-        confirmation_key: ConfirmationKey,
-    ) -> Result<Handshake, Error> {
-        // signature = Sign(identity_key, GroupContext.transcript_hash)
-        let my_ss = self.get_signature_scheme();
-        let signature = my_ss.sign(&self.identity_key, self.transcript_hash.as_bytes());
-
-        // Update the epoch secrets and use the resulting key to compute the MAC of the Handshake
-
-        // confirmation = HMAC(confirmation_key, confirmation_data)
-        // where confirmation_data = GroupContext.transcript_hash || Handshake.signature
-        let confirmation = {
-            let mut ctx = hmac::new_signing_context(self.cs.hash_impl, &confirmation_key.0);
-            ctx.feed_bytes(self.transcript_hash.as_bytes());
-            ctx.feed_bytes(&signature.as_bytes());
-
-            ctx.finalize()
-        };
-
-        // Safely unwrap the member index. A preliminary GroupContext is one that has just been
-        // initialized with a Welcome message
-        let member_index = self.member_index.ok_or(Error::ValidationError(
-            "Cannot make a Handshake from a preliminary GroupContext",
-        ))?;
-
-        let handshake = Handshake {
-            prior_epoch,
-            operation,
-            signer_index: member_index,
-            signature,
-            confirmation,
-        };
-        Ok(handshake)
-    }
 }
 
 // Implement public API for Handshake creation
@@ -982,8 +903,8 @@ impl GroupContext {
     {
         let (new_group_ctx, app_key_chain, update_op, conf_key) =
             self.create_and_apply_update_op(new_path_secret, csprng)?;
-        let prior_epoch = self.epoch;
-        let handshake = new_group_ctx.create_handshake(prior_epoch, update_op, conf_key)?;
+        let handshake =
+            Handshake::new(self.cs.hash_impl, update_op, &new_group_ctx.transcript_hash, conf_key);
 
         Ok((handshake, new_group_ctx, app_key_chain))
     }
@@ -1005,8 +926,8 @@ impl GroupContext {
     ) -> Result<(Handshake, GroupContext, ApplicationKeyChain), Error> {
         let (new_group_ctx, app_key_chain, add_op, conf_key) =
             self.create_and_apply_add_op(new_member_idx, init_key, prior_welcome_info_hash)?;
-        let prior_epoch = self.epoch;
-        let handshake = new_group_ctx.create_handshake(prior_epoch, add_op, conf_key)?;
+        let handshake =
+            Handshake::new(self.cs.hash_impl, add_op, &new_group_ctx.transcript_hash, conf_key);
 
         Ok((handshake, new_group_ctx, app_key_chain))
     }
@@ -1033,8 +954,8 @@ impl GroupContext {
     {
         let (new_group_ctx, app_key_chain, remove_op, conf_key) =
             self.create_and_apply_remove_op(removed_member_idx, new_path_secret, csprng)?;
-        let prior_epoch = self.epoch;
-        let handshake = new_group_ctx.create_handshake(prior_epoch, remove_op, conf_key)?;
+        let handshake =
+            Handshake::new(self.cs.hash_impl, remove_op, &new_group_ctx.transcript_hash, conf_key);
 
         Ok((handshake, new_group_ctx, app_key_chain))
     }
@@ -1238,6 +1159,7 @@ impl Welcome {
 #[cfg(test)]
 mod test {
     use crate::{
+        client_init_key::{ClientInitKey, ProtocolVersion, MLS_DUMMY_VERSION},
         crypto::{
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
             hash::Digest,
@@ -1246,7 +1168,6 @@ mod test {
         },
         error::Error,
         group_ctx::{GroupContext, GroupId, UpdateSecret, Welcome, WelcomeInfoRatchetTree},
-        handshake::{ClientInitKey, ProtocolVersion, MLS_DUMMY_VERSION},
         ratchet_tree::{MemberIdx, RatchetTree},
         test_utils,
         tls_de::TlsDeserializer,
@@ -1294,10 +1215,10 @@ mod test {
         let welcome =
             Welcome::from_welcome_info(group_ctx1.cs, &init_key, &welcome_info, &mut rng).unwrap();
 
-        // Now unwrap the Welcome back into a GroupContext. This should be identical to the starting
-        // group context, except maybe for the member_index, credential, initiailizing ClientInitKey,
-        // and identity key. None of those things are serialized though, since they are unique to
-        // each member's perspective
+        // Now unwrap the Welcome back into a GroupContext. This should be identical to the
+        // starting group context, except maybe for the member_index, credential, initiailizing
+        // ClientInitKey, and identity key. None of those things are serialized though, since they
+        // are unique to each member's perspective
         let group_ctx2 = GroupContext::from_welcome(welcome, new_identity_key, init_key).unwrap();
 
         // Now see if the resulting group contexts agree

@@ -188,7 +188,7 @@ impl CryptoUpcast for crate::group_ctx::Welcome {
     }
 }
 
-impl CryptoUpcast for crate::handshake::ClientInitKey {
+impl CryptoUpcast for crate::client_init_key::ClientInitKey {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         // Try to upcast the private keys if they're around
         if let Some(ref mut private_keys) = self.private_keys {
@@ -282,7 +282,6 @@ impl CryptoUpcast for crate::handshake::GroupOperation {
 impl CryptoUpcast for crate::handshake::Handshake {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.operation.upcast_crypto_values(ctx)?;
-        self.signature.upcast_crypto_values(ctx)?;
         // No change to context
         Ok(*ctx)
     }
