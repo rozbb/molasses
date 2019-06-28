@@ -155,7 +155,7 @@ pub(crate) fn random_full_group_ctx<R: rand::Rng + CryptoRng>(
         cs,
         protocol_version: MLS_DUMMY_VERSION,
         identity_key: my_identity_key,
-        group_id: GroupId::new(group_id.to_vec()),
+        group_id: GroupId::new(group_id.to_vec()).unwrap(),
         epoch: rng.gen(),
         tree,
         tree_hash,

@@ -286,10 +286,3 @@ impl CryptoUpcast for crate::handshake::Handshake {
         Ok(*ctx)
     }
 }
-
-impl CryptoUpcast for crate::application::ApplicationMessage {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        // No-op
-        Ok(*ctx)
-    }
-}

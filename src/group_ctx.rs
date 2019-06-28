@@ -91,8 +91,12 @@ impl From<PathSecret> for UpdateSecret {
 pub struct GroupId(Vec<u8>);
 
 impl GroupId {
-    pub fn new(v: Vec<u8>) -> GroupId {
-        GroupId(v)
+    pub fn new(v: Vec<u8>) -> Result<GroupId, Error> {
+        if v.len() > 255 {
+            return Err(Error::ValidationError("Cannot make a GroupID of length > 255"));
+        } else {
+            Ok(GroupId(v))
+        }
     }
 
     pub fn as_bytes(&self) -> &[u8] {
@@ -638,19 +642,6 @@ impl GroupContext {
         // further mutated in the branches of the match statement below
         let mut new_group_ctx = self.clone();
 
-        // Get the sender's public key and preferred signature scheme from the tree. There are two
-        // things that can go wrong here: either the sender index is bad, or the index is good but
-        // the leaf entry is empty.
-        let sender_info: &MemberInfo = self
-            .tree
-            .get_member_info(sender_idx)
-            .map_err(|_| Error::ValidationError("Handshake's signer index is out of bounds"))?
-            .as_ref()
-            .ok_or(Error::ValidationError("Handshake's signer credential is empty"))?;
-        let sender_credential = &sender_info.credential;
-        let sender_public_key = sender_credential.get_public_key();
-        let sender_ss = sender_credential.get_signature_scheme();
-
         // Do the handshake operation on the preliminary new state. This returns an update secret
         // that the new epoch secrets are derived from.
         let update_secret = match handshake.operation {
@@ -700,8 +691,7 @@ impl GroupContext {
         )?;
 
         // All is well. Make the new application key chain and send it along
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(&new_group_ctx, app_secret);
+        let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
         Ok((new_group_ctx, app_key_chain))
     }
 
@@ -757,8 +747,7 @@ impl GroupContext {
 
         // Final modification: update my epoch secrets and make the new ApplicationKeyChain
         let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(&new_group_ctx, app_secret);
+        let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
 
         Ok((new_group_ctx, app_key_chain, op, confirmation_key))
     }
@@ -803,8 +792,7 @@ impl GroupContext {
 
         // Update the epoch secrets, and make the new ApplicationKeyChain
         let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(&new_group_ctx, app_secret);
+        let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
 
         Ok((new_group_ctx, app_key_chain, op, confirmation_key))
     }
@@ -874,8 +862,7 @@ impl GroupContext {
 
         // Update the epoch secrets, and make the new ApplicationKeyChain
         let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
-        let app_key_chain =
-            ApplicationKeyChain::from_application_secret(&new_group_ctx, app_secret);
+        let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
 
         Ok((new_group_ctx, app_key_chain, op, confirmation_key))
     }
