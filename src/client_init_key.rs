@@ -151,19 +151,18 @@ impl ClientInitKey {
     /// Returns: `Ok(())` on success, `Error::SignatureError` on verification failure, and
     /// `Error::SerdeError` on some serialization failure.
     pub(crate) fn verify_sig(&self) -> Result<(), Error> {
-        let partial = PartialClientInitKey {
+        let partial_cik = PartialClientInitKey {
             client_init_key_id: self.client_init_key_id.as_slice(),
             supported_versions: self.supported_versions.as_slice(),
             cipher_suites: self.cipher_suites.as_slice(),
             init_keys: self.init_keys.as_slice(),
             credential: &self.credential,
         };
-        let serialized_cik = tls_ser::serialize_to_bytes(&partial)?;
 
         let sig_scheme = self.credential.get_signature_scheme();
         let public_key = self.credential.get_public_key();
 
-        sig_scheme.verify(public_key, &serialized_cik, &self.signature)
+        sig_scheme.verify_serializable(public_key, &partial_cik, &self.signature)
     }
 
     // TODO: URGENT Figure out how to implement the mandatory check specified in section 7:

@@ -79,8 +79,8 @@ pub(crate) fn encrypt_with_scalar(
         )
     };
 
-    // Do the encryption
-    cs.aead_impl.seal(&key, nonce, plaintext.as_mut_slice())?;
+    // Do the encryption. MLS doesn't use AAD with HPKE at any point
+    cs.aead_impl.seal(&key, nonce, b"", plaintext.as_mut_slice())?;
     // Rename for clarity
     let ciphertext = plaintext;
 
@@ -115,10 +115,10 @@ pub(crate) fn decrypt(
         derive_hpke_key_nonce(cs, &my_public_key, &ephemeral_public_key, shared_secret.as_bytes())
     };
 
-    // Open the ciphertext. Still some postprocessing left to do.
-    let plaintext_len = cs.aead_impl.open(&key, nonce, ciphertext.as_mut_slice())?.len();
+    // Open the ciphertext. MLS doesn't use AAD with HPKE at any point.
+    let plaintext_len = cs.aead_impl.open(&key, nonce, b"", ciphertext.as_mut_slice())?.len();
 
-    // Rename for clarity
+    // Still some postprocessing left to do. Rename for clarity
     let mut plaintext = ciphertext;
 
     // The value that open() returns is the length we'll truncate the plaintext to. Recall this

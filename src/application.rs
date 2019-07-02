@@ -9,7 +9,7 @@ use crate::{
         hmac::HmacKey,
     },
     error::Error,
-    group_ctx::{ApplicationSecret, GroupContext, GroupId},
+    group_ctx::{ApplicationSecret, GroupContext},
     ratchet_tree::MemberIdx,
     tls_ser,
 };
@@ -33,28 +33,21 @@ impl From<WriteSecret> for HmacKey {
 #[cfg_attr(test, derive(Debug))]
 pub(crate) struct WriteSecretGeneration(u32);
 
-/// Contains the secrets for every member of the group. These are called "application_secrets" in
-/// the spec, but that's kinda confusing since "application_secret" is also something that the
-/// `GroupContext` creates and uses to seed this struct.
-///
-/// This is intended to be used with the `encrypt_application_message` and
-/// `decrypt_application_message` functions.
+// WriteSecretGeneration --> u32 trivially
+impl From<WriteSecretGeneration> for u32 {
+    fn from(gen: WriteSecretGeneration) -> u32 {
+        gen.0
+    }
+}
+
+/// This struct is manages the application message key schedule, which includes key derivation and
+/// key ratcheting. A new such object is created for every group epoch.
 pub struct ApplicationKeyChain {
     /// Contains write secrets and their respective generations, starting at 0
     write_secrets_and_gens: Vec<(WriteSecret, WriteSecretGeneration)>,
 
     /// The creating group's ciphersuite
     group_cs: &'static CipherSuite,
-
-    /// The creating group's ID
-    group_id: GroupId,
-
-    /// The creating group's epoch at the time of creation. This is important for making the
-    /// `ApplicationKeyChain` work independently from the creating `GroupContext`.
-    group_epoch_at_creation: u32,
-
-    /// The member index of this user in the creating group
-    my_member_idx: MemberIdx,
 }
 
 impl ApplicationKeyChain {
@@ -68,7 +61,7 @@ impl ApplicationKeyChain {
         let num_leaves = group_ctx.tree.num_leaves();
 
         // The application secret is secretly an HMAC key
-        let prk: HmacKey = app_secret.into();
+        let prk: &HmacKey = (&app_secret).into();
 
         // Make a write secret for every member, and let its generation be 0
         let write_secrets_and_gens = (0..num_leaves)
@@ -99,18 +92,9 @@ impl ApplicationKeyChain {
             })
             .collect();
 
-        // This should never error. ApplicationKeyChains can only be made after a group is out of
-        // preliminary mode anyway
-        let my_member_idx = group_ctx
-            .member_index
-            .expect("cannot make an ApplicationKeyChain from a preliminary group");
-
         ApplicationKeyChain {
             write_secrets_and_gens,
             group_cs: group_ctx.cs,
-            group_id: group_ctx.group_id.clone(),
-            group_epoch_at_creation: group_ctx.epoch,
-            my_member_idx,
         }
     }
 
@@ -121,7 +105,7 @@ impl ApplicationKeyChain {
     /// sucess, where `gen` is the current generation of the `WriteSecret` of the member indexed by
     /// `member_idx`. Returns an `Error` if `member_idx` is out of bounds or something goes wrong
     /// in the creation of the key/nonce from bytes.
-    fn get_key_nonce_gen(
+    pub(crate) fn get_key_nonce_gen(
         &self,
         idx: MemberIdx,
     ) -> Result<(AeadKey, AeadNonce, WriteSecretGeneration), Error> {
@@ -160,7 +144,7 @@ impl ApplicationKeyChain {
     /// Returns: `Ok(())` on success. If the write secret is out of bounds, returns an
     /// `Error::ValidationError`. If the write secret's generation is `u32::MAX`, returns an
     /// `Error::KdfError`.
-    fn ratchet(&mut self, member_idx: MemberIdx) -> Result<(), Error> {
+    pub(crate) fn ratchet(&mut self, member_idx: MemberIdx) -> Result<(), Error> {
         // We rename application_secret_[sender] to write_secret_[sender] for disambiguation's
         // sake. From the spec, we derive the new keys as follows:
         //     application_secret_[sender]_[N-1]
@@ -204,101 +188,6 @@ impl ApplicationKeyChain {
 
         Ok(())
     }
-
-    /// Encrypts the given plaintext with the appropriate key and nonce derived from the sender's
-    /// current `WriteSecret` in this application key chain. It then ratchets that `WriteSecret`
-    /// forward.
-    ///
-    /// Returns: `Ok(app_message)` on success. If one of myriad things goes wrong, returns some
-    /// sort of `Error`.
-    pub fn encrypt_application_message(
-        &mut self,
-        mut plaintext: Vec<u8>,
-    ) -> Result<ApplicationMessage, Error> {
-        let (key, nonce, gen) = self.get_key_nonce_gen(self.my_member_idx)?;
-        let ciphertext = {
-            // Make room for the tag
-            plaintext.extend(vec![0u8; self.group_cs.aead_impl.tag_size()]);
-            // Encrypt it
-            self.group_cs.aead_impl.seal(&key, nonce, &mut plaintext)?;
-            plaintext
-        };
-
-        // All good. Now ratchet the write secret forward
-        self.ratchet(self.my_member_idx)?;
-
-        Ok(ApplicationMessage {
-            ciphertext,
-            gen,
-            group_id: self.group_id.clone(),
-            group_epoch: self.group_epoch_at_creation,
-        })
-    }
-
-    /// Decrypts the given plaintext with the appropriate key and nonce derived from the sender's
-    /// current `WriteSecret` in this application key chain. It then ratchets that `WriteSecret`
-    /// forward.
-    ///
-    /// Returns: `Ok(app_message)` on success. If one of myriad things goes wrong, returns some
-    /// sort of `Error`.
-    pub fn decrypt_application_message(
-        &mut self,
-        mut msg: ApplicationMessage,
-        sender: MemberIdx,
-    ) -> Result<Vec<u8>, Error> {
-        // Do some validation first
-        if msg.group_id != self.group_id {
-            return Err(Error::ValidationError(
-                "Tried to decrypt ApplicationMessage from the wrong group",
-            ));
-        } else if msg.group_epoch != self.group_epoch_at_creation {
-            return Err(Error::ValidationError(
-                "Tried to decrypt ApplicationMessage from the wrong epoch",
-            ));
-        }
-
-        let (key, nonce, gen) = self.get_key_nonce_gen(sender)?;
-        if msg.gen != gen {
-            return Err(Error::ValidationError(
-                "Tried to decrypt ApplicationMessage with key from the wrong generation",
-            ));
-        }
-
-        // Alright, enough sanity checks. Do the decryption and ratchet the keys.
-        let plaintext = self.group_cs.aead_impl.open(&key, nonce, &mut msg.ciphertext)?;
-        self.ratchet(sender)?;
-
-        Ok(plaintext.to_vec())
-    }
-}
-
-//
-// Everything after this (not including tests) is non-standard
-//
-
-/// An MLS application message. This retains the ID and epoch of the creating group so that it
-/// cannot be used with a different group or a group at a different epoch. This is not for security
-/// purposes, but to prevent user error.
-#[derive(Clone, Serialize)]
-#[serde(rename = "ApplicationMessage__bound_u32")]
-pub struct ApplicationMessage {
-    /// The encrypted payload. This need not have any particular structure
-    #[serde(rename = "msg__bound_u32")]
-    ciphertext: Vec<u8>,
-
-    /// The generation of the `WriteSecret` used to encrypt this message
-    #[serde(skip)]
-    gen: WriteSecretGeneration,
-
-    /// The group ID of the group that created the ApplicationKeyChain that created this
-    /// ApplicationMessage
-    #[serde(skip)]
-    group_id: GroupId,
-
-    /// The epoch of the group that created the ApplicationKeyChain that created this
-    /// ApplicationMessage
-    #[serde(skip)]
-    group_epoch: u32,
 }
 
 #[cfg(test)]
@@ -311,7 +200,8 @@ mod test {
             hmac::HmacKey,
             rng::CryptoRng,
         },
-        group_ctx::{ApplicationSecret, GroupContext, GroupId},
+        framing::Framer,
+        group_ctx::{ApplicationSecret, GroupContext},
         ratchet_tree::{MemberIdx, PathSecret},
         test_utils,
         tls_de::TlsDeserializer,
@@ -328,19 +218,20 @@ mod test {
         group1: &mut GroupContext,
         group2: &mut GroupContext,
         rng: &mut R,
-    ) -> (ApplicationKeyChain, ApplicationKeyChain) {
+    ) -> ((Framer, ApplicationKeyChain), (Framer, ApplicationKeyChain)) {
         let new_path_secret = PathSecret::new_from_random(group1.cs, rng);
         // Make a handshake and update group1
-        let (handshake, new_group1, keychain1) =
+        let (handshake, new_group1, framer1, keychain1) =
             group1.create_and_apply_update_handshake(new_path_secret, rng).unwrap();
         *group1 = new_group1;
 
         // Process the handshake and update group2
         let member_idx1 = group1.member_index.unwrap();
-        let (new_group2, keychain2) = group2.process_handshake(&handshake, member_idx1).unwrap();
+        let (new_group2, framer2, keychain2) =
+            group2.process_handshake(&handshake, member_idx1).unwrap();
         *group2 = new_group2;
 
-        (keychain1, keychain2)
+        ((framer1, keychain1), (framer2, keychain2))
     }
 
     // Check that ApplicationKeyChain operations are consistent with a naive test encrypt/decrypt.
@@ -367,12 +258,12 @@ mod test {
                 plaintext.extend(vec![0u8; aead_impl.tag_size()]);
 
                 // Encrypt in-place
-                aead_impl.seal(&key1, nonce1, &mut plaintext).unwrap();
+                aead_impl.seal(&key1, nonce1, b"", &mut plaintext).unwrap();
                 plaintext
             };
 
             // Decrypt ciphertext with (key2, nonce2)
-            let plaintext = aead_impl.open(&key2, nonce2, &mut ciphertext).unwrap().to_vec();
+            let plaintext = aead_impl.open(&key2, nonce2, b"", &mut ciphertext).unwrap().to_vec();
 
             // Check that the round-trip value is the same as orig_msg
             plaintext == orig_msg
@@ -397,7 +288,7 @@ mod test {
 
         // Process any kind of Handshake, just so that we get a keychain out of it. We'll make an
         // Update operation starting at group_ctx1.
-        let (mut app_key_chain1, mut app_key_chain2) =
+        let ((_, mut app_key_chain1), (_, mut app_key_chain2)) =
             do_update_op(&mut group_ctx1, &mut group_ctx2, &mut rng);
 
         // Check that both chains agree on the key/nonce from index1
@@ -570,7 +461,7 @@ mod test {
                     plaintext.extend(vec![0u8; cs.aead_impl.tag_size()]);
 
                     // Encrypt the thing in-place and return the mutated plaintext
-                    cs.aead_impl.seal(&given_key, given_nonce, &mut plaintext).unwrap();
+                    cs.aead_impl.seal(&given_key, given_nonce, b"", &mut plaintext).unwrap();
                     plaintext
                 };
 
@@ -579,7 +470,7 @@ mod test {
                 let plaintext = {
                     let (derived_key, derived_nonce, _) =
                         app_key_chain.get_key_nonce_gen(member_idx).unwrap();
-                    cs.aead_impl.open(&derived_key, derived_nonce, &mut ciphertext).unwrap()
+                    cs.aead_impl.open(&derived_key, derived_nonce, b"", &mut ciphertext).unwrap()
                 };
 
                 // Make sure the decrypted ciphertext is equal to the original message
@@ -589,133 +480,5 @@ mod test {
                 app_key_chain.ratchet(member_idx).unwrap();
             }
         }
-    }
-
-    //
-    // Everything after this is non-standard
-    //
-
-    #[quickcheck]
-    fn application_message_correctness(rng_seed: u64) {
-        fn encrypt_decrypt_test(
-            orig_msg: &[u8],
-            app_key_chain1: &mut ApplicationKeyChain,
-            app_key_chain2: &mut ApplicationKeyChain,
-        ) {
-            // Group 1 will encrypt a message
-            let app_message =
-                app_key_chain1.encrypt_application_message(orig_msg.to_vec()).unwrap();
-
-            // Group 2 will decrypt it
-            let plaintext = app_key_chain2
-                .decrypt_application_message(app_message, app_key_chain1.my_member_idx)
-                .unwrap();
-
-            // Make sure it's the same after a round trip
-            assert_eq!(plaintext, orig_msg);
-        }
-
-        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-
-        // Make a starting group of at least 2 people
-        let (mut group_ctx1, identity_keys) = test_utils::random_full_group_ctx(2, &mut rng);
-
-        // Make a copy of this group, but from another perspective. That is, we want the same group
-        // but with a different member index
-        let new_member_idx = test_utils::random_member_index_with_exceptions(
-            group_ctx1.tree.num_leaves(),
-            &[group_ctx1.member_index.unwrap()],
-            &mut rng,
-        );
-        let mut group_ctx2 =
-            test_utils::change_self_index(&group_ctx1, &identity_keys, new_member_idx);
-
-        // Process any kind of Handshake, just so that we get a keychain out of it. We'll make an
-        // Update operation starting at group_ctx1.
-        let (mut app_key_chain1_epoch1, mut app_key_chain2_epoch1) =
-            do_update_op(&mut group_ctx1, &mut group_ctx2, &mut rng);
-
-        // This is the plaintext we'll be encrypting and decrypting
-        let orig_msg = b"I'm gonna go over the Berlin wall";
-
-        //
-        // Epoch 1
-        //
-
-        // 1 --> 2
-        encrypt_decrypt_test(orig_msg, &mut app_key_chain1_epoch1, &mut app_key_chain2_epoch1);
-        // 2 --> 1
-        encrypt_decrypt_test(orig_msg, &mut app_key_chain2_epoch1, &mut app_key_chain1_epoch1);
-
-        //
-        // Update
-        //
-
-        let (mut app_key_chain1_epoch2, mut app_key_chain2_epoch2) =
-            do_update_op(&mut group_ctx1, &mut group_ctx2, &mut rng);
-
-        //
-        // Epoch 2
-        //
-
-        // 1 --> 2
-        encrypt_decrypt_test(orig_msg, &mut app_key_chain1_epoch2, &mut app_key_chain2_epoch2);
-        // 2 --> 1
-        encrypt_decrypt_test(orig_msg, &mut app_key_chain2_epoch2, &mut app_key_chain1_epoch2);
-
-        //
-        // Back to Epoch 1
-        //
-
-        // 1 --> 2
-        encrypt_decrypt_test(orig_msg, &mut app_key_chain1_epoch1, &mut app_key_chain2_epoch1);
-        // 2 --> 1
-        encrypt_decrypt_test(orig_msg, &mut app_key_chain2_epoch1, &mut app_key_chain1_epoch1);
-    }
-
-    // A cursory test that our validation checks and ratcheting mechanism is working sufficiently
-    // well to prevent misuse
-    #[quickcheck]
-    fn application_message_soundness(rng_seed: u64) {
-        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
-
-        // Make two perspectives of the same group
-        let (mut group_ctx1, identity_keys) = test_utils::random_full_group_ctx(2, &mut rng);
-        let member_idx1 = group_ctx1.member_index.unwrap();
-
-        // The second perspective cannot be the same as the first
-        let member_idx2 = test_utils::random_member_index_with_exceptions(
-            group_ctx1.tree.num_leaves(),
-            &[member_idx1],
-            &mut rng,
-        );
-        let mut group_ctx2 =
-            test_utils::change_self_index(&group_ctx1, &identity_keys, member_idx2);
-
-        // Process any kind of Handshake, just so that we get a keychain out of it. We'll make an
-        // Update operation starting at group_ctx1.
-        let (mut app_key_chain1, mut app_key_chain2) =
-            do_update_op(&mut group_ctx1, &mut group_ctx2, &mut rng);
-
-        // Group 1 encrypts a message
-        let orig_msg = b"I want to be anarchy".to_vec();
-        let mut app_message = app_key_chain1.encrypt_application_message(orig_msg).unwrap();
-
-        // Group 1 tries to decrypt it. This should error, since the generations don't match up.
-        assert!(app_key_chain1
-            .decrypt_application_message(app_message.clone(), member_idx1)
-            .is_err());
-
-        // Group 2 tries to decrypt it with the wrong sender index. This should fail to decrypt.
-        assert!(app_key_chain2
-            .decrypt_application_message(app_message.clone(), member_idx2)
-            .is_err());
-
-        // Change the group ID to make sure that this difference is caught
-        app_message.group_id = GroupId::new(b"wrong_group_id".to_vec()).unwrap();
-        // Try to decrypt with everything correct except for the group ID
-        assert!(app_key_chain2
-            .decrypt_application_message(app_message.clone(), member_idx1)
-            .is_err());
     }
 }

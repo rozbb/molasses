@@ -24,6 +24,7 @@ mod codec;
 pub mod credential;
 pub mod crypto;
 pub mod error;
+pub mod framing;
 pub mod group_ctx;
 pub mod handshake;
 pub mod ratchet_tree;

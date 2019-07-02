@@ -16,6 +16,7 @@ use crate::{
         sig::{SigSecretKey, SignatureScheme},
     },
     error::Error,
+    framing::Framer,
     handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake},
     ratchet_tree::{LeafNode, MemberIdx, MemberInfo, PathSecret, RatchetTree},
     tls_de::TlsDeserializer,
@@ -29,7 +30,7 @@ use core::convert::TryInto;
 use serde::de::Deserialize;
 use subtle::ConstantTimeEq;
 
-/// This is called the `application_secret` in the MLS key schedule
+/// The secret used to seed the symmetric ratchet called `ApplicationKeyChain`
 pub(crate) struct ApplicationSecret(HmacKey);
 
 impl ApplicationSecret {
@@ -39,9 +40,41 @@ impl ApplicationSecret {
 }
 
 // ApplicationSecret --> HmacKey trivially
-impl From<ApplicationSecret> for HmacKey {
-    fn from(app_secret: ApplicationSecret) -> HmacKey {
-        app_secret.0
+impl<'a> From<&'a ApplicationSecret> for &'a HmacKey {
+    fn from(s: &'a ApplicationSecret) -> &'a HmacKey {
+        &s.0
+    }
+}
+
+/// The secret used to encrypt sender metadata
+pub(crate) struct SenderDataSecret(HmacKey);
+
+impl SenderDataSecret {
+    pub(crate) fn new(key: HmacKey) -> SenderDataSecret {
+        SenderDataSecret(key)
+    }
+}
+
+// SenderDataSecret --> HmacKey trivially
+impl<'a> From<&'a SenderDataSecret> for &'a HmacKey {
+    fn from(s: &'a SenderDataSecret) -> &'a HmacKey {
+        &s.0
+    }
+}
+
+/// The secret used to encrypt `Handshake` messages
+pub(crate) struct HandshakeSecret(HmacKey);
+
+impl HandshakeSecret {
+    pub(crate) fn new(key: HmacKey) -> HandshakeSecret {
+        HandshakeSecret(key)
+    }
+}
+
+// HandshakeSecret --> HmacKey trivially
+impl<'a> From<&'a HandshakeSecret> for &'a HmacKey {
+    fn from(s: &'a HandshakeSecret) -> &'a HmacKey {
+        &s.0
     }
 }
 
@@ -55,9 +88,9 @@ impl ConfirmationKey {
 }
 
 // ConfirmationKey --> HmacKey trivially
-impl From<ConfirmationKey> for HmacKey {
-    fn from(conf_key: ConfirmationKey) -> HmacKey {
-        conf_key.0
+impl<'a> From<&'a ConfirmationKey> for &'a HmacKey {
+    fn from(s: &'a ConfirmationKey) -> &'a HmacKey {
+        &s.0
     }
 }
 
@@ -85,7 +118,7 @@ impl From<PathSecret> for UpdateSecret {
 
 // From the definition of GroupContext: opaque group_id<0..255>;
 /// An application-defined identifier for a group
-#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
 #[serde(rename = "GroupId__bound_u8")]
 pub struct GroupId(Vec<u8>);
@@ -101,6 +134,13 @@ impl GroupId {
 
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_slice()
+    }
+}
+
+// Do constant-time comparison by comparing the vectors
+impl subtle::ConstantTimeEq for GroupId {
+    fn ct_eq(&self, other: &GroupId) -> subtle::Choice {
+        self.0.ct_eq(&other.0)
     }
 }
 
@@ -296,7 +336,7 @@ impl GroupContext {
 
     /// Returns the signature scheme of this member of the group. This is determined by the
     /// signature scheme of this member's credential.
-    pub(crate) fn get_signature_scheme(&self) -> &'static SignatureScheme {
+    pub(crate) fn get_my_signature_scheme(&self) -> &'static SignatureScheme {
         // We look for our credential first, since this contains our signature scheme. If this is a
         // preliminary group, i.e., if this group was just created from a WelcomeInfo, then we
         // don't know our member index, so we can't get our credential from the tree. In this case,
@@ -364,13 +404,15 @@ impl GroupContext {
     }
 
     /// Derives and sets the next generation of Group secrets as per the "Key Schedule" section of
-    /// the spec. Specifically, this sets the init secret of the group, and returns the confirmation
-    /// key and application secret. This is done this way because the latter two values must be used
-    /// immediately in `process_handshake`.
+    /// the spec. Specifically, this sets the init secret of the group, and returns the derived app
+    /// secret, sender secret, handshake secret, and confirmation key. This is done this way
+    /// because init_secret has to be remembered in the `GroupCtx`, and the rest of the values have
+    /// to be used in framing and encrypting application/handshake messages.
     fn update_epoch_secrets(
         &mut self,
         update_secret: &UpdateSecret,
-    ) -> Result<(ApplicationSecret, ConfirmationKey), Error> {
+    ) -> Result<(ApplicationSecret, SenderDataSecret, HandshakeSecret, ConfirmationKey), Error>
+    {
         let hash_impl = self.cs.hash_impl;
 
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
@@ -390,7 +432,19 @@ impl GroupContext {
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupContext_[n])
         let conf_key = hkdf::derive_secret(hash_impl, &epoch_secret, b"confirm", self)?;
 
-        Ok((ApplicationSecret::new(app_secret), ConfirmationKey::new(conf_key)))
+        // sender_data_secret = Derive-Secret(., "sender data", GroupContext_[n])
+        let sender_data_secret =
+            hkdf::derive_secret(hash_impl, &epoch_secret, b"sender data", self)?;
+
+        // handshake_secret = Derive-Secret(., "handshake", GroupContext_[n])
+        let handshake_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"handshake", self)?;
+
+        Ok((
+            ApplicationSecret::new(app_secret),
+            SenderDataSecret::new(sender_data_secret),
+            HandshakeSecret::new(handshake_secret),
+            ConfirmationKey::new(conf_key),
+        ))
     }
 
     /// Propagates `new_path_secret` through the ratchet tree, beginning at `start_idx`. This is
@@ -637,7 +691,7 @@ impl GroupContext {
         &self,
         handshake: &Handshake,
         sender_idx: MemberIdx,
-    ) -> Result<(GroupContext, ApplicationKeyChain), Error> {
+    ) -> Result<(GroupContext, Framer, ApplicationKeyChain), Error> {
         // Make a preliminary new state and  update its epoch and transcript hash. The state is
         // further mutated in the branches of the match statement below
         let mut new_group_ctx = self.clone();
@@ -672,7 +726,8 @@ impl GroupContext {
         new_group_ctx.increment_epoch()?;
 
         // Recalculate the group's secrets given the new values we have
-        let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
+        let (app_secret, sender_data_secret, handshake_secret, confirmation_key) =
+            new_group_ctx.update_epoch_secrets(&update_secret)?;
 
         //
         // Now validate the new state. If it's valid, we set the current state to the new one.
@@ -682,7 +737,7 @@ impl GroupContext {
         let new_group_ctx = new_group_ctx;
 
         // Check the MAC:
-        // MLSPlaintext.confirmation = HMAC(confirmation_key, GroupContext.transcript_hash)
+        // Handshake.confirmation = HMAC(confirmation_key, GroupContext.transcript_hash)
         hmac::verify(
             self.cs.hash_impl,
             &confirmation_key.0,
@@ -690,9 +745,10 @@ impl GroupContext {
             &handshake.confirmation,
         )?;
 
-        // All is well. Make the new application key chain and send it along
+        // All is well. Make the new application key chain and framer and send it along
         let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
-        Ok((new_group_ctx, app_key_chain))
+        let framer = Framer::new(&new_group_ctx, handshake_secret, sender_data_secret);
+        Ok((new_group_ctx, framer, app_key_chain))
     }
 
     /// Creates and applies a `GroupUpdate` operation with the given path secret information. This
@@ -709,7 +765,7 @@ impl GroupContext {
         &self,
         new_path_secret: PathSecret,
         csprng: &mut R,
-    ) -> Result<(GroupContext, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
+    ) -> Result<(GroupContext, Framer, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
     where
         R: CryptoRng,
     {
@@ -745,11 +801,14 @@ impl GroupContext {
         new_group_ctx.update_tree_hash()?;
         new_group_ctx.increment_epoch()?;
 
-        // Final modification: update my epoch secrets and make the new ApplicationKeyChain
-        let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
+        // Final modification: update my epoch secrets and make the new ApplicationKeyChain and
+        // Framer
+        let (app_secret, sender_data_secret, handshake_secret, confirmation_key) =
+            new_group_ctx.update_epoch_secrets(&update_secret)?;
+        let framer = Framer::new(&new_group_ctx, handshake_secret, sender_data_secret);
         let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
 
-        Ok((new_group_ctx, app_key_chain, op, confirmation_key))
+        Ok((new_group_ctx, framer, app_key_chain, op, confirmation_key))
     }
 
     /// Creates and applies a `GroupAdd` operation for a member at index `new_member_index` with
@@ -770,7 +829,8 @@ impl GroupContext {
         new_member_idx: MemberIdx,
         init_key: ClientInitKey,
         prior_welcome_info_hash: &WelcomeInfoHash,
-    ) -> Result<(GroupContext, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error> {
+    ) -> Result<(GroupContext, Framer, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
+    {
         // Ugh, a full group context clone, I know
         let mut new_group_ctx = self.clone();
 
@@ -790,11 +850,13 @@ impl GroupContext {
         new_group_ctx.update_tree_hash()?;
         new_group_ctx.increment_epoch()?;
 
-        // Update the epoch secrets, and make the new ApplicationKeyChain
-        let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
+        // Update the epoch secrets, and make the new ApplicationKeyChain and framer
+        let (app_secret, sender_data_secret, handshake_secret, confirmation_key) =
+            new_group_ctx.update_epoch_secrets(&update_secret)?;
+        let framer = Framer::new(&new_group_ctx, handshake_secret, sender_data_secret);
         let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
 
-        Ok((new_group_ctx, app_key_chain, op, confirmation_key))
+        Ok((new_group_ctx, framer, app_key_chain, op, confirmation_key))
     }
 
     /// Creates and applies a `GroupRemove` operation for a member at `removed_member_index` and
@@ -813,7 +875,7 @@ impl GroupContext {
         removed_member_idx: MemberIdx,
         new_path_secret: PathSecret,
         csprng: &mut R,
-    ) -> Result<(GroupContext, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
+    ) -> Result<(GroupContext, Framer, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
     where
         R: CryptoRng,
     {
@@ -860,11 +922,13 @@ impl GroupContext {
         new_group_ctx.update_tree_hash()?;
         new_group_ctx.increment_epoch()?;
 
-        // Update the epoch secrets, and make the new ApplicationKeyChain
-        let (app_secret, confirmation_key) = new_group_ctx.update_epoch_secrets(&update_secret)?;
+        // Update the epoch secrets, and make the new ApplicationKeyChain and Framer
+        let (app_secret, sender_data_secret, handshake_secret, confirmation_key) =
+            new_group_ctx.update_epoch_secrets(&update_secret)?;
+        let framer = Framer::new(&new_group_ctx, handshake_secret, sender_data_secret);
         let app_key_chain = ApplicationKeyChain::new(&new_group_ctx, app_secret);
 
-        Ok((new_group_ctx, app_key_chain, op, confirmation_key))
+        Ok((new_group_ctx, framer, app_key_chain, op, confirmation_key))
     }
 }
 
@@ -875,48 +939,48 @@ impl GroupContext {
     /// method does not mutate this `GroupContext`, the operation is rather applied to the returned
     /// `GroupContext`.
     ///
-    /// Returns: `Ok((handshake, group_ctx, app_key_chain))` on success, where `handshake` is the
-    /// `Handshake` message representing the specified update operation, `group_ctx` is the new
-    /// group context after the update has been applied, `app_key_chain` is the newly derived
-    /// application key schedule object
+    /// Returns: `Ok((handshake, group_ctx, framer, app_key_chain))` on success, where `handshake`
+    /// is the `Handshake` message representing the specified add operation, `group_ctx` is the new
+    /// group context after the add has been applied, `framer` is the newly derived MLS message
+    /// framing object, and `app_key_chain` is the newly derived application key schedule object
     // This is just a wrapper around self.create_and_apply_update_op and self.create_handshake
     pub fn create_and_apply_update_handshake<R>(
         &self,
         new_path_secret: PathSecret,
         csprng: &mut R,
-    ) -> Result<(Handshake, GroupContext, ApplicationKeyChain), Error>
+    ) -> Result<(Handshake, GroupContext, Framer, ApplicationKeyChain), Error>
     where
         R: CryptoRng,
     {
-        let (new_group_ctx, app_key_chain, update_op, conf_key) =
+        let (new_group_ctx, framer, app_key_chain, update_op, conf_key) =
             self.create_and_apply_update_op(new_path_secret, csprng)?;
         let handshake =
             Handshake::new(self.cs.hash_impl, update_op, &new_group_ctx.transcript_hash, conf_key);
 
-        Ok((handshake, new_group_ctx, app_key_chain))
+        Ok((handshake, new_group_ctx, framer, app_key_chain))
     }
 
     /// Creates and applies a `GroupAdd` operation for a member at index `new_member_index` with
     /// the target `init_key`. This method does not mutate this `GroupContext`, the operation is
     /// rather applied to the returned `GroupContext`.
     ///
-    /// Returns: `Ok((handshake, group_ctx, app_key_chain))` on success, where `handshake` is the
-    /// `Handshake` message representing the specified add operation, `group_ctx` is the new
-    /// group context after the add has been applied, `app_key_chain` is the newly derived
-    /// application key schedule object
+    /// Returns: `Ok((handshake, group_ctx, framer, app_key_chain))` on success, where `handshake`
+    /// is the `Handshake` message representing the specified add operation, `group_ctx` is the new
+    /// group context after the add has been applied, `framer` is the newly derived MLS message
+    /// framing object, and `app_key_chain` is the newly derived application key schedule object
     // This is just a wrapper around self.create_and_apply_add_op and self.create_handshake
     pub fn create_and_apply_add_handshake(
         &self,
         new_member_idx: MemberIdx,
         init_key: ClientInitKey,
         prior_welcome_info_hash: &WelcomeInfoHash,
-    ) -> Result<(Handshake, GroupContext, ApplicationKeyChain), Error> {
-        let (new_group_ctx, app_key_chain, add_op, conf_key) =
+    ) -> Result<(Handshake, GroupContext, Framer, ApplicationKeyChain), Error> {
+        let (new_group_ctx, framer, app_key_chain, add_op, conf_key) =
             self.create_and_apply_add_op(new_member_idx, init_key, prior_welcome_info_hash)?;
         let handshake =
             Handshake::new(self.cs.hash_impl, add_op, &new_group_ctx.transcript_hash, conf_key);
 
-        Ok((handshake, new_group_ctx, app_key_chain))
+        Ok((handshake, new_group_ctx, framer, app_key_chain))
     }
 
     // This is just a wrapper around self.create_and_apply_remove_op and self.create_handshake
@@ -927,24 +991,25 @@ impl GroupContext {
     /// Requires: `removed_member_index != self.member_index`. That is, a member cannot remove
     /// themselves from the group. An attempt to do so will result in an `Error::IAmRemoved`.
     ///
-    /// Returns: `Ok((handshake, app_key_chain))` on success, where `handshake` is the `Handshake`
-    /// message representing the specified remove operation, and `app_key_chain` is the newly
-    /// derived application key schedule object.
+    /// Returns: `Ok((handshake, group_ctx, framer, app_key_chain))` on success, where `handshake`
+    /// is the `Handshake` message representing the specified add operation, `group_ctx` is the new
+    /// group context after the add has been applied, `framer` is the newly derived MLS message
+    /// framing object, and `app_key_chain` is the newly derived application key schedule object
     pub fn create_and_apply_remove_handshake<R>(
         &self,
         removed_member_idx: MemberIdx,
         new_path_secret: PathSecret,
         csprng: &mut R,
-    ) -> Result<(Handshake, GroupContext, ApplicationKeyChain), Error>
+    ) -> Result<(Handshake, GroupContext, Framer, ApplicationKeyChain), Error>
     where
         R: CryptoRng,
     {
-        let (new_group_ctx, app_key_chain, remove_op, conf_key) =
+        let (new_group_ctx, framer, app_key_chain, remove_op, conf_key) =
             self.create_and_apply_remove_op(removed_member_idx, new_path_secret, csprng)?;
         let handshake =
             Handshake::new(self.cs.hash_impl, remove_op, &new_group_ctx.transcript_hash, conf_key);
 
-        Ok((handshake, new_group_ctx, app_key_chain))
+        Ok((handshake, new_group_ctx, framer, app_key_chain))
     }
 }
 
@@ -1337,18 +1402,23 @@ mod test {
         // resulting keys against the test vector.
         for epoch in case1.epochs.into_iter() {
             let update_secret = UpdateSecret(epoch.update_secret);
-            let (app_secret, conf_key) = group_ctx.update_epoch_secrets(&update_secret).unwrap();
+            let (app_secret, _, _, conf_key) =
+                group_ctx.update_epoch_secrets(&update_secret).unwrap();
 
             // Wrap all the inputs in HmacKeys so we can compare them to other HmacKeys
             let epoch_application_secret = HmacKey::new_from_bytes(&epoch.application_secret);
             let epoch_confirmation_key = HmacKey::new_from_bytes(&epoch.confirmation_key);
             let epoch_init_secret = HmacKey::new_from_bytes(&epoch.init_secret);
 
+            // Unwrap the newtypes into &HmacKeys
+            let app_secret: &HmacKey = (&app_secret).into();
+            let conf_key: &HmacKey = (&conf_key).into();
+
             // We don't save the derived epoch_secret anywhere, since it's just an intermediate
             // value. We do test all the things derived from it, though. We convert the LHS to
             // HmacKeys so we can compare them to the RHS.
-            assert_eq!(HmacKey::from(app_secret), epoch_application_secret);
-            assert_eq!(HmacKey::from(conf_key), epoch_confirmation_key);
+            assert_eq!(app_secret, &epoch_application_secret);
+            assert_eq!(conf_key, &epoch_confirmation_key);
             assert_eq!(group_ctx.init_secret, epoch_init_secret);
 
             // Increment the state epoch every time we do a key derivation. This is what happens in

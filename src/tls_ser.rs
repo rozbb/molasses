@@ -189,6 +189,8 @@ pub struct TlsSerializer {
 impl TlsSerializer {
     /// Makes a new empty `TlsSerializer` object
     pub fn new() -> TlsSerializer {
+        // TODO: Consider making this use Vec::with_capacity(0), since many serialization
+        // operations are noops (e.g., passing "" as AAD into AeadScheme::seal
         TlsSerializer {
             buf: std::io::Cursor::new(Vec::new()),
         }

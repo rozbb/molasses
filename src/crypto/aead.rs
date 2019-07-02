@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::{crypto::rng::CryptoRng, error::Error};
 
 /// A singleton object representing the AES-128-GCM AEAD scheme
 pub(crate) const AES128GCM_IMPL: AeadScheme = AeadScheme(&Aes128Gcm);
@@ -60,6 +60,23 @@ impl AeadNonce {
         scheme.0.nonce_from_bytes(bytes)
     }
 
+    /// Makes two copies of the same random nonce using the given CSPRNG. Sometimes you need two
+    /// copies of a nonce: one to encrypt, one to send.
+    pub(crate) fn new_pair_from_random<R: CryptoRng>(
+        scheme: &AeadScheme,
+        csprng: &mut R,
+    ) -> (AeadNonce, AeadNonce) {
+        let mut buf = vec![0u8; scheme.nonce_size()];
+        csprng.fill_bytes(&mut buf);
+
+        // The only way new_from_bytes() fails is if &buf is the wrong length. But we just
+        // constructed it to be the right length.
+        (
+            AeadNonce::new_from_bytes(scheme, &buf).unwrap(),
+            AeadNonce::new_from_bytes(scheme, &buf).unwrap(),
+        )
+    }
+
     /// Returns a byte-representation of this nonce
     ///
     /// WARNING: Do not use this method unless you are absolutely sure you need it. Copying these
@@ -101,45 +118,46 @@ impl AeadScheme {
     }
 
     // This just passes through to AeadSchemeInterface::open
-    /// Does an in-place authenticated decryption of the given ciphertext and tag. The input should
-    /// look like `ciphertext || tag`, that is, ciphertext concatenated with a tag of length
-    /// `self.tag_size()`. After a successful run, the modified input will look like `plaintext ||
-    /// garbage` where `garbage` is the size of the tag. If an error occurred, the modified input
-    /// may be altered in an unspecified way.
+    /// Does an in-place authenticated decryption of the given ciphertext and tag with respect to
+    /// the additional authenticated data. The last input MUST look like `ciphertext || tag`, that
+    /// is, ciphertext concatenated with a 16-byte tag. After a successful run, the modified input
+    /// will look like `plaintext || garbage` where `garbage` is 16 bytes long. If an error
+    /// occurred, the modified input may be altered in an unspecified way.
     ///
     /// Returns: `Ok(plaintext)` on sucess, where `plaintext` is the decrypted form of the
     /// ciphertext, with no tags or garbage bytes (in particular, it's the same buffer as the input
-    /// bytes, but without the last `self.tag_size()` bytes). If there is an error in any part of
-    /// this process, it will be returned as an `Error::CryptoError` with description
-    /// "Unspecified".
+    /// bytes, but without the last 16 bytes). If there is an error in any part of this process,
+    /// this returns an `Error::CryptoError` with description "Unspecified".
     pub(crate) fn open<'a>(
         &self,
         key: &AeadKey,
         nonce: AeadNonce,
+        additional_authenticated_data: &[u8],
         ciphertext_and_tag_modified_in_place: &'a mut [u8],
     ) -> Result<&'a mut [u8], Error> {
-        self.0.open(key, nonce, ciphertext_and_tag_modified_in_place)
+        self.0.open(key, nonce, additional_authenticated_data, ciphertext_and_tag_modified_in_place)
     }
 
     // This just passes through to AeadSchemeInterface::seal
-    /// Does an in-place authenticated encryption of the given plaintext. The input MUST look like
-    /// `plaintext || extra`, where `extra` is `self.tag_size()` bytes long and its contents do not
-    /// matter. After a successful run, the input will be modified to consist of a tagged
-    /// ciphertext. That is, it will be of the form `ciphertext || tag` where `tag` is
-    /// `self.tag_size()` bytes long.
+    /// Does an in-place authenticated encryption of the given plaintext with respect to the
+    /// additional authenticated data. The last input MUST look like `plaintext || extra`, where
+    /// `extra` is 16 bytes long and its contents do not matter. After a successful run, the input
+    /// will be modified to consist of a tagged ciphertext. That is, it will be of the form
+    /// `ciphertext || tag` where `tag` is 16 bytes long.
     ///
-    /// Requires: `plaintext.len() >= self.tag_size()`
+    /// Requires: `plaintext.len() >= 16`
     ///
     /// Returns: `Ok(())` on sucess, indicating that the inputted buffer contains the tagged
-    /// ciphertext. If there is an error in any part of this process, it will be returned as an
+    /// ciphertext. If there is an error in any part of this process, this returns an
     /// `Error::CryptoError` with description "Unspecified".
     pub(crate) fn seal(
         &self,
         key: &AeadKey,
         nonce: AeadNonce,
+        additional_authenticated_data: &[u8],
         plaintext: &mut [u8],
     ) -> Result<(), Error> {
-        self.0.seal(key, nonce, plaintext)
+        self.0.seal(key, nonce, additional_authenticated_data, plaintext)
     }
 }
 
@@ -162,10 +180,17 @@ trait AeadSchemeInterface {
         &self,
         key: &AeadKey,
         nonce: AeadNonce,
+        additional_authenticated_data: &[u8],
         ciphertext_and_tag: &'a mut [u8],
     ) -> Result<&'a mut [u8], Error>;
 
-    fn seal(&self, key: &AeadKey, nonce: AeadNonce, plaintext: &mut [u8]) -> Result<(), Error>;
+    fn seal(
+        &self,
+        key: &AeadKey,
+        nonce: AeadNonce,
+        additional_authenticated_data: &[u8],
+        plaintext: &mut [u8],
+    ) -> Result<(), Error>;
 }
 
 /// This represents the AES-128-GCM authenticated encryption algorithm. Notably, it implements
@@ -218,6 +243,7 @@ impl AeadSchemeInterface for Aes128Gcm {
             opening_key,
             sealing_key,
         };
+
         Ok(AeadKey::Aes128GcmKey(key))
     }
 
@@ -237,20 +263,21 @@ impl AeadSchemeInterface for Aes128Gcm {
         Ok(AeadNonce::Aes128GcmNonce(ring::aead::Nonce::assume_unique_for_key(nonce)))
     }
 
-    /// Does an in-place authenticated decryption of the given ciphertext and tag. The input should
-    /// look like `ciphertext || tag`, that is, ciphertext concatenated with a 16-byte tag. After a
-    /// successful run, the modified input will look like `plaintext || garbage` where `garbage` is
-    /// 16 bytes long. If an error occurred, the modified input may be altered in an unspecified
-    /// way.
+    /// Does an in-place authenticated decryption of the given ciphertext and tag with respect to
+    /// the additional authenticated data. The last input MUST look like `ciphertext || tag`, that
+    /// is, ciphertext concatenated with a 16-byte tag. After a successful run, the modified input
+    /// will look like `plaintext || garbage` where `garbage` is 16 bytes long. If an error
+    /// occurred, the modified input may be altered in an unspecified way.
     ///
     /// Returns: `Ok(plaintext)` on sucess, where `plaintext` is the decrypted form of the
     /// ciphertext, with no tags or garbage bytes (in particular, it's the same buffer as the input
-    /// bytes, but without the last 16 bytes). If there is an error in any part of this process, it
-    /// will be returned as an `Error::CryptoError` with description "Unspecified".
+    /// bytes, but without the last 16 bytes). If there is an error in any part of this process,
+    /// this returns an `Error::CryptoError` with description "Unspecified".
     fn open<'a>(
         &self,
         key: &AeadKey,
         nonce: AeadNonce,
+        additional_authenticated_data: &[u8],
         ciphertext_and_tag_modified_in_place: &'a mut [u8],
     ) -> Result<&'a mut [u8], Error> {
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
@@ -264,24 +291,31 @@ impl AeadSchemeInterface for Aes128Gcm {
         ring::aead::open_in_place(
             &key.opening_key,
             nonce,
-            ring::aead::Aad::empty(),
+            ring::aead::Aad::from(additional_authenticated_data),
             0,
             ciphertext_and_tag_modified_in_place,
         )
         .map_err(|_| Error::EncryptionError("Unspecified"))
     }
 
-    /// Does an in-place authenticated encryption of the given plaintext. The input MUST look like
-    /// `plaintext || extra`, where `extra` is 16 bytes long and its contents do not matter. After
-    /// a successful run, the input will be modified to consist of a tagged ciphertext. That is, it
-    /// will be of the form `ciphertext || tag` where `tag` is 16 bytes long.
+    /// Does an in-place authenticated encryption of the given plaintext with respect to the
+    /// additional authenticated data. The last input MUST look like `plaintext || extra`, where
+    /// `extra` is 16 bytes long and its contents do not matter. After a successful run, the input
+    /// will be modified to consist of a tagged ciphertext. That is, it will be of the form
+    /// `ciphertext || tag` where `tag` is 16 bytes long.
     ///
     /// Requires: `plaintext.len() >= 16`
     ///
     /// Returns: `Ok(())` on sucess, indicating that the inputted buffer contains the tagged
-    /// ciphertext. If there is an error in any part of this process, it will be returned as an
+    /// ciphertext. If there is an error in any part of this process, this returns an
     /// `Error::CryptoError` with description "Unspecified".
-    fn seal(&self, key: &AeadKey, nonce: AeadNonce, plaintext: &mut [u8]) -> Result<(), Error> {
+    fn seal(
+        &self,
+        key: &AeadKey,
+        nonce: AeadNonce,
+        additional_authenticated_data: &[u8],
+        plaintext: &mut [u8],
+    ) -> Result<(), Error> {
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
         let nonce = enum_variant!(nonce, AeadNonce::Aes128GcmNonce);
 
@@ -292,7 +326,7 @@ impl AeadSchemeInterface for Aes128Gcm {
         let res = ring::aead::seal_in_place(
             &key.sealing_key,
             nonce,
-            ring::aead::Aad::empty(),
+            ring::aead::Aad::from(additional_authenticated_data),
             plaintext,
             AES_128_GCM_TAG_SIZE,
         );
@@ -315,15 +349,25 @@ mod test {
 
     // TODO: AES-GCM KAT
 
-    // Returns a pair of identical nonces. For testing purposes only
-    fn gen_nonce_pair<T: RngCore>(scheme: &AeadScheme, rng: &mut T) -> (AeadNonce, AeadNonce) {
+    // Returns a triplet of identical nonces. For testing purposes only
+    fn gen_nonce_triplet<T: RngCore>(
+        scheme: &AeadScheme,
+        rng: &mut T,
+    ) -> (AeadNonce, AeadNonce, AeadNonce) {
         let mut buf = vec![0u8; scheme.nonce_size()];
         rng.fill_bytes(&mut buf);
 
         (
             AeadNonce::new_from_bytes(scheme, &buf).unwrap(),
             AeadNonce::new_from_bytes(scheme, &buf).unwrap(),
+            AeadNonce::new_from_bytes(scheme, &buf).unwrap(),
         )
+    }
+
+    // Returns a pair of identical nonces. For testing purposes only
+    fn gen_nonce_pair<T: RngCore>(scheme: &AeadScheme, rng: &mut T) -> (AeadNonce, AeadNonce) {
+        let (n1, n2, _) = gen_nonce_triplet(scheme, rng);
+        (n1, n2)
     }
 
     // Returns a random key
@@ -339,7 +383,7 @@ mod test {
 
     // Test that decrypt_k(encrypt_k(m)) == m
     #[quickcheck]
-    fn aes_gcm_correctness(plaintext: Vec<u8>, rng_seed: u64) {
+    fn aes_gcm_correctness(plaintext: Vec<u8>, aad: Vec<u8>, rng_seed: u64) {
         // We're only working with AES-128 GCM
         let scheme: &AeadScheme = &AES128GCM_IMPL;
 
@@ -358,59 +402,75 @@ mod test {
         };
 
         // Encrypt
-        scheme.seal(&key, nonce1, extended_plaintext.as_mut_slice()).expect("failed to encrypt");
+        scheme
+            .seal(&key, nonce1, &aad, extended_plaintext.as_mut_slice())
+            .expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
         let auth_ciphertext = extended_plaintext.as_mut_slice();
 
         let recovered_plaintext =
-            scheme.open(&key, nonce2, auth_ciphertext).expect("failed to decrypt");
+            scheme.open(&key, nonce2, &aad, auth_ciphertext).expect("failed to decrypt");
 
         // Make sure we get out what we put in
         assert_eq!(plaintext, recovered_plaintext);
     }
 
+    // Flip bits in the input arbitrarily
+    fn tamper<R: CryptoRng>(bytes: Vec<u8>, num_bytes_to_perturb: usize, rng: &mut R) -> Vec<u8> {
+        // Make a random byte string that's the length of the input. Only the fist
+        // num_bytes_to_perturb are nonzero. These will be XORd into the input.
+        let mut random_pad = vec![0u8; bytes.len()];
+        rng.fill_bytes(&mut random_pad[..num_bytes_to_perturb]);
+
+        // Do the XOR
+        bytes.iter().zip(random_pad.iter()).map(|(a, b)| a ^ b).collect()
+    }
+
     // Test that perturbations in auth_ct := encrypt_k(m) make it fail to decrypt. This includes
     // perturbations in the tag of auth_ct.
     #[quickcheck]
-    fn aes_gcm_integrity_ct_and_tag(mut plaintext: Vec<u8>, rng_seed: u64) {
+    fn aes_gcm_integrity_ct_and_tag(mut plaintext: Vec<u8>, aad: Vec<u8>, rng_seed: u64) {
         // We're only working with AES-128 GCM
         let scheme = &AES128GCM_IMPL;
 
         let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
 
         // The open method consumes our nonce, so make two nonces
-        let (nonce1, nonce2) = gen_nonce_pair(scheme, &mut rng);
+        let (nonce1, nonce2, nonce3) = gen_nonce_triplet(scheme, &mut rng);
         let key = gen_key(scheme, &mut rng);
 
         // Make sure there's enough room in the plaintext for the tag
         plaintext.extend(vec![0u8; scheme.tag_size()]);
 
         // Encrypt
-        scheme.seal(&key, nonce1, plaintext.as_mut_slice()).expect("failed to encrypt");
+        scheme.seal(&key, nonce1, &aad, plaintext.as_mut_slice()).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
-        let auth_ciphertext = plaintext.as_mut_slice();
+        let mut ciphertext = plaintext;
 
-        // Make a random byte string that's exactly the length of the authenticated ciphertext.
-        // We'll XOR these bytes with the authenticated ciphertext.
-        let mut xor_bytes = vec![0u8; auth_ciphertext.len()];
-        rng.fill_bytes(xor_bytes.as_mut_slice());
+        // Flip some ciphertext/tag bits and make sure it fails to open. We want to mess with
+        // ciphertext bytes and tag bytes
+        let num_bytes_to_perturb = ciphertext.len();
+        let mut tampered_ciphertext = tamper(ciphertext.clone(), num_bytes_to_perturb, &mut rng);
+        let res = scheme.open(&key, nonce2, &aad, tampered_ciphertext.as_mut_slice());
+        assert!(res.is_err());
 
-        // Do the XORing
-        for (ct_byte, xor_byte) in auth_ciphertext.iter_mut().zip(xor_bytes.iter()) {
-            *ct_byte ^= xor_byte;
+        // Now flip some AAD bits and make sure it fails to open
+        if aad.len() == 0 {
+            // Can't do this part of the test without something to mess with
+            return;
         }
-
-        // Make sure this fails to open
-        let res = scheme.open(&key, nonce2, auth_ciphertext);
+        let num_bytes_to_perturb = aad.len();
+        let tampered_aad = tamper(aad, num_bytes_to_perturb, &mut rng);
+        let res = scheme.open(&key, nonce3, &tampered_aad, ciphertext.as_mut_slice());
         assert!(res.is_err());
     }
 
     // Test that perturbations in auth_ct := encrypt_k(m) make it fail to decrypt. This includes
     // only perturbations to the ciphertext of auth_ct, leaving the tag alone.
     #[quickcheck]
-    fn aes_gcm_integrity_ct(mut plaintext: Vec<u8>, rng_seed: u64) {
+    fn aes_gcm_integrity_ct(mut plaintext: Vec<u8>, aad: Vec<u8>, rng_seed: u64) {
         // This is only interesting if plaintext != "". Since XORing anything into the empty string
         // is a noop, the open() operation below will actually succeed. This property is checked in
         // aes_gcm_correctness.
@@ -430,23 +490,17 @@ mod test {
         plaintext.extend(vec![0u8; scheme.tag_size()]);
 
         // Encrypt
-        scheme.seal(&key, nonce1, plaintext.as_mut_slice()).expect("failed to encrypt");
+        scheme.seal(&key, nonce1, &aad, plaintext.as_mut_slice()).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
-        let auth_ciphertext = plaintext.as_mut_slice();
+        let ciphertext = plaintext;
 
-        // Make a random byte string that's exactly the length of the authenticated ciphertext,
-        // minus the tag length. We'll XOR these bytes with the ciphertext part.
-        let mut xor_bytes = vec![0u8; auth_ciphertext.len() - scheme.tag_size()];
-        rng.fill_bytes(xor_bytes.as_mut_slice());
+        // We only want to mess with ciphertext bytes, leaving the tag alone
+        let num_bytes_to_perturb = ciphertext.len() - scheme.tag_size();
 
-        // Do the XORing
-        for (ct_byte, xor_byte) in auth_ciphertext.iter_mut().zip(xor_bytes.iter()) {
-            *ct_byte ^= xor_byte;
-        }
-
-        // Make sure this fails to open
-        let res = scheme.open(&key, nonce2, auth_ciphertext);
+        // Flip some ciphertext bits and make sure it fails to open
+        let mut tampered_ciphertext = tamper(ciphertext, num_bytes_to_perturb, &mut rng);
+        let res = scheme.open(&key, nonce2, &aad, tampered_ciphertext.as_mut_slice());
         assert!(res.is_err());
     }
 }

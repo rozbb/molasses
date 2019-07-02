@@ -177,15 +177,18 @@ impl SignatureScheme {
     // This just passes through to `SignatureSchemeInterface::verify`
     /// Verifies the signature of the given message under the given public key
     ///
-    /// Returns: `Ok(())` iff the signature succeeded. Otherwise, returns an
+    /// Returns: `Ok(())` iff the signature succeeded. If something goes wrong during
+    /// serialization, returns an `Error::SerdeError`. Otherwise, returns an
     /// `Err(Error::SignatureError)` which is a lot of "Error"s, so you know it's bad.
-    pub(crate) fn verify(
+    pub(crate) fn verify_serializable<S: Serialize>(
         &self,
         public_key: &SigPublicKey,
-        msg: &[u8],
+        msg: &S,
         sig: &Signature,
     ) -> Result<(), Error> {
-        self.0.verify(public_key, msg, sig)
+        // Serialize the thing and pass to verify()
+        let bytes = tls_ser::serialize_to_bytes(msg)?;
+        self.0.verify(public_key, &bytes, sig)
     }
 }
 
@@ -442,6 +445,6 @@ mod test {
         let sig = ss.sign(&secret_key, &msg);
 
         // Make sure the signature we just made is valid
-        assert!(ss.verify(&public_key, &msg, &sig).is_ok());
+        assert!(ss.verify_serializable(&public_key, &msg, &sig).is_ok());
     }
 }

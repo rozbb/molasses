@@ -114,7 +114,7 @@ impl Handshake {
     ) -> Handshake {
         // MLSPlaintext.confirmation = HMAC(confirmation_key, GroupContext.transcript_hash)
         let confirmation =
-            hmac::sign(hash_impl, &confirmation_key.into(), post_op_transcript_hash.as_bytes());
+            hmac::sign(hash_impl, (&confirmation_key).into(), post_op_transcript_hash.as_bytes());
 
         Handshake {
             operation,
@@ -170,7 +170,7 @@ mod test {
 
         // Make a new path secret and make an Update object out of it
         let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
-        let (handshake, group_ctx1, _) =
+        let (handshake, group_ctx1, _, _) =
             group_ctx1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
         // We're going to apply the Handshake to the clone of the first group, but with the wrong
@@ -204,11 +204,11 @@ mod test {
 
         // Make a new path secret and make an Update object out of it
         let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
-        let (handshake, group_ctx1, _) =
+        let (handshake, group_ctx1, _, _) =
             group_ctx1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
         // Apply the Handshake to the clone of the first group
-        let (group_ctx2, _) = group_ctx2.process_handshake(&handshake, member_idx1).unwrap();
+        let (group_ctx2, _, _) = group_ctx2.process_handshake(&handshake, member_idx1).unwrap();
 
         // Now see if the group states agree
         assert_serialized_eq!(group_ctx1, group_ctx2, "GroupContexts disagree after Update");
@@ -249,7 +249,7 @@ mod test {
         let new_path_secret = PathSecret::new_from_random(&starting_group.cs, &mut rng);
 
         // Make a Remove handshake and let starting_group reflect the change
-        let (remove_handshake, starting_group, _) = starting_group
+        let (remove_handshake, starting_group, _, _) = starting_group
             .create_and_apply_remove_handshake(remove_member_idx, new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
 
@@ -263,7 +263,7 @@ mod test {
         }
 
         // Apply the Handshake to the other non-removed group. This should not error
-        let (other_group, _) =
+        let (other_group, _, _) =
             other_group.process_handshake(&remove_handshake, starting_member_idx).unwrap();
 
         // See if the non-removed group states agree after the remove
@@ -271,10 +271,10 @@ mod test {
 
         // Now run an update on the non-removed groups just to make sure everything is working
         let new_path_secret = PathSecret::new_from_random(starting_group.cs, &mut rng);
-        let (update_handshake, starting_group, _) = starting_group
+        let (update_handshake, starting_group, _, _) = starting_group
             .create_and_apply_update_handshake(new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
-        let (other_group, _) =
+        let (other_group, _, _) =
             other_group.process_handshake(&update_handshake, starting_member_idx).unwrap();
 
         // See if the non-removed group states agree after the update
@@ -317,10 +317,10 @@ mod test {
             let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
 
             // Create the handshake and apply it to both groups
-            let (remove_handshake, new_group_ctx1, _) = group_ctx1
+            let (remove_handshake, new_group_ctx1, _, _) = group_ctx1
                 .create_and_apply_remove_handshake(remove_idx, new_path_secret, &mut rng)
                 .unwrap();
-            let (new_group_ctx2, _) =
+            let (new_group_ctx2, _, _) =
                 group_ctx2.process_handshake(&remove_handshake, member_idx1).unwrap();
 
             // Update the groups (remember, the above methods are non-mutating)
@@ -341,10 +341,11 @@ mod test {
 
         // Now run an update on the non-removed groups just to make sure everything is working
         let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
-        let (update_handshake, group_ctx1, _) = group_ctx1
+        let (update_handshake, group_ctx1, _, _) = group_ctx1
             .create_and_apply_update_handshake(new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
-        let (group_ctx2, _) = group_ctx2.process_handshake(&update_handshake, member_idx1).unwrap();
+        let (group_ctx2, _, _) =
+            group_ctx2.process_handshake(&update_handshake, member_idx1).unwrap();
 
         // See if our group states agree after the update
         assert_serialized_eq!(
@@ -390,7 +391,7 @@ mod test {
         }
 
         // Now try to remove the other member. This part should succeed
-        let (handshake, _, _) = group_ctx1
+        let (handshake, _, _, _) = group_ctx1
             .create_and_apply_remove_handshake(member_to_remove, new_path_secret, &mut rng)
             .unwrap();
         // The removed member should try to process this Handshake and get an Error::IAmRemoved
@@ -461,7 +462,7 @@ mod test {
             Welcome::from_group_ctx(&group_ctx1, &init_key, &mut rng).unwrap();
 
         // Make the add op and use the new group state
-        let (add_handshake, group_ctx1, _) = group_ctx1
+        let (add_handshake, group_ctx1, _, _) = group_ctx1
             .create_and_apply_add_handshake(new_member_idx, init_key.clone(), &welcome_info_hash)
             .unwrap();
         let member_idx1 = group_ctx1.member_index.unwrap();
@@ -473,7 +474,7 @@ mod test {
         let group_ctx2 = GroupContext::from_welcome(welcome, new_identity_key, init_key).unwrap();
 
         // Apply the Add operation on group 2
-        let (new_group_ctx2, _) =
+        let (new_group_ctx2, _, _) =
             group_ctx2.process_handshake(&add_handshake, member_idx1).unwrap();
         let group_ctx2 = new_group_ctx2;
 
