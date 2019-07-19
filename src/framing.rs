@@ -709,3 +709,32 @@ impl Framer {
         Ok(mls_ciphertext)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use crate::{framing::Framer, ratchet_tree::PathSecret, test_utils};
+
+    use quickcheck_macros::quickcheck;
+    use rand::{RngCore, SeedableRng};
+
+    // Test that unframe(frame(handshake)) == handshake; we only test on Update ops because they're
+    // easy to construct, but the operation should not matter
+    /*
+    #[quickcheck]
+    fn frame_handshake_correctness(rng_seed: u64) {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
+        // Make a starting group of at least 1 person
+        let (old_group_ctx, _) = test_utils::random_full_group_ctx(1, &mut rng);
+
+        // Make a new path secret and make an Update object out of it
+        let new_path_secret = PathSecret::new_from_random(old_group_ctx.cs, &mut rng);
+        let (handshake, new_group_ctx, framer, _) =
+            old_group_ctx.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
+
+        // Run frame with the old group context (before the handshake was applied)
+        let mls_ct = framer.frame_handshake(&old_group_ctx, handshake, &mut rng).unwrap();
+
+        // Now unwrap it and make sure it agrees with the old handshake
+    }
+    */
+}
