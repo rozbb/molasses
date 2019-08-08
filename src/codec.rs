@@ -14,11 +14,11 @@ use serde::{
     ser::{Serialize, Serializer},
 };
 
-const CIPHERSUITE_NAME_IDS: &[(&CipherSuite, &str, u16)] = &[
+static CIPHERSUITE_NAME_IDS: &[(&CipherSuite, &str, u16)] = &[
     (&P256_SHA256_AES128GCM, "P256_SHA256_AES128GCM", 0x0000),
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
-const SIGSCHEME_NAME_IDS: &[(&SignatureScheme, &str, u16)] = &[
+static SIGSCHEME_NAME_IDS: &[(&SignatureScheme, &str, u16)] = &[
     (&ECDSA_P256_IMPL, "dummy_ecdsa_secp256r1_sha256", 0x0403),
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];

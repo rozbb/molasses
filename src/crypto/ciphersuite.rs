@@ -10,14 +10,14 @@ use crate::{
 };
 
 /// This represents the X25519-SHA256-AES128GCM ciphersuite
-pub const X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
+pub static X25519_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "X25519_SHA256_AES128GCM",
     dh_impl: &X25519_IMPL,
     aead_impl: &AES128GCM_IMPL,
     hash_impl: &SHA256_IMPL,
 };
 
-pub(crate) const P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
+pub(crate) static P256_SHA256_AES128GCM: CipherSuite = CipherSuite {
     name: "P256_SHA256_AES128GCM",
     dh_impl: &P256_IMPL,
     aead_impl: &AES128GCM_IMPL,

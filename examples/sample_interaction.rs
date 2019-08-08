@@ -32,9 +32,9 @@ use rot13::rot13;
 use serde::de::Deserialize;
 use serde::ser::Serialize;
 
-const COMMON_CIPHER_SUITE: &'static CipherSuite = &X25519_SHA256_AES128GCM;
-const COMMON_SIG_SCHEME: &'static SignatureScheme = &ED25519_IMPL;
-const COMMON_PROTOCOL_VERSION: ProtocolVersion = MLS_DUMMY_VERSION;
+static COMMON_CIPHER_SUITE: &'static CipherSuite = &X25519_SHA256_AES128GCM;
+static COMMON_SIG_SCHEME: &'static SignatureScheme = &ED25519_IMPL;
+static COMMON_PROTOCOL_VERSION: ProtocolVersion = MLS_DUMMY_VERSION;
 
 // Pauses the main thread until the user presses Enter
 fn pause_for_effect() {

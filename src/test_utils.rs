@@ -105,7 +105,7 @@ pub(crate) fn random_full_group_state<R: rand::Rng + CryptoRng>(
     rng: &mut R,
 ) -> (GroupState, Vec<SigSecretKey>) {
     // TODO: Expand the number of available ciphersuites once more are available
-    let cipher_suites = &[X25519_SHA256_AES128GCM];
+    let cipher_suites = &[&X25519_SHA256_AES128GCM];
     let sig_schemes = &[ED25519_IMPL];
 
     let cs = cipher_suites.choose(rng).unwrap();

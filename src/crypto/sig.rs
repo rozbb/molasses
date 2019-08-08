@@ -189,7 +189,7 @@ impl PartialEq for SignatureScheme {
 impl Eq for SignatureScheme {}
 
 /// A trait representing any signature scheme
-trait SignatureSchemeInterface {
+trait SignatureSchemeInterface : Sync {
     fn name(&self) -> &'static str;
 
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error>;

@@ -157,7 +157,7 @@ impl DhScheme {
 /// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
 /// etc.
-trait DhSchemeInterface {
+trait DhSchemeInterface : Sync {
     fn public_key_size(&self) -> usize;
 
     fn private_key_size(&self) -> usize;

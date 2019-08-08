@@ -179,7 +179,7 @@ mod test {
     use quickcheck_macros::quickcheck;
     use rand::SeedableRng;
 
-    const CIPHERSUITES: &[CipherSuite] = &[X25519_SHA256_AES128GCM];
+    static CIPHERSUITES: &[&CipherSuite] = &[&X25519_SHA256_AES128GCM];
 
     // Checks that decrypt(encrypt_k(m)) == m
     #[quickcheck]

@@ -129,7 +129,7 @@ impl AeadScheme {
 // ring does algorithm specification at runtime, but I'd rather encode these things in the type
 // system. So, similar to the Digest trait, we're making an AuthenticatedEncryption trait. I don't
 // think we'll need associated data in this crate, so we leave it out for simplicity
-trait AeadSchemeInterface {
+trait AeadSchemeInterface : Sync {
     // Recall we can't have const trait methods if we want this to be a trait object
     fn key_size(&self) -> usize;
     fn nonce_size(&self) -> usize;
@@ -157,10 +157,7 @@ pub(crate) struct Aes128Gcm;
 // These will just be two copies of the same thing. They're different types because ring requires
 // an OpeningKey for opening and a SealingKey for sealing. This incurs some 64 bytes of storage
 // overhead, but I frankly don't care.
-pub(crate) struct Aes128GcmKey {
-    opening_key: ring::aead::OpeningKey,
-    sealing_key: ring::aead::SealingKey,
-}
+pub(crate) struct Aes128GcmKey(ring::aead::LessSafeKey);
 
 impl AeadSchemeInterface for Aes128Gcm {
     /// Returns `AES_128_GCM_KEY_SIZE`
@@ -190,15 +187,10 @@ impl AeadSchemeInterface for Aes128Gcm {
         }
 
         // Again, the opening and sealing keys for AES-GCM are the same.
-        let opening_key = ring::aead::OpeningKey::new(&ring::aead::AES_128_GCM, key_bytes)
-            .map_err(|_| Error::EncryptionError("Unspecified"))?;
-        let sealing_key = ring::aead::SealingKey::new(&ring::aead::AES_128_GCM, key_bytes)
+        let inner = ring::aead::UnboundKey::new(&ring::aead::AES_128_GCM, key_bytes)
             .map_err(|_| Error::EncryptionError("Unspecified"))?;
 
-        let key = Aes128GcmKey {
-            opening_key,
-            sealing_key,
-        };
+        let key = Aes128GcmKey(ring::aead::LessSafeKey::new(inner));
         Ok(AeadKey::Aes128GcmKey(key))
     }
 
@@ -242,11 +234,8 @@ impl AeadSchemeInterface for Aes128Gcm {
         // plaintext = ciphertext_and_tag[..plaintext.len()] For more details on this function, see
         // docs on ring::aead::open_in_place at
         // https://briansmith.org/rustdoc/ring/aead/fn.open_in_place.html
-        ring::aead::open_in_place(
-            &key.opening_key,
-            nonce,
+        key.0.open_in_place(nonce,
             ring::aead::Aad::empty(),
-            0,
             ciphertext_and_tag_modified_in_place,
         )
         .map_err(|_| Error::EncryptionError("Unspecified"))
@@ -266,23 +255,19 @@ impl AeadSchemeInterface for Aes128Gcm {
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
         let nonce = enum_variant!(nonce, AeadNonce::Aes128GcmNonce);
 
+        let (data, tag_out) = plaintext.split_at_mut(plaintext.len() - AES_128_GCM_TAG_SIZE);;
+
         // We use the standard encryption function with no associated data. The length of the
         // buffer is checked by the ring library.
         // For more details on this function, see docs on ring::aead::seal_in_place at
         // https://briansmith.org/rustdoc/ring/aead/fn.seal_in_place.html
-        let res = ring::aead::seal_in_place(
-            &key.sealing_key,
+
+        key.0.seal_in_place_separate_tag(
             nonce,
             ring::aead::Aad::empty(),
-            plaintext,
-            AES_128_GCM_TAG_SIZE,
-        );
-
-        if res.is_ok() {
-            Ok(())
-        } else {
-            Err(Error::EncryptionError("Unspecified"))
-        }
+            data)
+            .map(|tag| tag_out.copy_from_slice(tag.as_ref()))
+            .map_err(|_| Error::EncryptionError("Unspecified"))
     }
 }
 

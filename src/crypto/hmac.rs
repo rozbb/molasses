@@ -44,8 +44,8 @@ impl Mac {
     }
 }
 
-impl From<ring::hmac::Signature> for Mac {
-    fn from(sig: ring::hmac::Signature) -> Mac {
+impl From<ring::hmac::Tag> for Mac {
+    fn from(sig: ring::hmac::Tag) -> Mac {
         Mac(sig.as_ref().to_vec())
     }
 }
@@ -62,8 +62,8 @@ pub(crate) fn verify(
     msg: &[u8],
     sig: &Mac,
 ) -> Result<(), Error> {
-    let verification_key: ring::hmac::VerificationKey =
-        ring::hmac::VerificationKey::new(hash_impl.hash_alg, &key.0);
+    let verification_key: ring::hmac::Key =
+        ring::hmac::Key::new(hash_impl.hmac_algorithm(), &key.0);
 
     // It's okay to reveal that the MAC is incorrect, because the ring::hmac::verify runs in
     // constant time
@@ -72,16 +72,16 @@ pub(crate) fn verify(
 }
 
 pub(crate) fn new_signing_context(hash_impl: &HashFunction, key: &HmacKey) -> HmacSigningContext {
-    let signing_key: ring::hmac::SigningKey =
-        ring::hmac::SigningKey::new(hash_impl.hash_alg, &key.0);
+    let signing_key: ring::hmac::Key =
+        ring::hmac::Key::new(hash_impl.hmac_algorithm(), &key.0);
 
     HmacSigningContext {
-        ctx: ring::hmac::SigningContext::with_key(&signing_key),
+        ctx: ring::hmac::Context::with_key(&signing_key),
     }
 }
 
 pub(crate) struct HmacSigningContext {
-    ctx: ring::hmac::SigningContext,
+    ctx: ring::hmac::Context,
 }
 
 impl HmacSigningContext {

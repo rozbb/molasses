@@ -2,8 +2,8 @@ use crate::{error::Error, tls_ser};
 
 use serde::ser::Serialize;
 
-pub(crate) const SHA256_IMPL: HashFunction = HashFunction {
-    hash_alg: &ring::digest::SHA256,
+pub(crate) static SHA256_IMPL: HashFunction = HashFunction {
+    hkdf_alg: ring::hkdf::HKDF_SHA256,
 };
 
 // This isn't ring::digest::Digest because you can't deserialize those (there's no constructor).
@@ -38,7 +38,7 @@ impl subtle::ConstantTimeEq for Digest {
 
 #[derive(Debug)]
 pub(crate) struct HashFunction {
-    pub(crate) hash_alg: &'static ring::digest::Algorithm,
+    pub(crate) hkdf_alg: ring::hkdf::Algorithm,
 }
 
 impl HashFunction {
@@ -56,12 +56,20 @@ impl HashFunction {
 
     pub(crate) fn new_context(&self) -> HashContext {
         HashContext {
-            ctx: ring::digest::Context::new(self.hash_alg),
+            ctx: ring::digest::Context::new(self.digest_algorithm()),
         }
     }
 
     pub(crate) fn digest_size(&self) -> usize {
-        self.hash_alg.output_len
+        self.digest_algorithm().output_len
+    }
+
+    fn digest_algorithm(&self) -> &'static ring::digest::Algorithm {
+        self.hmac_algorithm().digest_algorithm()
+    }
+
+    pub(crate) fn hmac_algorithm(&self) -> ring::hmac::Algorithm {
+        self.hkdf_alg.hmac_algorithm()
     }
 }
 
