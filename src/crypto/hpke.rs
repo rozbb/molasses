@@ -2,8 +2,7 @@ use crate::crypto::{
     aead::{AeadKey, AeadNonce},
     ciphersuite::CipherSuite,
     dh::{DhPrivateKey, DhPublicKey},
-    hkdf,
-    hmac::HmacKey,
+    hkdf::{self, HkdfSalt},
     rng::CryptoRng,
 };
 use crate::{error::Error, tls_ser};
@@ -26,7 +25,7 @@ pub(crate) struct HpkeCiphertext {
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with random scalar generation or
 /// sealing the plaintext, an `Error` is returned.
 pub(crate) fn encrypt<R>(
-    cs: &CipherSuite,
+    cs: &'static CipherSuite,
     others_public_key: &DhPublicKey,
     plaintext: Vec<u8>,
     csprng: &mut R,
@@ -42,25 +41,18 @@ where
 // TODO: Make this function secret-aware by making it take only ClearOnDrop values
 
 /// Performs an HPKE encryption of a given plaintext under a given DH public key and a fixed scalar
-/// value. This is the deterministic function underlying `hpke_encrypt`, and is important for
+/// value. This is the deterministic function underlying `hpke::encrypt`, and is important for
 /// testing purposes.
 ///
 /// Returns: `Ok(ciphertext)` on success. If there is an issue with sealing the plaintext, an
 /// `Error::EncryptionError` is returned. If there is an issue with deriving DH keys, an
 /// `Error::DhError` is returned.
 pub(crate) fn encrypt_with_scalar(
-    cs: &CipherSuite,
+    cs: &'static CipherSuite,
     others_public_key: &DhPublicKey,
     mut plaintext: Vec<u8>,
     my_ephemeral_secret: DhPrivateKey,
 ) -> Result<HpkeCiphertext, Error> {
-    // Make room for the tag and fill it with zeros
-    let tagged_plaintext_size = plaintext
-        .len()
-        .checked_add(cs.aead_impl.tag_size())
-        .expect("plaintext is too large to be encrypted");
-    plaintext.resize(tagged_plaintext_size, 0u8);
-
     // We need to derive the recipient public key to HPKE decap. If my_ephermeral_secret is
     // `a`, let this be `aP`
     let my_ephemeral_public_key =
@@ -80,7 +72,7 @@ pub(crate) fn encrypt_with_scalar(
     };
 
     // Do the encryption. MLS doesn't use AAD with HPKE at any point
-    cs.aead_impl.seal(&key, nonce, b"", plaintext.as_mut_slice())?;
+    cs.aead_impl.seal(&key, nonce, b"", &mut plaintext)?;
     // Rename for clarity
     let ciphertext = plaintext;
 
@@ -97,7 +89,7 @@ pub(crate) fn encrypt_with_scalar(
 /// Returns: `Ok(plaintext)` on success. Returns an `Error::EncryptionError` if something goes
 /// wrong.
 pub(crate) fn decrypt(
-    cs: &CipherSuite,
+    cs: &'static CipherSuite,
     my_secret_key: &DhPrivateKey,
     ciphertext: HpkeCiphertext,
 ) -> Result<Vec<u8>, Error> {
@@ -164,7 +156,7 @@ struct SetupCoreCtx<'a> {
 //       return SetupBase(pkR, zz, enc, info)
 /// Derives a key and nonce from the given shared secret using `SetupBaseI` from the HPKE spec
 fn derive_hpke_key_nonce(
-    cs: &CipherSuite,
+    cs: &'static CipherSuite,
     recipient_public_key: &DhPublicKey,
     ephemeral_public_key: &DhPublicKey,
     shared_secret_bytes: &[u8],
@@ -177,7 +169,7 @@ fn derive_hpke_key_nonce(
     // SetupBase(recipient_public_key, shared_secret_bytes, ephemeral_public_key_bytes, info="")
 
     let kem_ctx = &[ephemeral_public_key_bytes, recipient_public_key.as_bytes()].concat();
-    let salt = HmacKey::new_from_zeros(cs.hash_impl);
+    let salt = HkdfSalt::new_from_zeros(cs.hash_impl);
     let prk = hkdf::extract(cs.hash_impl, &salt, shared_secret_bytes);
 
     // SetupCore(mode=0x00, secret=prk, kem_ctx, info="")
@@ -197,19 +189,11 @@ fn derive_hpke_key_nonce(
     let key_label = &[b"hpke key", serialized_ctx.as_slice()].concat();
     let nonce_label = &[b"hpke nonce", serialized_ctx.as_slice()].concat();
 
-    let mut key_buf = vec![0u8; cs.aead_impl.key_size()];
-    let mut nonce_buf = vec![0u8; cs.aead_impl.nonce_size()];
-
     // We're gonna used the serialized labels as the `info` parameter to HKDF-Expand. The only way
     // this call fails is due to serialization errors, but key_label and nonce_label are already
     // serialized, so that can't happen.
-    hkdf::expand(cs.hash_impl, &prk, &key_label, &mut key_buf[..]).unwrap();
-    hkdf::expand(cs.hash_impl, &prk, &nonce_label, &mut nonce_buf[..]).unwrap();
-
-    let key = AeadKey::new_from_bytes(cs.aead_impl, &key_buf)
-        .expect("couldn't derive AEAD key from HKDF");
-    let nonce = AeadNonce::new_from_bytes(cs.aead_impl, &nonce_buf)
-        .expect("couldn't derive AEAD nonce from HKDF");
+    let key: AeadKey = hkdf::expand(cs, &prk, &key_label).unwrap();
+    let nonce: AeadNonce = hkdf::expand(cs, &prk, &nonce_label).unwrap();
 
     (key, nonce)
 }
@@ -225,7 +209,7 @@ mod test {
     use quickcheck_macros::quickcheck;
     use rand::SeedableRng;
 
-    const CIPHERSUITES: &[CipherSuite] = &[X25519_SHA256_AES128GCM];
+    static CIPHERSUITES: &[&CipherSuite] = &[&X25519_SHA256_AES128GCM];
 
     // Checks that decrypt(encrypt_k(m)) == m
     #[quickcheck]

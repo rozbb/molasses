@@ -1,12 +1,13 @@
 //! Defines `RatchetTree` and all its functionality. Not much public API here.
 
 use crate::{
+    client_init_key::ClientInitKey,
     credential::Credential,
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey, DhScheme},
         hash::{Digest, HashFunction},
-        hmac::HmacKey,
+        hkdf::HkdfPrk,
         hpke,
         rng::CryptoRng,
     },
@@ -20,42 +21,60 @@ use crate::{
 use std::convert::{TryFrom, TryInto};
 use subtle::ConstantTimeEq;
 
-/// This is called the "path secret" in the "Ratchet Tree Updates" section of the spec. If `Hash`
-/// is the current ciphersuite's hash algorithm, this MUST have length equal to `Hash.length`.
+/// This is called the "node secret" in the "Ratchet Tree Updates" section of the spec. This MUST
+/// have length equal to `Hash.length`, where `Hash` is the current ciphersuite's hash algorithm.
 #[derive(Clone)]
-pub struct PathSecret(pub(crate) HmacKey);
+pub struct NodeSecret(HkdfPrk);
 
-impl PathSecret {
-    /// Wraps a `Vec<u8>` with a `ClearOnDrop` and makes it a `PathSecret`
-    pub(crate) fn new_from_bytes(bytes: &[u8]) -> PathSecret {
-        PathSecret(HmacKey::new_from_bytes(bytes))
+impl NodeSecret {
+    /// Creates a `NodeSecret` (which is just an HKDF PRK) from the given bytes
+    pub(crate) fn new_from_bytes(hash_impl: &HashFunction, bytes: &[u8]) -> NodeSecret {
+        NodeSecret(HkdfPrk::new_from_bytes(hash_impl, bytes))
     }
 
-    /// Generates a random `PathSecret` of the appropriate length
-    pub fn new_from_random<R>(cs: &'static CipherSuite, csprng: &mut R) -> PathSecret
-    where
-        R: CryptoRng,
-    {
-        let key = HmacKey::new_from_random(cs.hash_impl, csprng);
-        PathSecret(key)
-    }
-
-    /// Returns the bytes-representation of the path secret. Do not use this method unless you
-    /// really really need to.
-    fn as_bytes(&self) -> &[u8] {
-        // Dig into the HMAC key and pull out a slice
-        (self.0).0.as_slice()
-    }
-
-    /// Returns the length of the bytes-representation of the path secret
-    pub(crate) fn len(&self) -> usize {
-        self.as_bytes().len()
+    /// Returns the bytes-representation of the node secret. This method MUST only be used in the
+    /// `utils::derive_node_values()`
+    ///
+    /// Panics: If the variant of the underlying `HkdfPrk` is `Opaque`. This should never happen,
+    /// since the only thing that's `Opaque` is `epoch_secret`, and we never serialize that.
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
     }
 }
 
-// PathSecret --> HmacKey trivially
-impl From<PathSecret> for HmacKey {
-    fn from(p: PathSecret) -> HmacKey {
+/// This is called the "path secret" in the "Ratchet Tree Updates" section of the spec. This MUST
+/// have length equal to `Hash.length`, where `Hash` is the current ciphersuite's hash algorithm.
+#[derive(Clone)]
+pub struct PathSecret(pub(crate) HkdfPrk);
+
+impl PathSecret {
+    /// Creates a `PathSecret` (which is just an HKDF PRK) from the given bytes
+    pub(crate) fn new_from_bytes(hash_impl: &HashFunction, bytes: &[u8]) -> PathSecret {
+        PathSecret(HkdfPrk::new_from_bytes(hash_impl, bytes))
+    }
+
+    /// Generates a random `PathSecret` with length equal to the given hash function's digest
+    /// length
+    pub fn new_from_random<R>(hash_impl: &HashFunction, csprng: &mut R) -> PathSecret
+    where
+        R: CryptoRng,
+    {
+        PathSecret(HkdfPrk::new_from_random(hash_impl, csprng))
+    }
+
+    /// Returns the bytes-representation of the path secret. This method MUST only be used in the
+    /// creation of direct paths.
+    ///
+    /// Panics: If the variant of the underlying `HkdfPrk` is `Opaque`. This should never happen,
+    /// since the only thing that's `Opaque` is `epoch_secret`, and we never serialize that.
+    fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+// PathSecret --> HkdfPrk trivially
+impl From<PathSecret> for HkdfPrk {
+    fn from(p: PathSecret) -> HkdfPrk {
         p.0
     }
 }
@@ -515,6 +534,50 @@ impl RatchetTree {
         Ok(tree)
     }
 
+    /// Returns a tree whose leaves are initialized to the credentials, public keys, and private
+    /// keys from the provided `ClientInitKeys` under the provided ciphersuite. All other nodes are
+    /// blank.
+    ///
+    /// Returns: `Ok(tree)` on success. If one of the ClientInitKeys is invalid, returns an
+    /// `Error::ValidationError`. If something goes wrong in getting the public keys or hashing the
+    /// leaves, returns some sort of `Error`.
+    pub(crate) fn new_from_members(
+        common_cs: &CipherSuite,
+        members: &[ClientInitKey],
+    ) -> Result<RatchetTree, Error> {
+        // Make an empty tree
+        let mut tree = RatchetTree {
+            hash_impl: common_cs.hash_impl,
+            nodes: Vec::new(),
+        };
+
+        // Extract the pubkey and cred from each ClientInitKey and add it to the tree
+        for cik in members {
+            // See if a private key is available. If so, include it in the tree
+            let leaf = if let Some(privkey) = cik.get_private_key(common_cs)? {
+                LeafNode::new_from_private_key(
+                    common_cs.dh_impl,
+                    cik.credential.clone(),
+                    privkey.clone(),
+                )
+            } else {
+                // If no private key is available, there still better be a public key for this leaf
+
+                // Make sure get_public_key doesn't error and then make sure it actually returned
+                // something (since it's possible that the current cik doesn't have a pubkey
+                // corresponding to the given ciphersuite)
+                let pubkey = cik.get_public_key(common_cs)?.ok_or(Error::ValidationError(
+                    "No public key found for the given ciphersuite",
+                ))?;
+                LeafNode::new_from_public_key(cik.credential.clone(), pubkey.clone())
+            };
+
+            tree.add_leaf_node(leaf)?;
+        }
+
+        Ok(tree)
+    }
+
     /// Converts a `WelcomeInfoRatchetTree` into a proper `RatchetTree`
     pub(crate) fn new_from_welcome_info_ratchet_tree(
         hash_impl: &'static HashFunction,
@@ -764,7 +827,7 @@ impl RatchetTree {
     /// of the root node in the updated ratchet tree.
     pub(crate) fn propagate_new_path_secret(
         &mut self,
-        cs: &CipherSuite,
+        cs: &'static CipherSuite,
         mut path_secret: PathSecret,
         start_idx: TreeIdx,
     ) -> Result<PathSecret, Error> {
@@ -975,7 +1038,7 @@ impl RatchetTree {
     /// Paths" section in the spec for details.
     pub(crate) fn encrypt_direct_path_secrets<R>(
         &self,
-        cs: &CipherSuite,
+        cs: &'static CipherSuite,
         starting_leaf_node: MemberIdx,
         starting_path_secret: PathSecret,
         csprng: &mut R,
@@ -1058,7 +1121,7 @@ impl RatchetTree {
     /// an `Error::EncryptionError`.
     pub(crate) fn decrypt_direct_path_message(
         &self,
-        cs: &CipherSuite,
+        cs: &'static CipherSuite,
         direct_path_msg: &DirectPathMessage,
         sender_idx: MemberIdx,
         my_idx: MemberIdx,
@@ -1126,7 +1189,7 @@ impl RatchetTree {
 
                 // Finally, decrypt the thing and return the plaintext and common ancestor
                 let plaintext = hpke::decrypt(cs, decryption_key, ciphertext_for_me.clone())?;
-                let path_secret = PathSecret::new_from_bytes(&plaintext);
+                let path_secret = PathSecret::new_from_bytes(cs.hash_impl, &plaintext);
                 return Ok((path_secret, common_ancestor_tree_idx));
             }
         }
@@ -1373,7 +1436,7 @@ mod test {
         );
 
         // Come up with a new path secret and encrypt it to the receiver
-        let sender_path_secret = PathSecret::new_from_random(cs, &mut rng);
+        let sender_path_secret = PathSecret::new_from_random(cs.hash_impl, &mut rng);
         let direct_path_msg = tree
             .encrypt_direct_path_secrets(
                 cs,

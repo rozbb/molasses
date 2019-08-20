@@ -7,10 +7,10 @@ use serde::ser::Serialize;
 
 /// The canonical instantiation of the ed25519 `SignatureScheme`. Things that use this algorithm
 /// should use `&'static` references to this.
-pub const ED25519_IMPL: SignatureScheme = SignatureScheme(&Ed25519);
+pub static ED25519_IMPL: SignatureScheme = SignatureScheme(&Ed25519);
 
 /// A dummy placeholder for the canonical instantiation of the ECDSA-over-P256 `SignatureScheme`
-pub(crate) const ECDSA_P256_IMPL: SignatureScheme = SignatureScheme(&DummyEcdsaP256);
+pub(crate) static ECDSA_P256_IMPL: SignatureScheme = SignatureScheme(&DummyEcdsaP256);
 
 // opaque SignaturePublicKey<1..2^16-1>
 /// The form that all `SigPublicKey`s take when being sent or received over the wire
@@ -207,7 +207,7 @@ impl PartialEq for SignatureScheme {
 impl Eq for SignatureScheme {}
 
 /// A trait representing any signature scheme
-trait SignatureSchemeInterface {
+trait SignatureSchemeInterface: Sync {
     fn name(&self) -> &'static str;
 
     fn signature_from_bytes(&self, bytes: &[u8]) -> Result<Signature, Error>;

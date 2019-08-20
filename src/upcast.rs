@@ -16,8 +16,11 @@
 use crate::{
     credential::Credential,
     crypto::{
+        aead::AeadNonce,
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
+        hash::Digest,
+        hkdf::HkdfSalt,
         sig::{SigPublicKey, Signature, SignatureScheme},
     },
     error::Error,
@@ -66,6 +69,25 @@ impl CryptoCtx {
 /// to propogate that information, so we send it back up to the caller.
 pub trait CryptoUpcast {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error>;
+}
+
+impl<T: CryptoUpcast> CryptoUpcast for Option<T> {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        match self {
+            Some(inner) => inner.upcast_crypto_values(ctx),
+            None => Ok(*ctx),
+        }
+    }
+}
+
+impl<T: CryptoUpcast> CryptoUpcast for Vec<T> {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        for item in self.iter_mut() {
+            item.upcast_crypto_values(ctx)?;
+        }
+        // No change in context
+        Ok(*ctx)
+    }
 }
 
 impl CryptoUpcast for DhPublicKey {
@@ -117,28 +139,51 @@ impl CryptoUpcast for Signature {
     }
 }
 
+impl CryptoUpcast for AeadNonce {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        let raw = enum_variant!(self, AeadNonce::Raw, "can't upcast a non-raw AeadNonce");
+        match ctx.cs {
+            Some(cs) => {
+                *self = AeadNonce::new_from_bytes(cs.aead_impl, raw.0.as_slice())?;
+                // No change to context
+                Ok(*ctx)
+            }
+            None => Err(Error::UpcastError("Need a CipherSuite to upcast an AeadNonce")),
+        }
+    }
+}
+
+impl CryptoUpcast for Digest {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        let raw = enum_variant!(self, Digest::Raw, "can't upcast a non-raw Digest");
+        match ctx.cs {
+            Some(cs) => {
+                *self = Digest::new_from_bytes(&cs.hash_impl, raw.0.as_slice());
+                // No change to context
+                Ok(*ctx)
+            }
+            None => Err(Error::UpcastError("Need a CipherSuite to upcast a Digest")),
+        }
+    }
+}
+
+impl CryptoUpcast for HkdfSalt {
+    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
+        let raw = enum_variant!(self, HkdfSalt::Raw, "can't upcast a non-raw HkdfSalt");
+        match ctx.cs {
+            Some(cs) => {
+                *self = HkdfSalt::new_from_bytes(&cs.hash_impl, raw.0.as_slice());
+                // No change to context
+                Ok(*ctx)
+            }
+            None => Err(Error::UpcastError("Need a CipherSuite to upcast an HkdfSalt")),
+        }
+    }
+}
+
 impl CryptoUpcast for crate::crypto::hpke::HpkeCiphertext {
     fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
         self.ephemeral_public_key.upcast_crypto_values(ctx)
-    }
-}
-
-impl<T: CryptoUpcast> CryptoUpcast for Option<T> {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        match self {
-            Some(inner) => inner.upcast_crypto_values(ctx),
-            None => Ok(*ctx),
-        }
-    }
-}
-
-impl<T: CryptoUpcast> CryptoUpcast for Vec<T> {
-    fn upcast_crypto_values(&mut self, ctx: &CryptoCtx) -> Result<CryptoCtx, Error> {
-        for item in self.iter_mut() {
-            item.upcast_crypto_values(ctx)?;
-        }
-        // No change in context
-        Ok(*ctx)
     }
 }
 

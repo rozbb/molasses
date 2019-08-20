@@ -4,6 +4,7 @@ use crate::error::Error;
 /// A type representing the X25519 DH scheme
 pub(crate) const X25519_IMPL: DhScheme = DhScheme(&X25519);
 
+/// A type representing ECDH over Curve P-256
 pub(crate) const P256_IMPL: DhScheme = DhScheme(&DummyP256);
 
 const X25519_POINT_SIZE: usize = 32;
@@ -86,6 +87,8 @@ pub(crate) struct DhPublicKeyRaw(pub(crate) Vec<u8>);
 pub(crate) enum DhPublicKey {
     /// A curve point in Curve25519
     X25519PublicKey(x25519_dalek::PublicKey),
+
+    /// An undifferentiated variant used for (de)serialization
     Raw(DhPublicKeyRaw),
 }
 
@@ -131,11 +134,12 @@ impl subtle::ConstantTimeEq for DhPublicKey {
 }
 
 // Why do we do this? Firstly, it's a pain to write &'static dyn DhSchemeInterface everywhere.
-// Secondly, I would like to support methods like AeadKey::new_from_bytes which would take in an
-// DhSchemeInterface, but this leaves two ways of instantiating a DhPublicKey: either with
-// new_from_bytes or with DhSchemeInterface::public_key_from_bytes. I think there should only be
-// one way of doing this, so we'll wrap the trait object and not export the trait. Thirdly, this is
-// in keeping with the design of SignatureScheme. Reasoning for that mess can be found in sig.rs.
+// Secondly, I would like to support methods like DhPublicKey::new_from_bytes which would take in
+// an DhSchemeInterface, but this leaves two ways of instantiating a DhPublicKey: either with
+// DhPublicKey::new_from_bytes or with DhSchemeInterface::public_key_from_bytes. I think there
+// should only be one way of doing this, so we'll wrap the trait object and not export the trait.
+// Thirdly, this is in keeping with the design of AeadScheme and SignatureScheme. Reasoning for
+// that mess can be found in aead.rs and sig.rs.
 pub(crate) struct DhScheme(&'static dyn DhSchemeInterface);
 
 impl DhScheme {
@@ -157,7 +161,7 @@ impl DhScheme {
 /// A trait representing any DH-like key-agreement algorithm. The notation it uses in documentation
 /// is that of elliptic curves, but these concepts should generalize to finite-fields, SIDH, CSIDH,
 /// etc.
-trait DhSchemeInterface {
+trait DhSchemeInterface: Sync {
     fn public_key_size(&self) -> usize;
 
     fn private_key_size(&self) -> usize;

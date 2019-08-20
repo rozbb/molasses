@@ -1,5 +1,7 @@
 use crate::{crypto::rng::CryptoRng, error::Error};
 
+use core::convert::TryFrom;
+
 /// A singleton object representing the AES-128-GCM AEAD scheme
 pub(crate) const AES128GCM_IMPL: AeadScheme = AeadScheme(&Aes128Gcm);
 
@@ -10,10 +12,28 @@ const AES_128_GCM_TAG_SIZE: usize = 128 / 8;
 /// Size of nonces, in bytes
 const AES_128_GCM_NONCE_SIZE: usize = 96 / 8;
 
+/// A wrapper around a fixed-size array containing key bytes. This exists as a newtype so we can
+/// implement `TryFrom` for `ring::aead::LessSafeKey`
+pub(crate) struct Aes128GcmKey([u8; AES_128_GCM_KEY_SIZE]);
+
 /// An enum of possible types for an AEAD key, depending on the underlying algorithm
 pub(crate) enum AeadKey {
     /// An opening / sealing key in AES-128-GCM
     Aes128GcmKey(Aes128GcmKey),
+}
+
+impl<'a> TryFrom<&'a Aes128GcmKey> for ring::aead::LessSafeKey {
+    type Error = Error;
+
+    /// Makes a usable key from just key bytes. This really should never error.
+    fn try_from(key: &'a Aes128GcmKey) -> Result<ring::aead::LessSafeKey, Error> {
+        // Make a key without a bound nonce
+        let unbound_key = ring::aead::UnboundKey::new(&ring::aead::AES_128_GCM, &key.0)
+            .map_err(|_| Error::EncryptionError("could not create AES-GCM key from bytes"))?;
+
+        // Now make the key usable with seal/open
+        Ok(ring::aead::LessSafeKey::new(unbound_key))
+    }
 }
 
 impl AeadKey {
@@ -29,24 +49,44 @@ impl AeadKey {
 }
 
 impl core::fmt::Debug for AeadKey {
+    // Output the variant of the key, but not the contents
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let variant = match self {
+            AeadKey::Aes128GcmKey(_) => "Aes128GcmKey",
+        };
+
         // Ensure that the secret value isn't accidentally logged
-        f.write_str("AeadKey: CONTENTS OMITTED")
+        write!(f, "AeadKey::{}", variant)
     }
 }
 
-// opaque sender_data_nonce<0..255>
+// From opaque MLSCiphertext::sender_data_nonce<0..255>,
+// opaque MLSCiphertextSenderDataAAD::sender_data_nonce<0..255>, and
+// opaque MLSCiphertextContentAAD::sender_data_nonce<0..255>
 /// This is the form that all `AeadNonce`s take when being sent or received over the wire
 #[derive(Clone, Deserialize, Serialize)]
-#[cfg_attr(test, derive(Debug))]
-#[serde(rename = "AeadNonceRaw")]
+#[serde(rename = "AeadNonceRaw__bound_u8")]
 pub(crate) struct AeadNonceRaw(pub(crate) Vec<u8>);
 
 /// An enum of possible types for an AEAD nonce, depending on the underlying algorithm
 pub(crate) enum AeadNonce {
     /// A nonce in AES-128-GCM
     Aes128GcmNonce(ring::aead::Nonce),
+
+    /// An undifferentiated variant used for (de)serialization
     Raw(AeadNonceRaw),
+}
+
+#[cfg(test)]
+impl core::fmt::Debug for AeadNonce {
+    // Output the variant of the nonce it is, but not the contents
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        let (variant, contents) = match self {
+            AeadNonce::Aes128GcmNonce(ref n) => ("Aes128GcmNonce", &n.as_ref()[..]),
+            AeadNonce::Raw(ref v) => ("Raw", v.0.as_slice()),
+        };
+        write!(f, "AeadNonce::{}({:x?})", variant, contents)
+    }
 }
 
 impl AeadNonce {
@@ -92,9 +132,10 @@ impl AeadNonce {
 // Why do we do this? Firstly, it's a pain to write &'static dyn AeadSchemeInterface everywhere.
 // Secondly, I would like to support methods like AeadKey::new_from_bytes which would take in an
 // AeadSchemeInterface, but this leaves two ways of instantiating an AeadKey: either with
-// new_from_bytes or with AeadSchemeInterface::key_from_bytes. I think there should only be one way
-// of doing this, so we'll wrap the trait object and not export the trait. Thirdly, this is in
-// keeping with the design of SignatureScheme. Reasoning for that mess can be found in sig.rs.
+// AeadKey::new_from_bytes or with AeadSchemeInterface::key_from_bytes. I think there should only
+// be one way of doing this, so we'll wrap the trait object and not export the trait. Thirdly, this
+// is in keeping with the design of SignatureScheme. Reasoning for that mess can be found in
+// sig.rs.
 /// A type representing an authenticated encryption algorithm
 pub(crate) struct AeadScheme(&'static dyn AeadSchemeInterface);
 
@@ -125,9 +166,10 @@ impl AeadScheme {
     /// occurred, the modified input may be altered in an unspecified way.
     ///
     /// Returns: `Ok(plaintext)` on sucess, where `plaintext` is the decrypted form of the
-    /// ciphertext, with no tags or garbage bytes (in particular, it's the same buffer as the input
-    /// bytes, but without the last 16 bytes). If there is an error in any part of this process,
-    /// this returns an `Error::CryptoError` with description "Unspecified".
+    /// ciphertext, with no tag (in particular, it's the same buffer as the input bytes, but
+    /// without the last 16 bytes). If there is an error in any part of this process, this returns
+    /// an `Error::CryptoError` with description "Unspecified" and the contents of
+    /// `ciphertext_and_tag_modified_in_place` are unspecified.
     pub(crate) fn open<'a>(
         &self,
         key: &AeadKey,
@@ -140,12 +182,10 @@ impl AeadScheme {
 
     // This just passes through to AeadSchemeInterface::seal
     /// Does an in-place authenticated encryption of the given plaintext with respect to the
-    /// additional authenticated data. The last input MUST look like `plaintext || extra`, where
-    /// `extra` is 16 bytes long and its contents do not matter. After a successful run, the input
-    /// will be modified to consist of a tagged ciphertext. That is, it will be of the form
-    /// `ciphertext || tag` where `tag` is 16 bytes long.
-    ///
-    /// Requires: `plaintext.len() >= 16`
+    /// additional authenticated data. `plaintext` contains just the plaintext. The extra space for
+    /// the GCM tag is made by `extend`-ing the vector. After a successful run, the input will be
+    /// modified to consist of a tagged ciphertext, i.e.,, it will be of the form `ciphertext ||
+    /// tag` where `tag` is 16 bytes long.
     ///
     /// Returns: `Ok(())` on sucess, indicating that the inputted buffer contains the tagged
     /// ciphertext. If there is an error in any part of this process, this returns an
@@ -155,7 +195,7 @@ impl AeadScheme {
         key: &AeadKey,
         nonce: AeadNonce,
         additional_authenticated_data: &[u8],
-        plaintext: &mut [u8],
+        plaintext: &mut Vec<u8>,
     ) -> Result<(), Error> {
         self.0.seal(key, nonce, additional_authenticated_data, plaintext)
     }
@@ -166,7 +206,7 @@ impl AeadScheme {
 // ring does algorithm specification at runtime, but I'd rather encode these things in the type
 // system. So, similar to the Digest trait, we're making an AuthenticatedEncryption trait. I don't
 // think we'll need associated data in this crate, so we leave it out for simplicity
-trait AeadSchemeInterface {
+trait AeadSchemeInterface: Sync {
     // Recall we can't have const trait methods if we want this to be a trait object
     fn key_size(&self) -> usize;
     fn nonce_size(&self) -> usize;
@@ -189,22 +229,13 @@ trait AeadSchemeInterface {
         key: &AeadKey,
         nonce: AeadNonce,
         additional_authenticated_data: &[u8],
-        plaintext: &mut [u8],
+        plaintext: &mut Vec<u8>,
     ) -> Result<(), Error>;
 }
 
 /// This represents the AES-128-GCM authenticated encryption algorithm. Notably, it implements
 /// `AuthenticatedEncryption`.
 pub(crate) struct Aes128Gcm;
-
-/// An opening / sealing key for use with the `Aes128Gcm` algorithm
-// These will just be two copies of the same thing. They're different types because ring requires
-// an OpeningKey for opening and a SealingKey for sealing. This incurs some 64 bytes of storage
-// overhead, but I frankly don't care.
-pub(crate) struct Aes128GcmKey {
-    opening_key: ring::aead::OpeningKey,
-    sealing_key: ring::aead::SealingKey,
-}
 
 impl AeadSchemeInterface for Aes128Gcm {
     /// Returns `AES_128_GCM_KEY_SIZE`
@@ -233,16 +264,8 @@ impl AeadSchemeInterface for Aes128Gcm {
             return Err(Error::EncryptionError("AES-GCM-128 requires 128-bit keys"));
         }
 
-        // Again, the opening and sealing keys for AES-GCM are the same.
-        let opening_key = ring::aead::OpeningKey::new(&ring::aead::AES_128_GCM, key_bytes)
-            .map_err(|_| Error::EncryptionError("Unspecified"))?;
-        let sealing_key = ring::aead::SealingKey::new(&ring::aead::AES_128_GCM, key_bytes)
-            .map_err(|_| Error::EncryptionError("Unspecified"))?;
-
-        let key = Aes128GcmKey {
-            opening_key,
-            sealing_key,
-        };
+        let mut key = Aes128GcmKey([0u8; AES_128_GCM_KEY_SIZE]);
+        key.0.copy_from_slice(key_bytes);
 
         Ok(AeadKey::Aes128GcmKey(key))
     }
@@ -270,9 +293,10 @@ impl AeadSchemeInterface for Aes128Gcm {
     /// occurred, the modified input may be altered in an unspecified way.
     ///
     /// Returns: `Ok(plaintext)` on sucess, where `plaintext` is the decrypted form of the
-    /// ciphertext, with no tags or garbage bytes (in particular, it's the same buffer as the input
-    /// bytes, but without the last 16 bytes). If there is an error in any part of this process,
-    /// this returns an `Error::CryptoError` with description "Unspecified".
+    /// ciphertext, with no tag (in particular, it's the same buffer as the input bytes, but
+    /// without the last 16 bytes). If there is an error in any part of this process, this returns
+    /// an `Error::CryptoError` with description "Unspecified" and the contents of
+    /// `ciphertext_and_tag_modified_in_place` are unspecified.
     fn open<'a>(
         &self,
         key: &AeadKey,
@@ -280,31 +304,32 @@ impl AeadSchemeInterface for Aes128Gcm {
         additional_authenticated_data: &[u8],
         ciphertext_and_tag_modified_in_place: &'a mut [u8],
     ) -> Result<&'a mut [u8], Error> {
+        // Unwrap the values
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
         let nonce = enum_variant!(nonce, AeadNonce::Aes128GcmNonce);
+
+        // Construct a key we can use with ring's open_in_place function
+        let ring_key = ring::aead::LessSafeKey::try_from(key)?;
 
         // We use the standard decryption function with no associated data, and no "prefix bytes".
         // The length of the buffer is checked by the ring library. The function returns a
         // plaintext = ciphertext_and_tag[..plaintext.len()] For more details on this function, see
-        // docs on ring::aead::open_in_place at
-        // https://briansmith.org/rustdoc/ring/aead/fn.open_in_place.html
-        ring::aead::open_in_place(
-            &key.opening_key,
-            nonce,
-            ring::aead::Aad::from(additional_authenticated_data),
-            0,
-            ciphertext_and_tag_modified_in_place,
-        )
-        .map_err(|_| Error::EncryptionError("Unspecified"))
+        // docs at
+        // https://briansmith.org/rustdoc/ring/aead/struct.OpeningKey.html#method.open_in_place
+        ring_key
+            .open_in_place(
+                nonce,
+                ring::aead::Aad::from(additional_authenticated_data),
+                ciphertext_and_tag_modified_in_place,
+            )
+            .map_err(|_| Error::EncryptionError("Unspecified"))
     }
 
     /// Does an in-place authenticated encryption of the given plaintext with respect to the
-    /// additional authenticated data. The last input MUST look like `plaintext || extra`, where
-    /// `extra` is 16 bytes long and its contents do not matter. After a successful run, the input
-    /// will be modified to consist of a tagged ciphertext. That is, it will be of the form
-    /// `ciphertext || tag` where `tag` is 16 bytes long.
-    ///
-    /// Requires: `plaintext.len() >= 16`
+    /// additional authenticated data. `plaintext` contains just the plaintext. The extra space for
+    /// the GCM tag is made by `extend`-ing the vector. After a successful run, the input will be
+    /// modified to consist of a tagged ciphertext, i.e.,, it will be of the form `ciphertext ||
+    /// tag` where `tag` is 16 bytes long.
     ///
     /// Returns: `Ok(())` on sucess, indicating that the inputted buffer contains the tagged
     /// ciphertext. If there is an error in any part of this process, this returns an
@@ -314,21 +339,23 @@ impl AeadSchemeInterface for Aes128Gcm {
         key: &AeadKey,
         nonce: AeadNonce,
         additional_authenticated_data: &[u8],
-        plaintext: &mut [u8],
+        plaintext: &mut Vec<u8>,
     ) -> Result<(), Error> {
+        // Unwrap the values
         let key = enum_variant!(key, AeadKey::Aes128GcmKey);
         let nonce = enum_variant!(nonce, AeadNonce::Aes128GcmNonce);
+
+        // Construct a key we can use with ring's seal_in_place function
+        let ring_key = ring::aead::LessSafeKey::try_from(key)?;
 
         // We use the standard encryption function with no associated data. The length of the
         // buffer is checked by the ring library.
         // For more details on this function, see docs on ring::aead::seal_in_place at
         // https://briansmith.org/rustdoc/ring/aead/fn.seal_in_place.html
-        let res = ring::aead::seal_in_place(
-            &key.sealing_key,
+        let res = ring_key.seal_in_place_append_tag(
             nonce,
             ring::aead::Aad::from(additional_authenticated_data),
             plaintext,
-            AES_128_GCM_TAG_SIZE,
         );
 
         if res.is_ok() {
@@ -383,7 +410,7 @@ mod test {
 
     // Test that decrypt_k(encrypt_k(m)) == m
     #[quickcheck]
-    fn aes_gcm_correctness(plaintext: Vec<u8>, aad: Vec<u8>, rng_seed: u64) {
+    fn aes_gcm_correctness(orig_plaintext: Vec<u8>, aad: Vec<u8>, rng_seed: u64) {
         // We're only working with AES-128 GCM
         let scheme: &AeadScheme = &AES128GCM_IMPL;
 
@@ -393,27 +420,18 @@ mod test {
         let (nonce1, nonce2) = gen_nonce_pair(scheme, &mut rng);
         let key = gen_key(scheme, &mut rng);
 
-        // Make sure there's enough room in the plaintext for the tag
-        let mut extended_plaintext = {
-            let tag_space = vec![0u8; scheme.tag_size()];
-            let mut pt_copy = plaintext.clone();
-            pt_copy.extend(tag_space);
-            pt_copy
-        };
-
         // Encrypt
-        scheme
-            .seal(&key, nonce1, &aad, extended_plaintext.as_mut_slice())
-            .expect("failed to encrypt");
+        let mut plaintext = orig_plaintext.clone();
+        scheme.seal(&key, nonce1, &aad, &mut plaintext).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
-        let auth_ciphertext = extended_plaintext.as_mut_slice();
+        let auth_ciphertext = plaintext.as_mut_slice();
 
         let recovered_plaintext =
             scheme.open(&key, nonce2, &aad, auth_ciphertext).expect("failed to decrypt");
 
         // Make sure we get out what we put in
-        assert_eq!(plaintext, recovered_plaintext);
+        assert_eq!(orig_plaintext, recovered_plaintext);
     }
 
     // Flip bits in the input arbitrarily
@@ -440,11 +458,8 @@ mod test {
         let (nonce1, nonce2, nonce3) = gen_nonce_triplet(scheme, &mut rng);
         let key = gen_key(scheme, &mut rng);
 
-        // Make sure there's enough room in the plaintext for the tag
-        plaintext.extend(vec![0u8; scheme.tag_size()]);
-
         // Encrypt
-        scheme.seal(&key, nonce1, &aad, plaintext.as_mut_slice()).expect("failed to encrypt");
+        scheme.seal(&key, nonce1, &aad, &mut plaintext).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
         let mut ciphertext = plaintext;
@@ -486,11 +501,8 @@ mod test {
         let (nonce1, nonce2) = gen_nonce_pair(scheme, &mut rng);
         let key = gen_key(scheme, &mut rng);
 
-        // Make sure there's enough room in the plaintext for the tag
-        plaintext.extend(vec![0u8; scheme.tag_size()]);
-
         // Encrypt
-        scheme.seal(&key, nonce1, &aad, plaintext.as_mut_slice()).expect("failed to encrypt");
+        scheme.seal(&key, nonce1, &aad, &mut plaintext).expect("failed to encrypt");
 
         // Rename for clarity, since plaintext was modified in-place
         let ciphertext = plaintext;

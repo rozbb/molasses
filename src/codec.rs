@@ -4,6 +4,8 @@ use crate::crypto::{
     aead::{AeadNonce, AeadNonceRaw},
     ciphersuite::{CipherSuite, P256_SHA256_AES128GCM, X25519_SHA256_AES128GCM},
     dh::{DhPublicKey, DhPublicKeyRaw},
+    hash::{Digest, DigestRaw},
+    hkdf::{HkdfSalt, HkdfSaltRaw},
     sig::{
         SigPublicKey, SigPublicKeyRaw, Signature, SignatureRaw, SignatureScheme, ECDSA_P256_IMPL,
         ED25519_IMPL,
@@ -15,11 +17,11 @@ use serde::{
     ser::{Serialize, Serializer},
 };
 
-const CIPHERSUITE_NAME_IDS: &[(&CipherSuite, &str, u16)] = &[
+static CIPHERSUITE_NAME_IDS: &[(&CipherSuite, &str, u16)] = &[
     (&P256_SHA256_AES128GCM, "P256_SHA256_AES128GCM", 0x0000),
     (&X25519_SHA256_AES128GCM, "X25519_SHA256_AES128GCM", 0x0001),
 ];
-const SIGSCHEME_NAME_IDS: &[(&SignatureScheme, &str, u16)] = &[
+static SIGSCHEME_NAME_IDS: &[(&SignatureScheme, &str, u16)] = &[
     (&ECDSA_P256_IMPL, "dummy_ecdsa_secp256r1_sha256", 0x0403),
     (&ED25519_IMPL, "ed25519", 0x0807),
 ];
@@ -178,5 +180,39 @@ impl<'de> Deserialize<'de> for AeadNonce {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
         AeadNonceRaw::deserialize(deserializer).map(AeadNonce::Raw)
+    }
+}
+
+impl Serialize for HkdfSalt {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // If it's not already, convert it to a Raw salt, then serialize that
+        match self {
+            HkdfSalt::Raw(p) => p.serialize(serializer),
+            p => HkdfSaltRaw(p.as_bytes().to_vec()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HkdfSalt {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
+        HkdfSaltRaw::deserialize(deserializer).map(HkdfSalt::Raw)
+    }
+}
+
+impl Serialize for Digest {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // If it's not already, convert it to a Raw digest, then serialize that
+        match self {
+            Digest::Raw(p) => p.serialize(serializer),
+            p => DigestRaw(p.as_bytes().to_vec()).serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Digest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Deserialize everything as a raw vec. We deal with variants in CryptoUpcast
+        DigestRaw::deserialize(deserializer).map(Digest::Raw)
     }
 }

@@ -1,3 +1,5 @@
+//! Defines `ClientInitKey` and helper methods to build them and extract information from them
+
 use crate::{
     credential::Credential,
     crypto::{
@@ -214,7 +216,7 @@ impl ClientInitKey {
     /// validation (via `ClientInitKey::validate()`) failed.
     pub(crate) fn get_public_key<'a>(
         &'a self,
-        cs_to_find: &'static CipherSuite,
+        cs_to_find: &CipherSuite,
     ) -> Result<Option<&'a DhPublicKey>, Error> {
         // First validate. If this were not valid, then the output of this function might be
         // dependent on the order of occurrence of cipher suites, and that is undesirable
@@ -245,7 +247,7 @@ impl ClientInitKey {
     /// `Err(Error::ValidationError)` iff validation (via `ClientInitKey::validate()`) failed.
     pub(crate) fn get_private_key<'a>(
         &'a self,
-        cs_to_find: &'static CipherSuite,
+        cs_to_find: &CipherSuite,
     ) -> Result<Option<&'a DhPrivateKey>, Error> {
         // First validate. If this were not valid, then the output of this function might be
         // dependent on the order of occurrence of cipher suites, and that is undesirable

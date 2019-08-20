@@ -12,6 +12,7 @@ pub(crate) mod hash;
 pub(crate) mod hkdf;
 pub(crate) mod hmac;
 pub(crate) mod hpke;
+pub(crate) mod okm_util;
 pub mod rng;
 pub mod sig;
 
@@ -21,8 +22,7 @@ mod test {
         crypto::{
             ciphersuite::X25519_SHA256_AES128GCM,
             dh::DhPublicKey,
-            hkdf,
-            hmac::HmacKey,
+            hkdf::{self, HkdfPrk},
             hpke::{self, HpkeCiphertext},
         },
         error::Error,
@@ -134,8 +134,8 @@ mod test {
             raw_case
         };
 
-        // prk  = derive_sercret_salt
-        let prk = HmacKey::new_from_bytes(&test_vec.derive_secret_salt);
+        // prk = derive_sercret_salt
+        let prk = HkdfPrk::new_from_bytes(cs.hash_impl, &test_vec.derive_secret_salt);
 
         // Test Derive-Secret against known answer.
         // derive_secret_out == Derive-Secret(
@@ -143,15 +143,18 @@ mod test {
         //     info=derive_secret_label,
         //     context=derive_secret_context
         //  )
-        let derive_secret_out = hkdf::derive_secret(
-            cs.hash_impl,
+        let derive_secret_out: HkdfPrk = hkdf::derive_secret(
+            cs,
             &prk,
             &test_vec.derive_secret_label,
             &test_vec.derive_secret_context,
         )
         .unwrap();
-        // Wrap the RHS in an HMAC key so we can compare it to the LHS HmacKey
-        assert_eq!(derive_secret_out, HmacKey::new_from_bytes(&case1.derive_secret_out));
+        // Wrap the RHS in an HkdfPrk so we can compare it to the LHS HkdfPrk
+        assert_eq!(
+            derive_secret_out,
+            HkdfPrk::new_from_bytes(cs.hash_impl, &case1.derive_secret_out)
+        );
 
         // Test Derive-Key-Pair(derive_key_pair_seed) against known answer
         let (recip_public_key, recip_secret_key) =

@@ -5,7 +5,7 @@ use crate::{
         ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
         dh::DhPrivateKey,
         hash::Digest,
-        hmac::HmacKey,
+        hkdf::HkdfSalt,
         rng::CryptoRng,
         sig::{SigPublicKey, SigSecretKey, SignatureScheme, ED25519_IMPL},
     },
@@ -103,11 +103,8 @@ pub(crate) fn random_tree<R: rand::Rng + CryptoRng>(
         let tree_idx = TreeIdx::try_from(member_idx).unwrap();
 
         // Random path secret used to derive all private keys up the tree
-        let path_secret = {
-            let mut buf = [0u8; 32];
-            rng.fill_bytes(&mut buf);
-            PathSecret::new_from_bytes(&buf)
-        };
+        let path_secret = PathSecret::new_from_random(cs.hash_impl, rng);
+
         tree.propagate_new_path_secret(cs, path_secret, tree_idx)
             .expect("couldn't propagate random secrets in a random tree");
     }
@@ -123,8 +120,8 @@ pub(crate) fn random_full_group_ctx<R: rand::Rng + CryptoRng>(
     rng: &mut R,
 ) -> (GroupContext, Vec<SigSecretKey>) {
     // TODO: Expand the number of available ciphersuites once more are available
-    let cipher_suites = &[X25519_SHA256_AES128GCM];
-    let sig_schemes = &[ED25519_IMPL];
+    let cipher_suites = &[&X25519_SHA256_AES128GCM];
+    let sig_schemes = &[&ED25519_IMPL];
 
     let cs = cipher_suites.choose(rng).unwrap();
     let ss = sig_schemes.choose(rng).unwrap();
@@ -145,7 +142,7 @@ pub(crate) fn random_full_group_ctx<R: rand::Rng + CryptoRng>(
     };
 
     // Make a random init_secret and a zero transcript_hash
-    let init_secret = HmacKey::new_from_random(cs.hash_impl, rng);
+    let init_secret = HkdfSalt::new_from_random(cs.hash_impl, rng);
     let transcript_hash = Digest::new_from_zeros(cs.hash_impl);
 
     // Copy the root hash before we move the tree

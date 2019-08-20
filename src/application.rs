@@ -5,8 +5,7 @@ use crate::{
     crypto::{
         aead::{AeadKey, AeadNonce},
         ciphersuite::CipherSuite,
-        hkdf,
-        hmac::HmacKey,
+        hkdf::{self, HkdfPrk},
     },
     error::Error,
     group_ctx::{ApplicationSecret, GroupContext},
@@ -19,11 +18,11 @@ use core::convert::TryFrom;
 /// Contains a secret that is unique to a member of the group. This is part of the application key
 /// schedule defined in the "Encryption Keys" section of the spec.
 #[derive(Clone)]
-pub(crate) struct WriteSecret(HmacKey);
+pub(crate) struct WriteSecret(HkdfPrk);
 
-// WriteSecret --> HmacKey trivially
-impl From<WriteSecret> for HmacKey {
-    fn from(ws: WriteSecret) -> HmacKey {
+// WriteSecret --> HkdfPrk trivially
+impl From<WriteSecret> for HkdfPrk {
+    fn from(ws: WriteSecret) -> HkdfPrk {
         ws.0
     }
 }
@@ -60,8 +59,8 @@ impl ApplicationKeyChain {
         // calculation of write_secret_[sender].
         let num_leaves = group_ctx.tree.num_leaves();
 
-        // The application secret is secretly an HMAC key
-        let prk: &HmacKey = (&app_secret).into();
+        // The application secret is an HKDF key
+        let prk: &HkdfPrk = (&app_secret).into();
 
         // Make a write secret for every member, and let its generation be 0
         let write_secrets_and_gens = (0..num_leaves)
@@ -76,16 +75,11 @@ impl ApplicationKeyChain {
                 // write_secret_[sender] =
                 //     HKDF-Expand-Label(application_secret, "app sender", sender, Hash.length)
                 //  where sender is serialized as usual as a u32
-                let mut write_secret_buf = vec![0u8; group_ctx.cs.hash_impl.digest_size()];
                 let serialized_member_idx = tls_ser::serialize_to_bytes(&member_idx).unwrap();
-                hkdf::expand_label(
-                    group_ctx.cs.hash_impl,
-                    &prk,
-                    b"app sender",
-                    &serialized_member_idx,
-                    write_secret_buf.as_mut_slice(),
-                );
-                let write_secret = WriteSecret(HmacKey::new_from_bytes(&write_secret_buf));
+                let write_secret_prk: HkdfPrk =
+                    hkdf::expand_label(group_ctx.cs, prk, b"app sender", &serialized_member_idx)
+                        .unwrap();
+                let write_secret = WriteSecret(write_secret_prk);
 
                 // (write_secret, generation=0)
                 (write_secret, WriteSecretGeneration(0))
@@ -116,26 +110,14 @@ impl ApplicationKeyChain {
             .get(usize::from(idx))
             .ok_or(Error::ValidationError("Member index out of bounds of application key chain"))?;
 
-        // Derive the key and nonce
-        let mut key_buf = vec![0u8; self.group_cs.aead_impl.key_size()];
-        let mut nonce_buf = vec![0u8; self.group_cs.aead_impl.nonce_size()];
-        hkdf::expand_label(
-            self.group_cs.hash_impl,
-            &write_secret.0,
-            b"key",
-            b"",
-            key_buf.as_mut_slice(),
-        );
-        hkdf::expand_label(
-            self.group_cs.hash_impl,
-            &write_secret.0,
-            b"nonce",
-            b"",
-            nonce_buf.as_mut_slice(),
-        );
+        // Derive the key and nonce:
+        //   write_nonce_[sender]_[N-1]
+        //     = HKDF-Expand-Label(write_secret_[sender]_[n-1],"nonce", "", nonce_length)
+        //   write_key_[sender]_[N-1]
+        //     = HKDF-Expand-Label(write_secret_[sender]_[n-1],"key", "", key_length)
+        let key: AeadKey = hkdf::expand_label(self.group_cs, &write_secret.0, b"key", b"")?;
+        let nonce: AeadNonce = hkdf::expand_label(self.group_cs, &write_secret.0, b"nonce", b"")?;
 
-        let key = AeadKey::new_from_bytes(self.group_cs.aead_impl, &key_buf)?;
-        let nonce = AeadNonce::new_from_bytes(self.group_cs.aead_impl, &nonce_buf)?;
         Ok((key, nonce, *generation))
     }
 
@@ -171,15 +153,12 @@ impl ApplicationKeyChain {
         //     HKDF-Expand-Label(write_secret_[sender]_[n-1], "app sender", sender, Hash.length)
         // This serialization can't fail, since it's just a u32
         let serialized_member_idx = tls_ser::serialize_to_bytes(&member_idx).unwrap();
-        let prk: HmacKey = write_secret.clone().into();
-        hkdf::expand_label(
-            self.group_cs.hash_impl,
-            &prk,
-            b"app sender",
-            &serialized_member_idx,
-            (write_secret.0).0.as_mut_slice(), // Overwrite the undelrying HmacKey
-        );
+        let prk: HkdfPrk = write_secret.clone().into();
+        let new_prk: HkdfPrk =
+            hkdf::expand_label(self.group_cs, &prk, b"app sender", &serialized_member_idx)?;
 
+        // Update the write secret
+        *write_secret = WriteSecret(new_prk);
         // Increment the generation
         generation.0 = generation
             .0
@@ -197,7 +176,8 @@ mod test {
         crypto::{
             aead::{AeadKey, AeadNonce, AeadScheme},
             ciphersuite::X25519_SHA256_AES128GCM,
-            hmac::HmacKey,
+            hash::SHA256_IMPL,
+            hkdf::HkdfPrk,
             rng::CryptoRng,
         },
         framing::Framer,
@@ -213,13 +193,14 @@ mod test {
     use rand::{self, SeedableRng};
     use serde::de::Deserialize;
 
-    // Does an update operation on the two given groups and returns the resulting key chains
+    // Does an update operation on the two given groups and returns the resulting framers and
+    // keychains
     fn do_update_op<R: CryptoRng>(
         group1: &mut GroupContext,
         group2: &mut GroupContext,
         rng: &mut R,
     ) -> ((Framer, ApplicationKeyChain), (Framer, ApplicationKeyChain)) {
-        let new_path_secret = PathSecret::new_from_random(group1.cs, rng);
+        let new_path_secret = PathSecret::new_from_random(group1.cs.hash_impl, rng);
         // Make a handshake and update group1
         let (handshake, new_group1, framer1, keychain1) =
             group1.create_and_apply_update_handshake(new_path_secret, rng).unwrap();
@@ -255,7 +236,6 @@ mod test {
             let mut ciphertext = {
                 // Make room for the tag
                 let mut plaintext = orig_msg.to_vec();
-                plaintext.extend(vec![0u8; aead_impl.tag_size()]);
 
                 // Encrypt in-place
                 aead_impl.seal(&key1, nonce1, b"", &mut plaintext).unwrap();
@@ -407,7 +387,8 @@ mod test {
         // These values hold for all test vectors
         let num_members = test_vecs.num_members as usize;
         let app_secret = {
-            let key = HmacKey::new_from_bytes(&test_vecs.application_secret);
+            // It's always SHA256
+            let key = HkdfPrk::new_from_bytes(&SHA256_IMPL, &test_vecs.application_secret);
             ApplicationSecret::new(key)
         };
 

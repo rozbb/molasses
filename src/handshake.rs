@@ -1,15 +1,18 @@
 //! Defines group operations and the `Handshake` object. Not much public API here.
 
 use crate::{
-    client_init_key::ClientInitKey,
+    client_init_key::{ClientInitKey, ProtocolVersion},
     crypto::{
+        ciphersuite::CipherSuite,
         dh::DhPublicKey,
         hash::{Digest, HashFunction},
         hmac::{self, Mac},
         hpke::HpkeCiphertext,
+        rng::CryptoRng,
     },
-    group_ctx::{ConfirmationKey, WelcomeInfoHash},
-    ratchet_tree::MemberIdx,
+    error::Error,
+    group_ctx::{ConfirmationKey, GroupId, WelcomeInfoHash},
+    ratchet_tree::{MemberIdx, PathSecret, RatchetTree},
 };
 
 /// Contains a node's new public key and the new node's secret, encrypted for everyone in that
@@ -34,10 +37,67 @@ pub(crate) struct DirectPathMessage {
     pub(crate) node_messages: Vec<DirectPathNodeMessage>,
 }
 
-/// This is currently not defined by the spec. See open issue in section 8.1
+/// Operation to initialize a group with known members. This is called `Init` in the spec.
 #[derive(Deserialize, Serialize)]
 #[cfg_attr(test, derive(Debug))]
-pub(crate) struct GroupInit;
+pub(crate) struct GroupInit {
+    /// The ID of the group
+    group_id: GroupId,
+
+    /// A version of the protocol everyone has in common
+    version: ProtocolVersion,
+
+    /// A ciphersuite everyone has in common
+    cs: &'static CipherSuite,
+
+    /// The list of member data
+    #[serde(rename = "members__bound_u32")]
+    members: Vec<ClientInitKey>,
+
+    /// An initial `Update`-like operation to fill in the root node
+    path: DirectPathMessage,
+}
+
+impl GroupInit {
+    /// Creates a new `GroupInit` from the constituent parts and by generating a random keypair and
+    /// path secret for the member at the given idx
+    ///
+    /// Returns: `Ok((init, tree))` on success, where `init` is the newly-created `GroupInit` and
+    /// `tree` is the ratchet tree initialized to all the provided `ClientInitKey`s and with an
+    /// updated direct path starting at `my_idx`. Returns some sort of `Error` if anything goes
+    /// wrong.
+    pub(crate) fn new<R>(
+        cs: &'static CipherSuite,
+        version: ProtocolVersion,
+        group_id: GroupId,
+        members: Vec<ClientInitKey>,
+        my_idx: MemberIdx,
+        csprng: &mut R,
+    ) -> Result<(GroupInit, RatchetTree), Error>
+    where
+        R: CryptoRng,
+    {
+        // Make the tree so we can construct the DirectPathMessage over it
+        let tree = RatchetTree::new_from_members(cs, &members)?;
+        // Make a random path secret for my node
+        let path_secret = PathSecret::new_from_random(cs.hash_impl, csprng);
+        // Encrypt my new path secret for everyone else in the group
+        let path = tree.encrypt_direct_path_secrets(cs, my_idx, path_secret, csprng)?;
+
+        // All done
+        let init = GroupInit {
+            group_id,
+            version,
+            cs,
+            members,
+            path,
+        };
+        Ok((init, tree))
+    }
+}
+
+//  TODO: Implement a way to receive and process Init messages. One tough thing: how do I replace
+//  an incoming ClientInitKey with one whose privkeys I know?
 
 /// Operation to add a partcipant to a group
 #[derive(Deserialize, Serialize)]
@@ -169,7 +229,7 @@ mod test {
         let group_ctx2 = test_utils::change_self_index(&group_ctx1, &identity_keys, new_index);
 
         // Make a new path secret and make an Update object out of it
-        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs.hash_impl, &mut rng);
         let (handshake, group_ctx1, _, _) =
             group_ctx1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
@@ -203,7 +263,7 @@ mod test {
         let group_ctx2 = test_utils::change_self_index(&group_ctx1, &identity_keys, new_index);
 
         // Make a new path secret and make an Update object out of it
-        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs.hash_impl, &mut rng);
         let (handshake, group_ctx1, _, _) =
             group_ctx1.create_and_apply_update_handshake(new_path_secret, &mut rng).unwrap();
 
@@ -246,7 +306,7 @@ mod test {
 
         // Make a new path secret and make an Update object out of it and then make a Handshake
         // object out of that Update
-        let new_path_secret = PathSecret::new_from_random(&starting_group.cs, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(&starting_group.cs.hash_impl, &mut rng);
 
         // Make a Remove handshake and let starting_group reflect the change
         let (remove_handshake, starting_group, _, _) = starting_group
@@ -270,7 +330,7 @@ mod test {
         assert_serialized_eq!(starting_group, other_group, "GroupContexts disagree after Remove");
 
         // Now run an update on the non-removed groups just to make sure everything is working
-        let new_path_secret = PathSecret::new_from_random(starting_group.cs, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(starting_group.cs.hash_impl, &mut rng);
         let (update_handshake, starting_group, _, _) = starting_group
             .create_and_apply_update_handshake(new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
@@ -314,7 +374,7 @@ mod test {
         for remove_idx in (usize::from(max_member_idx) + 1)..group_ctx1.tree.num_leaves() {
             // Remove the member at the current index
             let remove_idx = MemberIdx::new(u32::try_from(remove_idx).unwrap());
-            let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+            let new_path_secret = PathSecret::new_from_random(group_ctx1.cs.hash_impl, &mut rng);
 
             // Create the handshake and apply it to both groups
             let (remove_handshake, new_group_ctx1, _, _) = group_ctx1
@@ -340,7 +400,7 @@ mod test {
         assert_eq!(group_ctx1.tree.num_leaves(), usize::from(max_member_idx) + 1);
 
         // Now run an update on the non-removed groups just to make sure everything is working
-        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs.hash_impl, &mut rng);
         let (update_handshake, group_ctx1, _, _) = group_ctx1
             .create_and_apply_update_handshake(new_path_secret, &mut rng)
             .expect("failed to create/apply remove op");
@@ -374,7 +434,7 @@ mod test {
             test_utils::change_self_index(&group_ctx1, &identity_keys, member_to_remove);
 
         // Prep for a removal
-        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs, &mut rng);
+        let new_path_secret = PathSecret::new_from_random(group_ctx1.cs.hash_impl, &mut rng);
 
         // First try to remove myself. This should error with a ValidationError
         let res = group_ctx1.create_and_apply_remove_handshake(

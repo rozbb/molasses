@@ -1,10 +1,11 @@
+//! Defines all the message framing structures and implements the logic for framing/unframing
+
 use crate::{
     application::ApplicationKeyChain,
     crypto::{
         aead::{AeadKey, AeadNonce},
         ciphersuite::CipherSuite,
-        hkdf,
-        hmac::HmacKey,
+        hkdf::{self, HkdfPrk},
         rng::CryptoRng,
         sig::{SigPublicKey, Signature, SignatureScheme},
     },
@@ -287,13 +288,11 @@ impl Framer {
             group_ctx.member_index.expect("cannot make a Framer from a preliminary group");
 
         // sender_data_key = HKDF-Expand-Label(sender_data_secret, "sd key", "", key_length)
-        let sender_data_key = {
-            let mut key_buf = vec![0u8; cs.aead_impl.key_size()];
-            // SenderDataSecrets are just HmacKeys
-            let prk: &HmacKey = (&sender_data_secret).into();
-            hkdf::expand_label(cs.hash_impl, prk, b"sd key", b"", &mut key_buf);
+        let sender_data_key: AeadKey = {
+            // SenderDataSecrets are just PRKs
+            let prk: &HkdfPrk = (&sender_data_secret).into();
             // I can't think of a single way this could fail
-            AeadKey::new_from_bytes(cs.aead_impl, &key_buf).expect("couldn't make sender_data_key")
+            hkdf::expand_label(cs, prk, b"sd key", b"").unwrap()
         };
 
         Framer {
@@ -336,39 +335,25 @@ impl Framer {
     /// returns some sort of `Error::CryptoError`.
     fn derive_handshake_key_nonce(
         &self,
+        cs: &'static CipherSuite,
         sender: MemberIdx,
-        cs: &CipherSuite,
     ) -> Result<(AeadKey, AeadNonce), Error> {
         // Get the sender's member index as a byte string. This cannot fail
         let serialized_sender = tls_ser::serialize_to_bytes(&sender).unwrap();
 
         // handshake_key_[sender] =
         //     HKDF-Expand-Label(handshake_secret, "hs key", [sender], key_length)
-        let key = {
-            let mut key_buf = vec![0u8; cs.aead_impl.key_size()];
-            hkdf::expand_label(
-                cs.hash_impl,
-                (&self.handshake_secret).into(),
-                b"hs key",
-                &serialized_sender,
-                &mut key_buf,
-            );
-            AeadKey::new_from_bytes(cs.aead_impl, &key_buf)?
-        };
+        let key: AeadKey =
+            hkdf::expand_label(cs, (&self.handshake_secret).into(), b"hs key", &serialized_sender)?;
 
         // handshake_nonce_[sender] =
         //     HKDF-Expand-Label(handshake_secret, "hs nonce", [sender], nonce_length)
-        let nonce = {
-            let mut nonce_buf = vec![0u8; cs.aead_impl.nonce_size()];
-            hkdf::expand_label(
-                cs.hash_impl,
-                (&self.handshake_secret).into(),
-                b"hs nonce",
-                &serialized_sender,
-                &mut nonce_buf,
-            );
-            AeadNonce::new_from_bytes(cs.aead_impl, &nonce_buf)?
-        };
+        let nonce: AeadNonce = hkdf::expand_label(
+            cs,
+            (&self.handshake_secret).into(),
+            b"hs nonce",
+            &serialized_sender,
+        )?;
 
         Ok((key, nonce))
     }
@@ -609,7 +594,7 @@ impl Framer {
     /// `MlsCiphertextContent` that contains a `Handshake`
     fn decrypt_handshake(
         &self,
-        cs: &CipherSuite,
+        cs: &'static CipherSuite,
         mut ciphertext_payload: Vec<u8>,
         sender_data: MlsSenderData,
         serialized_content_aad: Vec<u8>,
@@ -624,7 +609,7 @@ impl Framer {
 
         // Get the appropriate key and nonce for the Handshake from the given sender
         let (handshake_key, handshake_nonce) =
-            self.derive_handshake_key_nonce(sender_data.sender, cs)?;
+            self.derive_handshake_key_nonce(cs, sender_data.sender)?;
 
         // We now have everything we need to decrypt MLSCiphertext::ciphertext. Do the decryption
         // in-place
@@ -663,7 +648,7 @@ impl Framer {
         let generation = 0u32;
 
         // Get the appropriate key and nonce for a Handshake that I created
-        let (key, nonce) = self.derive_handshake_key_nonce(self.my_member_idx, group_ctx.cs)?;
+        let (key, nonce) = self.derive_handshake_key_nonce(group_ctx.cs, self.my_member_idx)?;
 
         // Pass to the method that does the heavy lifting
         self.frame_content(
@@ -712,10 +697,12 @@ impl Framer {
 
 #[cfg(test)]
 mod test {
-    use crate::{framing::Framer, ratchet_tree::PathSecret, test_utils};
+    use crate::{framing::Framer, test_utils};
 
     use quickcheck_macros::quickcheck;
     use rand::{RngCore, SeedableRng};
+
+    // TODO: The below test is a work-in-progress. This was impossible in Draft 6
 
     // Test that unframe(frame(handshake)) == handshake; we only test on Update ops because they're
     // easy to construct, but the operation should not matter

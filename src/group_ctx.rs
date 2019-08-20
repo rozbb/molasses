@@ -8,8 +8,8 @@ use crate::{
     crypto::{
         ciphersuite::CipherSuite,
         dh::{DhPrivateKey, DhPublicKey},
-        hash::Digest,
-        hkdf,
+        hash::{Digest, HashFunction},
+        hkdf::{self, HkdfPrk, HkdfSalt},
         hmac::{self, HmacKey},
         hpke::{self, HpkeCiphertext},
         rng::CryptoRng,
@@ -17,7 +17,7 @@ use crate::{
     },
     error::Error,
     framing::Framer,
-    handshake::{GroupAdd, GroupOperation, GroupRemove, GroupUpdate, Handshake},
+    handshake::{GroupAdd, GroupInit, GroupOperation, GroupRemove, GroupUpdate, Handshake},
     ratchet_tree::{LeafNode, MemberIdx, MemberInfo, PathSecret, RatchetTree},
     tls_de::TlsDeserializer,
     tls_ser,
@@ -31,49 +31,49 @@ use serde::de::Deserialize;
 use subtle::ConstantTimeEq;
 
 /// The secret used to seed the symmetric ratchet called `ApplicationKeyChain`
-pub(crate) struct ApplicationSecret(HmacKey);
+pub(crate) struct ApplicationSecret(HkdfPrk);
 
 impl ApplicationSecret {
-    pub(crate) fn new(key: HmacKey) -> ApplicationSecret {
-        ApplicationSecret(key)
+    pub(crate) fn new(prk: HkdfPrk) -> ApplicationSecret {
+        ApplicationSecret(prk)
     }
 }
 
-// ApplicationSecret --> HmacKey trivially
-impl<'a> From<&'a ApplicationSecret> for &'a HmacKey {
-    fn from(s: &'a ApplicationSecret) -> &'a HmacKey {
+// ApplicationSecret --> HkdfPrk trivially
+impl<'a> From<&'a ApplicationSecret> for &'a HkdfPrk {
+    fn from(s: &'a ApplicationSecret) -> &'a HkdfPrk {
         &s.0
     }
 }
 
-/// The secret used to encrypt sender metadata
-pub(crate) struct SenderDataSecret(HmacKey);
+/// The secret used to generate the key/nonce to encrypt sender metadata
+pub(crate) struct SenderDataSecret(HkdfPrk);
 
 impl SenderDataSecret {
-    pub(crate) fn new(key: HmacKey) -> SenderDataSecret {
-        SenderDataSecret(key)
+    pub(crate) fn new(prk: HkdfPrk) -> SenderDataSecret {
+        SenderDataSecret(prk)
     }
 }
 
-// SenderDataSecret --> HmacKey trivially
-impl<'a> From<&'a SenderDataSecret> for &'a HmacKey {
-    fn from(s: &'a SenderDataSecret) -> &'a HmacKey {
+// SenderDataSecret --> HkdfPrk trivially
+impl<'a> From<&'a SenderDataSecret> for &'a HkdfPrk {
+    fn from(s: &'a SenderDataSecret) -> &'a HkdfPrk {
         &s.0
     }
 }
 
-/// The secret used to encrypt `Handshake` messages
-pub(crate) struct HandshakeSecret(HmacKey);
+/// The secret used to generate the key/nonce to encrypt `Handshake` messages
+pub(crate) struct HandshakeSecret(HkdfPrk);
 
 impl HandshakeSecret {
-    pub(crate) fn new(key: HmacKey) -> HandshakeSecret {
-        HandshakeSecret(key)
+    pub(crate) fn new(prk: HkdfPrk) -> HandshakeSecret {
+        HandshakeSecret(prk)
     }
 }
 
-// HandshakeSecret --> HmacKey trivially
-impl<'a> From<&'a HandshakeSecret> for &'a HmacKey {
-    fn from(s: &'a HandshakeSecret) -> &'a HmacKey {
+// HandshakeSecret --> HkdfPrk trivially
+impl<'a> From<&'a HandshakeSecret> for &'a HkdfPrk {
+    fn from(s: &'a HandshakeSecret) -> &'a HkdfPrk {
         &s.0
     }
 }
@@ -103,16 +103,19 @@ impl UpdateSecret {
         &self.0
     }
 
-    // The update secret is all zeros after Add operations
-    fn new_from_zeros(num_zeros: usize) -> UpdateSecret {
-        UpdateSecret(vec![0u8; num_zeros])
+    /// The update secret is all zeros after Add operations, with length `Hash.length`
+    fn new_from_zeros(hash_impl: &HashFunction) -> UpdateSecret {
+        UpdateSecret(vec![0u8; hash_impl.digest_size()])
     }
 }
 
 // PathSecret --> UpdateSecret by rewrapping the underlying vector
 impl From<PathSecret> for UpdateSecret {
     fn from(n: PathSecret) -> UpdateSecret {
-        UpdateSecret((n.0).0)
+        // This will panic iff n is of the HkdfPrk::Opaque variant. That should never happen, since
+        // the only thing that should ever be Opaque is epoch_secret, since that is derived from an
+        // HKDF-Extract operation.
+        UpdateSecret((n.0).as_bytes().to_vec())
     }
 }
 
@@ -191,14 +194,14 @@ pub struct GroupContext {
 
     /// The initial secret used to derive `application_secret` and `confirmation_key`
     #[serde(skip)]
-    pub(crate) init_secret: HmacKey,
+    pub(crate) init_secret: HkdfSalt,
 }
 
 impl GroupContext {
     /// Creates a new one-person `GroupContext` from this member's information and some group
-    /// information
+    /// information.
     ///
-    /// Returns: `Ok(group_ctx)` on success. If there was an issue creating an ephemeral private
+    /// Returns: `Ok((group_ctx, framer))` on success. If there was an issue creating an ephemeral private
     /// key, returns some sort of `Error`. If `my_credential` cannot be serialized, returns an
     /// `Error::SerdeError`.
     pub fn new_singleton_group<R>(
@@ -208,7 +211,7 @@ impl GroupContext {
         group_id: GroupId,
         my_credential: Credential,
         csprng: &mut R,
-    ) -> Result<GroupContext, Error>
+    ) -> Result<(GroupContext, Framer), Error>
     where
         R: CryptoRng,
     {
@@ -224,14 +227,34 @@ impl GroupContext {
         };
 
         // Now make the GroupContext normally
-        GroupContext::new_from_parts(
+        let group_ctx = GroupContext::new_from_parts(
             cs,
             protocol_version,
             identity_key,
             group_id,
             tree,
             my_member_idx,
-        )
+        )?;
+
+        // Now make a Framer with arbitrarily chosen secrets. Ordinarily, these would be derived
+        // from the epoch_secret, which itself is derived from init_secret and update_secret. But
+        // this is a brand new group, and there is no update_secret to speak of. So we pick
+        // arbitrary values for handshake_secret and sender_data_secret, because the only logical
+        // operation we can do is an Add, in which we explicitly tell the Addee these secrets in
+        // WelcomeInfo::add_unframing_secrets.
+        let framer = {
+            let handshake_secret = {
+                let prk = HkdfPrk::new_from_random(cs.hash_impl, csprng);
+                HandshakeSecret(prk)
+            };
+            let sender_data_secret = {
+                let prk = HkdfPrk::new_from_random(cs.hash_impl, csprng);
+                SenderDataSecret(prk)
+            };
+            Framer::new(&group_ctx, handshake_secret, sender_data_secret)
+        };
+
+        Ok((group_ctx, framer))
     }
 
     /// Creates a new `GroupContext` from its constituent parts
@@ -244,11 +267,11 @@ impl GroupContext {
         identity_key: SigSecretKey,
         group_id: GroupId,
         tree: RatchetTree,
-        member_idx: MemberIdx,
+        my_idx: MemberIdx,
     ) -> Result<GroupContext, Error> {
         // Transcript hash and init secrets are both zeros to begin with
         let transcript_hash = Digest::new_from_zeros(cs.hash_impl);
-        let init_secret = HmacKey::new_from_zeros(cs.hash_impl);
+        let init_secret = HkdfSalt::new_from_zeros(cs.hash_impl);
         let tree_hash = tree.tree_hash()?;
 
         Ok(GroupContext {
@@ -260,10 +283,43 @@ impl GroupContext {
             tree,
             tree_hash,
             transcript_hash,
-            member_index: Some(member_idx),
+            member_index: Some(my_idx),
             initializing_client_init_key: None,
             init_secret,
         })
+    }
+
+    /// Creates a new `GroupContext` and corresponding `Init` object to send to other members
+    ///
+    /// Returns: `Ok((group_ctx, init))` on success. If there is an issue computing the hash of the
+    /// serialized `tree`, returns an `Error::SerdeError`.
+    pub(crate) fn new_with_init<R>(
+        cs: &'static CipherSuite,
+        protocol_version: ProtocolVersion,
+        identity_key: SigSecretKey,
+        group_id: GroupId,
+        members: Vec<ClientInitKey>,
+        my_idx: MemberIdx,
+        csprng: &mut R,
+    ) -> Result<(GroupContext, GroupInit), Error>
+    where
+        R: CryptoRng,
+    {
+        // Let the GroupInit constructor make an GroupInit object and also construct the ratchet
+        // tree for us. We'll use the tree and send out the GroupInit.
+        let (init, tree) =
+            GroupInit::new(cs, protocol_version, group_id.clone(), members, my_idx, csprng)?;
+        // We now have all the info to make a group context
+        let ctx = GroupContext::new_from_parts(
+            cs,
+            protocol_version,
+            identity_key,
+            group_id,
+            tree,
+            my_idx,
+        )?;
+
+        Ok((ctx, init))
     }
 
     /// Initializes a preliminary `GroupContext` with the given `WelcomeInfo` information, this
@@ -413,31 +469,30 @@ impl GroupContext {
         update_secret: &UpdateSecret,
     ) -> Result<(ApplicationSecret, SenderDataSecret, HandshakeSecret, ConfirmationKey), Error>
     {
-        let hash_impl = self.cs.hash_impl;
-
         // epoch_secret = HKDF-Extract(salt=init_secret_[n-1] (or 0), ikm=update_secret)
         let ikm = update_secret.as_bytes();
-        let epoch_secret: HmacKey = hkdf::extract(hash_impl, &self.init_secret, ikm);
+        let epoch_secret = hkdf::extract(self.cs.hash_impl, &self.init_secret, ikm);
 
         // Set my new init_secret first. We don't have to worry about this update affecting
         // subsequent serializations of this GroupContext object in the lines below, since
         // init_secret is not included in the serialized form of a GroupContext.
 
         // init_secret_[n] = Derive-Secret(epoch_secret, "init", GroupContext_[n])
-        self.init_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"init", self)?;
+        self.init_secret = hkdf::derive_secret(self.cs, &epoch_secret, b"init", self)?;
 
         // application_secret = Derive-Secret(epoch_secret, "app", GroupContext_[n])
-        let app_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"app", self)?;
+        let app_secret: HkdfPrk = hkdf::derive_secret(self.cs, &epoch_secret, b"app", self)?;
 
         // confirmation_key = Derive-Secret(epoch_secret, "confirm", GroupContext_[n])
-        let conf_key = hkdf::derive_secret(hash_impl, &epoch_secret, b"confirm", self)?;
+        let conf_key: HmacKey = hkdf::derive_secret(self.cs, &epoch_secret, b"confirm", self)?;
 
         // sender_data_secret = Derive-Secret(., "sender data", GroupContext_[n])
-        let sender_data_secret =
-            hkdf::derive_secret(hash_impl, &epoch_secret, b"sender data", self)?;
+        let sender_data_secret: HkdfPrk =
+            hkdf::derive_secret(self.cs, &epoch_secret, b"sender data", self)?;
 
         // handshake_secret = Derive-Secret(., "handshake", GroupContext_[n])
-        let handshake_secret = hkdf::derive_secret(hash_impl, &epoch_secret, b"handshake", self)?;
+        let handshake_secret: HkdfPrk =
+            hkdf::derive_secret(self.cs, &epoch_secret, b"handshake", self)?;
 
         Ok((
             ApplicationSecret::new(app_secret),
@@ -674,7 +729,7 @@ impl GroupContext {
 
         // "The update secret resulting from this change is an all-zero octet string of length
         // Hash.length."
-        Ok(UpdateSecret::new_from_zeros(self.cs.hash_impl.digest_size()))
+        Ok(UpdateSecret::new_from_zeros(self.cs.hash_impl))
     }
 
     /// Processes the given `Handshake` and, if successful, produces a new `GroupContext` and
@@ -943,7 +998,7 @@ impl GroupContext {
     /// is the `Handshake` message representing the specified add operation, `group_ctx` is the new
     /// group context after the add has been applied, `framer` is the newly derived MLS message
     /// framing object, and `app_key_chain` is the newly derived application key schedule object
-    // This is just a wrapper around self.create_and_apply_update_op and self.create_handshake
+    // This is just a wrapper around self.create_and_apply_update_op
     pub fn create_and_apply_update_handshake<R>(
         &self,
         new_path_secret: PathSecret,
@@ -968,7 +1023,7 @@ impl GroupContext {
     /// is the `Handshake` message representing the specified add operation, `group_ctx` is the new
     /// group context after the add has been applied, `framer` is the newly derived MLS message
     /// framing object, and `app_key_chain` is the newly derived application key schedule object
-    // This is just a wrapper around self.create_and_apply_add_op and self.create_handshake
+    // This is just a wrapper around self.create_and_apply_add_op
     pub fn create_and_apply_add_handshake(
         &self,
         new_member_idx: MemberIdx,
@@ -983,7 +1038,7 @@ impl GroupContext {
         Ok((handshake, new_group_ctx, framer, app_key_chain))
     }
 
-    // This is just a wrapper around self.create_and_apply_remove_op and self.create_handshake
+    // This is just a wrapper around self.create_and_apply_remove_op
     /// Creates and applies a `GroupRemove` operation for a member at `removed_member_index` and
     /// introduces a new path secret `new_path_secret` at the removed index. This method does not
     /// mutate this `GroupContext`, the operation is rather applied to the returned `GroupContext`.
@@ -1054,7 +1109,7 @@ pub(crate) struct WelcomeInfo {
 
     // opaque init_secret<0..255>;
     /// The initial secret used to derive all the rest
-    init_secret: HmacKey,
+    init_secret: HkdfSalt,
 }
 
 // This is public-facing
@@ -1100,7 +1155,8 @@ impl Welcome {
     where
         R: CryptoRng,
     {
-        // Get the public key from the supplied ClientInitKey corresponding to the given cipher suite
+        // Get the public key from the supplied ClientInitKey corresponding to the given cipher
+        // suite
         let public_key = init_key
             .get_public_key(cs)?
             .ok_or(Error::ValidationError("No corresponding public key for given ciphersuite"))?;
@@ -1215,6 +1271,7 @@ mod test {
         crypto::{
             ciphersuite::{CipherSuite, X25519_SHA256_AES128GCM},
             hash::Digest,
+            hkdf::{HkdfPrk, HkdfSalt},
             hmac::HmacKey,
             sig::{SigSecretKey, ED25519_IMPL},
         },
@@ -1312,7 +1369,7 @@ mod test {
             tree,
             member_index: Some(MemberIdx::new(0)),
             initializing_client_init_key: None,
-            init_secret: HmacKey::new_from_zeros(cs.hash_impl),
+            init_secret: HkdfSalt::new_from_zeros(cs.hash_impl),
         }
     }
 
@@ -1397,6 +1454,7 @@ mod test {
         let test_vec = KeyScheduleTestVectors::deserialize(&mut deserializer).unwrap();
         let case1 = test_vec.case_x25519;
         let mut group_ctx = group_from_test_group(test_vec.base_group_ctx);
+        let hash_impl = group_ctx.cs.hash_impl;
 
         // Keep deriving new secrets with respect to the given update secret. Check all the
         // resulting keys against the test vector.
@@ -1405,13 +1463,15 @@ mod test {
             let (app_secret, _, _, conf_key) =
                 group_ctx.update_epoch_secrets(&update_secret).unwrap();
 
-            // Wrap all the inputs in HmacKeys so we can compare them to other HmacKeys
-            let epoch_application_secret = HmacKey::new_from_bytes(&epoch.application_secret);
-            let epoch_confirmation_key = HmacKey::new_from_bytes(&epoch.confirmation_key);
-            let epoch_init_secret = HmacKey::new_from_bytes(&epoch.init_secret);
+            // Wrap all the inputs in the appropriate types so we can compare them to our values
+            let epoch_application_secret =
+                HkdfPrk::new_from_bytes(hash_impl, &epoch.application_secret);
+            let epoch_confirmation_key =
+                HmacKey::new_from_bytes(hash_impl, &epoch.confirmation_key);
+            let epoch_init_secret = HkdfSalt::new_from_bytes(hash_impl, &epoch.init_secret);
 
-            // Unwrap the newtypes into &HmacKeys
-            let app_secret: &HmacKey = (&app_secret).into();
+            // Unwrap the newtypes into the underlying types
+            let app_secret: &HkdfPrk = (&app_secret).into();
             let conf_key: &HmacKey = (&conf_key).into();
 
             // We don't save the derived epoch_secret anywhere, since it's just an intermediate
