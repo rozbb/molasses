@@ -201,9 +201,9 @@ impl GroupContext {
     /// Creates a new one-person `GroupContext` from this member's information and some group
     /// information.
     ///
-    /// Returns: `Ok((group_ctx, framer))` on success. If there was an issue creating an ephemeral private
-    /// key, returns some sort of `Error`. If `my_credential` cannot be serialized, returns an
-    /// `Error::SerdeError`.
+    /// Returns: `Ok((group_ctx, framer))` on success. If there was an issue creating an ephemeral
+    /// private key, returns some sort of `Error`. If `my_credential` cannot be serialized, returns
+    /// an `Error::SerdeError`.
     pub fn new_singleton_group<R>(
         cs: &'static CipherSuite,
         protocol_version: ProtocolVersion,
@@ -291,8 +291,12 @@ impl GroupContext {
 
     /// Creates a new `GroupContext` and corresponding `Init` object to send to other members
     ///
-    /// Returns: `Ok((group_ctx, init))` on success. If there is an issue computing the hash of the
-    /// serialized `tree`, returns an `Error::SerdeError`.
+    /// Returns: `Ok((group_ctx, app_key_chain, group_op, confirmation_key))` on success, where
+    /// `group_ctx` is the group context after having applied the Init operation, `app_key_chain`
+    /// is the resulting application key chain (again, after having applied the init operation),
+    /// `group_op` is a `GroupOperation` with the `Init` variant, and `confirmation_key` is the
+    /// derived confirmation key we'll use to compute the MAC in the `Handshake` that will end up
+    /// containing the `Init`.
     pub(crate) fn new_with_init<R>(
         cs: &'static CipherSuite,
         protocol_version: ProtocolVersion,
@@ -301,16 +305,19 @@ impl GroupContext {
         members: Vec<ClientInitKey>,
         my_idx: MemberIdx,
         csprng: &mut R,
-    ) -> Result<(GroupContext, GroupInit), Error>
+    ) -> Result<(GroupContext, Framer, ApplicationKeyChain, GroupOperation, ConfirmationKey), Error>
     where
         R: CryptoRng,
     {
         // Let the GroupInit constructor make an GroupInit object and also construct the ratchet
-        // tree for us. We'll use the tree and send out the GroupInit.
-        let (init, tree) =
+        // tree for us. This constructor also generates and propagates our path secret through the
+        // tree.  We'll use the tree and send out the GroupInit.
+        let (init, tree, update_secret) =
             GroupInit::new(cs, protocol_version, group_id.clone(), members, my_idx, csprng)?;
+        let op = GroupOperation::Init(init);
+
         // We now have all the info to make a group context
-        let ctx = GroupContext::new_from_parts(
+        let mut group_ctx = GroupContext::new_from_parts(
             cs,
             protocol_version,
             identity_key,
@@ -319,7 +326,19 @@ impl GroupContext {
             my_idx,
         )?;
 
-        Ok((ctx, init))
+        // Log the operation in the transcript hash, update the tree hash, and increment the epoch
+        // counter
+        group_ctx.update_transcript_hash(&op)?;
+        group_ctx.update_tree_hash()?;
+        group_ctx.increment_epoch()?;
+
+        // Update the epoch secrets, and make the new ApplicationKeyChain and framer
+        let (app_secret, sender_data_secret, handshake_secret, confirmation_key) =
+            group_ctx.update_epoch_secrets(&update_secret)?;
+        let framer = Framer::new(&group_ctx, handshake_secret, sender_data_secret);
+        let app_key_chain = ApplicationKeyChain::new(&group_ctx, app_secret);
+
+        Ok((group_ctx, framer, app_key_chain, op, confirmation_key))
     }
 
     /// Initializes a preliminary `GroupContext` with the given `WelcomeInfo` information, this
@@ -502,27 +521,6 @@ impl GroupContext {
         ))
     }
 
-    /// Propagates `new_path_secret` through the ratchet tree, beginning at `start_idx`. This is
-    /// the core updating logic that is used in `process_incoming_update_op`,
-    /// `create_and_apply_update_op`, and `create_and_apply_remove_op`.
-    ///
-    /// Returns: `Ok(update_secret)` on success, where `update_secret` is the update secret
-    /// necessary for generating new epoch secrets. Here, this is equal to the path secret of the
-    /// "parent" of the root node.
-    fn apply_path_secret(
-        &mut self,
-        new_path_secret: PathSecret,
-        start_idx: TreeIdx,
-    ) -> Result<UpdateSecret, Error> {
-        // The main part of doing an update is updating node secrets, private keys, and public keys
-        let grand_root_path_secret =
-            self.tree.propagate_new_path_secret(self.cs, new_path_secret, start_idx)?;
-
-        // "The update_secret resulting from this change is the path_secret[i+1] derived from the
-        // path_secret[i] associated to the root node."
-        Ok(UpdateSecret::from(grand_root_path_secret))
-    }
-
     /// Performs and validates an incoming (i.e., one we did not generate) Update operation on the
     /// `GroupContext`, where `sender_tree_idx` is the tree index of the sender of this operation
     ///
@@ -543,19 +541,22 @@ impl GroupContext {
             .member_index
             .ok_or(Error::ValidationError("Cannot do an Update on a preliminary GroupContext"))?;
 
-        // Decrypt the path secret from the GroupUpdate and propagate it through our tree
+        // Decrypt the path secret from the GroupUpdate and propagate it through our tree. "The
+        // update_secret resulting from this change is the path_secret[i+1] derived from the
+        // path_secret[i] associated to the root node."
         let (path_secret, common_ancestor) = self.tree.decrypt_direct_path_message(
             self.cs,
             &update.path,
             sender_idx,
             my_member_idx,
         )?;
-        let update_secret = self.apply_path_secret(path_secret, common_ancestor)?;
+        let update_secret: UpdateSecret =
+            self.tree.propagate_new_path_secret(self.cs, path_secret, common_ancestor)?.into();
 
         // Update all the public keys of the nodes in the direct path that are below our common
         // ancestor, i.e., all the ones whose secret we don't know. Note that this step is not
-        // performed in apply_path_secret, because this only happens when we're not the ones who
-        // created the Update operation.
+        // performed in propagate_new_path_secret, because this only happens when we're not the
+        // ones who created the Update operation.
         let direct_path_public_keys =
             update.path.node_messages.iter().map(|node_msg| &node_msg.public_key);
         self.tree.set_public_keys_with_bound(
@@ -835,8 +836,10 @@ impl GroupContext {
         let my_tree_idx: TreeIdx = my_member_idx.try_into()?;
 
         // Do the update
-        let update_secret =
-            new_group_ctx.apply_path_secret(new_path_secret.clone(), my_tree_idx)?;
+        let update_secret: UpdateSecret = new_group_ctx
+            .tree
+            .propagate_new_path_secret(self.cs, new_path_secret.clone(), my_tree_idx)?
+            .into();
 
         // Now package the update into a GroupUpdate structure
         let direct_path_msg = new_group_ctx.tree.encrypt_direct_path_secrets(
@@ -953,8 +956,10 @@ impl GroupContext {
 
         // Now that the removed user has been blanked out, apply fresh entropy to the tree
         let my_tree_idx: TreeIdx = my_member_idx.try_into()?;
-        let update_secret =
-            new_group_ctx.apply_path_secret(new_path_secret.clone(), my_tree_idx)?;
+        let update_secret = new_group_ctx
+            .tree
+            .propagate_new_path_secret(self.cs, new_path_secret.clone(), my_tree_idx)?
+            .into();
 
         // Encrypt the new entropy for everyone else to see
         let direct_path_msg = new_group_ctx.tree.encrypt_direct_path_secrets(

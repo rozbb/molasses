@@ -11,9 +11,12 @@ use crate::{
         rng::CryptoRng,
     },
     error::Error,
-    group_ctx::{ConfirmationKey, GroupId, WelcomeInfoHash},
+    group_ctx::{ConfirmationKey, GroupId, UpdateSecret, WelcomeInfoHash},
     ratchet_tree::{MemberIdx, PathSecret, RatchetTree},
+    tree_math::TreeIdx,
 };
+
+use core::convert::TryInto;
 
 /// Contains a node's new public key and the new node's secret, encrypted for everyone in that
 /// node's resolution
@@ -62,27 +65,37 @@ impl GroupInit {
     /// Creates a new `GroupInit` from the constituent parts and by generating a random keypair and
     /// path secret for the member at the given idx
     ///
-    /// Returns: `Ok((init, tree))` on success, where `init` is the newly-created `GroupInit` and
-    /// `tree` is the ratchet tree initialized to all the provided `ClientInitKey`s and with an
-    /// updated direct path starting at `my_idx`. Returns some sort of `Error` if anything goes
-    /// wrong.
+    /// Returns: `Ok((init, tree, update_secret))` on success, where `init` is the newly-created
+    /// `GroupInit`, `tree` is the ratchet tree initialized to all the provided `ClientInitKey`s
+    /// and with an updated direct path starting at `my_member_idx`, and `update_secret` is the
+    /// update secret associated with this Init operation. Returns some sort of `Error` if anything
+    /// goes wrong.
     pub(crate) fn new<R>(
         cs: &'static CipherSuite,
         version: ProtocolVersion,
         group_id: GroupId,
         members: Vec<ClientInitKey>,
-        my_idx: MemberIdx,
+        my_member_idx: MemberIdx,
         csprng: &mut R,
-    ) -> Result<(GroupInit, RatchetTree), Error>
+    ) -> Result<(GroupInit, RatchetTree, UpdateSecret), Error>
     where
         R: CryptoRng,
     {
         // Make the tree so we can construct the DirectPathMessage over it
-        let tree = RatchetTree::new_from_members(cs, &members)?;
+        let mut tree = RatchetTree::new_from_members(cs, &members)?;
         // Make a random path secret for my node
-        let path_secret = PathSecret::new_from_random(cs.hash_impl, csprng);
+        let my_path_secret = PathSecret::new_from_random(cs.hash_impl, csprng);
+
+        // Propagate the path secret and get the root op with the the random path secret. "The
+        // update_secret resulting from [Init] is the path_secret[i+1] derived from the
+        // path_secret[i] associated to the root node."
+        let update_secret: UpdateSecret = {
+            let my_tree_idx: TreeIdx = my_member_idx.try_into()?;
+            tree.propagate_new_path_secret(cs, my_path_secret.clone(), my_tree_idx)?.into()
+        };
+
         // Encrypt my new path secret for everyone else in the group
-        let path = tree.encrypt_direct_path_secrets(cs, my_idx, path_secret, csprng)?;
+        let path = tree.encrypt_direct_path_secrets(cs, my_member_idx, my_path_secret, csprng)?;
 
         // All done
         let init = GroupInit {
@@ -92,7 +105,7 @@ impl GroupInit {
             members,
             path,
         };
-        Ok((init, tree))
+        Ok((init, tree, update_secret))
     }
 }
 
