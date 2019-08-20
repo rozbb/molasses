@@ -333,11 +333,20 @@ mod test {
     };
 
     use quickcheck_macros::quickcheck;
+    use rand::{RngCore, SeedableRng};
 
     // Check that our implementation of hkdf::extract matches ring's implementation
     #[quickcheck]
-    fn hkdf_extract_kat(salt_bytes: Vec<u8>, secret_bytes: Vec<u8>) {
+    fn hkdf_extract_kat(secret_bytes: Vec<u8>, rng_seed: u64) {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(rng_seed);
         let cs = &X25519_SHA256_AES128GCM;
+
+        // Make a salt of the length Hash.length (this the length of all salts in MLS)
+        let salt_bytes = {
+            let mut buf = vec![0u8; cs.hash_impl.digest_size()];
+            rng.fill_bytes(&mut buf);
+            buf
+        };
 
         // Wrap the salt bytes in a signing key
         let ring_salt = ring::hkdf::Salt::new(cs.hash_impl.into(), &salt_bytes);

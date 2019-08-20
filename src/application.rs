@@ -437,9 +437,7 @@ mod test {
 
                 // The given key/nonce will be used to encrypt
                 let mut ciphertext = {
-                    // Make room for the tag
                     let mut plaintext = orig_msg.to_vec();
-                    plaintext.extend(vec![0u8; cs.aead_impl.tag_size()]);
 
                     // Encrypt the thing in-place and return the mutated plaintext
                     cs.aead_impl.seal(&given_key, given_nonce, b"", &mut plaintext).unwrap();
