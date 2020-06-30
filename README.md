@@ -1,7 +1,7 @@
 Molasses
 ========
 
-[![Build Status](https://travis-ci.org/trailofbits/molasses.svg?branch=master)](https://travis-ci.org/trailofbits/molasses)
+[![Build Status](https://img.shields.io/github/workflow/status/trailofbits/molasses/CI/master)](https://github.com/trailofbits/molasses/actions?query=workflow%3ACI)
 [![Coverage](https://codecov.io/gh/trailofbits/molasses/branch/master/graph/badge.svg)](https://codecov.io/gh/trailofbits/molasses)
 
 An extremely early implementation of the [Message Layer Security](https://mlswg.github.io/) group
