@@ -24,7 +24,7 @@ x25519-dalek = "0.5"
 
 [dev-dependencies]
 crossbeam = "0.7"
-hex = "0.3"
+hex = "0.4"
 quickcheck = "0.9"
 quickcheck_macros = "0.8"
 rot13 = "0.1"
