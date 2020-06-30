@@ -20,7 +20,7 @@ rand = "0.6"
 ring = { git = "https://github.com/rozbb/ring.git", branch = "master" }
 serde = { version = "1.0", features = ["derive"] }
 subtle = "2.1"
-x25519-dalek = "0.5"
+x25519-dalek = "0.6"
 
 [dev-dependencies]
 crossbeam = "0.7"
