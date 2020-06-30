@@ -198,7 +198,6 @@ impl RatchetTree {
     pub(crate) fn add_leaf_node(&mut self, node: RatchetTreeNode) {
         if self.nodes.is_empty() {
             self.nodes.push(node);
-            return;
         } else {
             self.nodes.push(RatchetTreeNode::Blank);
             self.nodes.push(node);
@@ -255,7 +254,6 @@ impl RatchetTree {
             if let RatchetTreeNode::Blank = tree.nodes[i] {
                 if tree_math::node_level(i) == 0 {
                     // The resolution of a blank leaf node is the empty list
-                    return;
                 } else {
                     // The resolution of a blank intermediate node is the result of concatinating
                     // the resolution of its left child with the resolution of its right child, in
