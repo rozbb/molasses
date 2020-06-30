@@ -33,28 +33,12 @@ impl<'a> std::convert::From<std::io::Error> for Error {
 }
 
 // Serde requires that any Serializer's error type implement std::error::Error
-impl std::error::Error for Error {
-    fn description(&self) -> &str {
-        match self {
-            Error::EncryptionError(e) => e,
-            Error::DhError(e) => e,
-            Error::TreeError(e) => e,
-            Error::ValidationError(e) => e,
-            Error::SignatureError(e) => e,
-            Error::KdfError(e) => e,
-            Error::SerdeError(e) => e.description(),
-            Error::UpcastError(e) => e,
-            Error::OutOfEntropy => "Out of Entropy",
-            Error::IAmRemoved => "I am Removed",
-        }
-    }
-}
+impl std::error::Error for Error {}
 
 // Serde also requires that any Serializer's error type implement std::fmt::Display
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
-        use std::error::Error;
-        f.write_str(self.description())
+        f.write_str(&self.to_string())
     }
 }
 
