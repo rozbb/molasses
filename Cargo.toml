@@ -10,7 +10,7 @@ keywords = ["mls", "crypto", "protocol", "tls"]
 [dependencies]
 byteorder = "1.3"
 clear_on_drop = "0.2"
-digest = "0.8"
+digest = "0.9"
 doc-comment = "0.3"
 ed25519-dalek = { version = "1.0.0-pre.1" }
 rand = "0.6"
