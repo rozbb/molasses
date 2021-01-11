@@ -4,6 +4,9 @@
 use crate::crypto::rng::CryptoRng;
 use crate::error::Error;
 
+use ed25519_dalek::ed25519::signature::Signature as SigTrait;
+use ed25519_dalek::Verifier;
+
 /// The canonical instantiation of the ed25519 `SignatureScheme`. Things that use this algorithm
 /// should use `&'static` references to this.
 pub const ED25519_IMPL: SignatureScheme = SignatureScheme(&Ed25519);
