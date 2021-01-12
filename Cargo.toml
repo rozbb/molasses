@@ -13,7 +13,7 @@ clear_on_drop = "0.2"
 digest = "0.9"
 doc-comment = "0.3"
 ed25519-dalek = { version = "1.0.0-pre.1" }
-rand = "0.7"
+rand = "0.8"
 # I'm using my own fork of ring because I'm waiting on this PR to go through:
 # https://github.com/briansmith/ring/pull/788
 #ring = "0.14"
